@@ -30,7 +30,7 @@
           <button id="today-tab" type="button" aria-pressed="false">Today</button>
         </nav>
         <section id="inventory" aria-labelledby="inventory-heading">
-          <div class="page-heading"><div><p class="eyebrow">YOUR CATALOG</p><h1 id="inventory-heading">Inventory</h1></div><p id="inventory-count" class="muted"></p></div>
+          <div class="page-heading"><div><p class="eyebrow">YOUR CATALOG</p><h1 id="inventory-heading">Inventory</h1></div><p id="inventory-count" class="muted" role="status" aria-live="polite"></p></div>
           <div class="catalog-note"><p class="muted">The JSON file owns the inventory. Closet keeps a synced copy.</p><details><summary>Update the catalog</summary><p class="muted">Edit the source JSON, validate it, then preview and apply a sync with the CLI. This screen never edits the source file.</p><pre><code>ha-closet inventory validate --input wardrobe.json
 ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details></div>
           <form id="filters" class="filters" role="search">
@@ -40,7 +40,7 @@ ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details><
             <button type="submit" class="quiet">Search</button>
           </form>
           <div id="inventory-empty" class="empty" hidden><h2>No items yet</h2><p class="muted">Validate and sync a JSON catalog to fill the closet.</p></div>
-          <div id="item-grid" class="item-grid" aria-live="polite"></div>
+          <div id="item-grid" class="item-grid"></div>
           <button id="load-more" type="button" class="quiet" hidden>Load more</button>
         </section>
         <section id="today" aria-labelledby="today-heading" hidden>

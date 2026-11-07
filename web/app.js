@@ -8,6 +8,7 @@ let view = "inventory";
 let nextPage = null;
 let listAbort = null;
 let listRevision = 0;
+let todayRevision = 0;
 let pollTimer = null;
 let pollDeadline = 0;
 let todayDraft = false;
@@ -73,7 +74,7 @@ async function request(path, options = {}) {
 
 function errorMessage(error) {
   if (error instanceof APIError) {
-    if (error.status === 401) return "The connection is no longer authorized. Reconnect to Closet.";
+    if (error.status === 401) return "The connection is no longer authorized. Reload Closet to reconnect.";
     if (error.status === 403) return "This action needs owner or Home Assistant administrator access.";
     if (error.code === "page_invalidated") return "The inventory changed while paging. Refresh to start from the current catalog.";
     if (error.status === 409) return "Another request is in progress or the inventory changed. Read the current state before trying again.";
@@ -127,6 +128,11 @@ function itemButton(item, compact = false) {
   if (labels.length) button.append(element("span", "qualifier", labels.join(" · ")));
   const reference = Array.isArray(item.images) ? item.images[0] : null;
   if (object(reference) && reference.notes) button.append(element("span", "image-note", reference.notes));
+  const description = [item.brand];
+  if (!compact) description.push(item.size || "Size unknown", item.color || "Color unknown");
+  description.push(...labels);
+  if (object(reference) && reference.notes) description.push(reference.notes);
+  button.setAttribute("aria-description", description.filter(Boolean).join(" · "));
   button.addEventListener("click", () => openDetail(item));
   return button;
 }
@@ -140,6 +146,7 @@ function fillOptions(select, values, allLabel) {
 }
 
 async function loadInventory(append = false) {
+  const moveFocus = append && document.activeElement === byId("load-more");
   listAbort?.abort();
   const controller = new AbortController();
   listAbort = controller;
@@ -156,15 +163,19 @@ async function loadInventory(append = false) {
     if (revision !== listRevision) return;
     if (!object(data) || !Array.isArray(data.items) || !object(data.facets) || !Number.isInteger(data.total)) throw new APIError(200, "invalid_response");
     if (!append) byId("item-grid").replaceChildren();
+    let firstAddedButton = null;
     for (const item of data.items) {
       if (!object(item) || typeof item.id !== "string" || typeof item.name !== "string") throw new APIError(200, "invalid_response");
       items.set(item.id, item);
       const card = element("article", "item-card");
-      card.append(itemButton(item));
+      const button = itemButton(item);
+      firstAddedButton ||= button;
+      card.append(button);
       byId("item-grid").append(card);
     }
     nextPage = typeof data.next_page === "string" ? data.next_page : null;
     byId("load-more").hidden = nextPage === null;
+    if (moveFocus && nextPage === null) firstAddedButton?.focus();
     byId("inventory-empty").hidden = data.total !== 0;
     byId("inventory-empty").querySelector("h2").textContent = data.scope_total === 0 ? "No items yet" : "No matching items";
     byId("inventory-empty").querySelector("p").textContent = data.scope_total === 0 ? "Validate and sync a JSON catalog to fill the closet." : "Try another search or clear the filters.";
@@ -296,7 +307,7 @@ function renderWeather(result) {
   if (metadata.length) holder.append(element("small", "", metadata.join(" · ")));
 }
 
-async function renderToday(data) {
+async function renderToday(data, revision) {
   if (!object(data) || typeof data.date !== "string" || typeof data.timezone !== "string") throw new APIError(200, "invalid_response");
   lastToday = data;
   byId("today-date").textContent = `${data.date} · ${data.timezone}`;
@@ -313,28 +324,31 @@ async function renderToday(data) {
   const running = generation?.status === "running";
   for (const id of ["occasion", "ownership", "weather-mode"]) byId(id).disabled = running || pendingGeneration !== null;
   byId("suggest").disabled = running || system?.role !== "owner";
-  byId("suggest").textContent = pendingGeneration ? "Retry same request" : result ? "Refresh suggestions" : "Suggest outfits";
-  const message = system?.role !== "owner" ? "Owner access is needed to request suggestions. Reading existing results is available." : generationMessage(generation);
+  byId("suggest").textContent = pendingGeneration ? "Retry same request" : result ? "Suggest again" : "Suggest outfits";
+  const message = pendingGeneration ? "The last request was not acknowledged. Retry the same request to recover it before changing the controls." : system?.role !== "owner" ? "Owner access is needed to request suggestions. Reading existing results is available." : generationMessage(generation);
   byId("generation-state").textContent = message;
   byId("generation-state").hidden = !message;
   byId("today-empty").hidden = result !== null || running;
   byId("today-result-label").textContent = result ? `${inputLabel(result.inputs)}${result.freshness === "stale" ? " · Stale result" : ""}` : "";
   byId("today-input-note").hidden = !result || JSON.stringify(inputValues()) === JSON.stringify(result.inputs);
   renderWeather(result);
-  const holder = byId("suggestions"); holder.replaceChildren();
+  const cards = document.createDocumentFragment();
   if (result && Array.isArray(result.suggestions)) {
     for (const suggestion of result.suggestions.slice(0, 3)) {
       if (!object(suggestion) || !Array.isArray(suggestion.item_ids)) throw new APIError(200, "invalid_response");
       const card = element("article", `suggestion${result.freshness === "stale" ? " stale" : ""}`);
       const pieces = element("div", "pieces");
       const records = await Promise.all([...new Set(suggestion.item_ids)].slice(0, 5).map(getItem));
+      if (revision !== todayRevision || view !== "today") return;
       for (const item of records) pieces.append(itemButton(item, true));
       const copy = element("div", "suggestion-copy");
       copy.append(element("h3", "", suggestion.label || "Another combination"), element("p", "muted", suggestion.advisory_reason || ""));
       if (Array.isArray(suggestion.warnings) && suggestion.warnings.length) copy.append(element("p", "qualifier", suggestion.warnings.join(" · ").replaceAll("_", " ")));
-      card.append(pieces, copy); holder.append(card);
+      card.append(pieces, copy); cards.append(card);
     }
   }
+  if (revision !== todayRevision || view !== "today") return;
+  byId("suggestions").replaceChildren(cards);
   clearTimeout(pollTimer);
   if (running && view === "today" && !document.hidden) {
     if (!pollDeadline) pollDeadline = Date.now() + 90000;
@@ -344,8 +358,13 @@ async function renderToday(data) {
 }
 
 async function loadToday() {
-  try { await renderToday(await request("v1/today")); }
-  catch (error) { notice(errorMessage(error)); clearTimeout(pollTimer); }
+  const revision = ++todayRevision;
+  try {
+    const data = await request("v1/today");
+    if (revision === todayRevision && view === "today") await renderToday(data, revision);
+  } catch (error) {
+    if (revision === todayRevision && view === "today") { notice(errorMessage(error)); clearTimeout(pollTimer); }
+  }
 }
 
 async function generate(event) {
@@ -365,7 +384,7 @@ async function generate(event) {
     // A gateway/timeout failure may arrive after Rust has reserved the attempt.
     // Only a definitive client rejection permits a new key and edited inputs.
     if (error instanceof APIError && error.status >= 400 && error.status < 500 && error.status !== 408) pendingGeneration = null;
-    notice(pendingGeneration ? "No reply was received. Retry the same request to recover its result, without starting another attempt." : errorMessage(error));
+    notice(pendingGeneration ? "The request was not acknowledged. Retry the same request to recover its result without starting another attempt." : errorMessage(error));
     byId("suggest").disabled = false;
     byId("suggest").textContent = pendingGeneration ? "Retry same request" : "Suggest outfits";
     if (!pendingGeneration) for (const id of ["occasion", "ownership", "weather-mode"]) byId(id).disabled = false;
@@ -387,6 +406,7 @@ async function connect() {
 }
 
 function selectView(next) {
+  todayRevision += 1;
   view = next;
   byId("inventory").hidden = view !== "inventory";
   byId("today").hidden = view !== "today";

@@ -1,5 +1,6 @@
 """Exercise Inventory and the optional Today view through the real app."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,9 @@ async def test_inventory_paging_filters_and_read_only_detail(
             await expect(
                 page.get_by_role("button", name="Load more", exact=True)
             ).to_be_hidden()
+            await expect(
+                page.get_by_role("button", name="View Example piece 050", exact=True)
+            ).to_be_focused()
             await page.get_by_label("Brand", exact=True).select_option(
                 "Second example label"
             )
@@ -63,6 +67,12 @@ async def test_inventory_paging_filters_and_read_only_detail(
             qualifiers = await card.locator(".qualifier").bounding_box()
             assert metadata is not None and qualifiers is not None
             assert qualifiers["y"] >= metadata["y"] + metadata["height"]
+            await expect(
+                page.get_by_role("button", name="View Example piece 051", exact=True)
+            ).to_have_accessible_description(
+                "Second example label · Size unknown · Cool white · "
+                "Ownership unconfirmed · Reference photo · Different-color reference."
+            )
             await page.get_by_role(
                 "button", name="View Example piece 051", exact=True
             ).click()
@@ -317,6 +327,11 @@ async def test_uncertain_gateway_reply_retries_the_accepted_generation(
             await expect(retry).to_be_visible()
             await expect(page.get_by_label("Occasion", exact=True)).to_be_disabled()
             await expect(page.get_by_label("Weather", exact=True)).to_be_disabled()
+            await page.get_by_role("button", name="Inventory", exact=True).click()
+            await page.get_by_role("button", name="Today", exact=True).click()
+            await expect(page.locator("#generation-state")).to_contain_text(
+                "not acknowledged"
+            )
             await retry.click()
             await expect(
                 page.get_by_role("heading", name="Example combination")
@@ -337,4 +352,50 @@ async def test_uncertain_gateway_reply_retries_the_accepted_generation(
             )
             assert ha_protocol.generations == 1
         finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("rust_backend", [True], indirect=True)
+async def test_overlapping_today_reads_publish_only_the_latest_render(
+    rust_backend: RustBackend,
+    ha_protocol: HAProtocol,
+) -> None:
+    """A delayed item read from an older refresh cannot duplicate new cards."""
+    await rust_backend.sync(
+        [
+            catalog_item("example-top"),
+            catalog_item("example-jeans", category="clothing.jeans"),
+            catalog_item("example-flats", category="footwear"),
+        ]
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_item(route: Route) -> None:
+        response = await route.fetch()
+        if not started.is_set():
+            started.set()
+            await release.wait()
+        await route.fulfill(response=response)
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_role("button", name="Suggest outfits", exact=True).click()
+            await expect(page.locator(".suggestion")).to_have_count(1)
+            await page.route("**/v1/items/example-top", delayed_item)
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            async with asyncio.timeout(5):
+                await started.wait()
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await expect(page.locator(".suggestion")).to_have_count(1)
+            release.set()
+            await page.wait_for_load_state("networkidle")
+            await expect(page.locator(".suggestion")).to_have_count(1)
+            assert ha_protocol.generations == 1
+        finally:
+            release.set()
             await browser.close()

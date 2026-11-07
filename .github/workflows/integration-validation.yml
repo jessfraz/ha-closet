@@ -37,3 +37,10 @@ jobs:
         with:
           category: integration
           comment: "false"
+          # This is a custom repository, not a default-catalog submission.
+          # Issues are deliberately off. The integration_manifest rule also
+          # requires issue_tracker, so skip it rather than advertise a fake URL.
+          # Hassfest still validates the manifest. Core Marketplace performs its
+          # own install checks; these skips rule out default-catalog submission.
+          # https://contributors.home-assistant.io/marketplace/reference/validation/
+          ignore: issues integration_manifest
