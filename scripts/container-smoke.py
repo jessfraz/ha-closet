@@ -34,7 +34,7 @@ def wait_ready(base: str) -> None:
             with urllib.request.urlopen(base + "/health", timeout=2) as response:
                 if response.status == 200:
                     return
-        except OSError, urllib.error.URLError:
+        except (OSError, urllib.error.URLError):
             pass
         time.sleep(0.2)
     raise RuntimeError("Container did not become ready")

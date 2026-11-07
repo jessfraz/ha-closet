@@ -12,7 +12,7 @@ dev = [
   "hassil==3.12.1",
   "home-assistant-intents==2026.10.6",
   "playwright==1.64.0",
-  "pytest-homeassistant-custom-component==0.13.372",
+  "pytest-homeassistant-custom-component==0.13.375",
   "ruff==0.17.0",
   "ty==0.0.89",
 ]
@@ -29,6 +29,9 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "ANN"]
+
+[tool.ruff.per-file-target-version]
+"scripts/*" = "py312"
 
 [tool.ty.src]
 include = ["custom_components", "tests_ha", "tests_web"]

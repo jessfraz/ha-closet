@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -175,12 +175,15 @@ class RustBackend:
 async def rust_backend(
     hass: HomeAssistant,
     tmp_path: Path,
-    unused_tcp_port: int,
+    unused_tcp_port_factory: Callable[[], int],
     socket_enabled: None,
     request: pytest.FixtureRequest,
     ha_protocol: HAProtocol,
 ) -> AsyncIterator[RustBackend]:
     """Start and stop the binary, never a reimplementation of its domain logic."""
+    # Reserve after socket_enabled has loaded, not in a sibling port fixture
+    # that newer HA test plugins can evaluate before the network permission.
+    unused_tcp_port = unused_tcp_port_factory()
     configured_binary = Path(
         os.environ.get("CLOSET_TEST_BINARY", "target/debug/closet")
     )
