@@ -20,6 +20,23 @@ let lastToday = null;
 let pendingGeneration = null;
 const items = new Map();
 const sourceLabels = new Map();
+const filterFields = [["q", "search"], ["brand", "brand"], ["category", "category"], ["source", "source"]];
+let appliedFilters = { q: "", brand: "", category: "", source: "" };
+let selectedItemId = null;
+let detailAbort = null;
+let detailRevision = 0;
+let detailClosePending = false;
+let locationInitialized = false;
+let navigationListening = false;
+const pendingLocations = [];
+// HA owns the outer route. Its documented navigate message updates that route
+// without exposing the ingress session path or writing its history directly.
+const navigationHost = (() => {
+  if (window.parent === window || !/^\/api\/hassio_ingress\/[^/]+\//.test(window.location.pathname)) return window;
+  try { if (window.parent.location.origin === window.location.origin) return window.parent; }
+  catch { /* A cross-origin embedding can still use its own document history. */ }
+  return window;
+})();
 
 class APIError extends Error {
   constructor(status, code) {
@@ -42,6 +59,101 @@ function element(tag, className, text) {
 
 function object(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function navigationURL() {
+  return new URL(navigationHost.location.href);
+}
+
+function restoreFilters(filters) {
+  for (const [key, id] of filterFields) {
+    const control = byId(id);
+    if (id !== "search" && filters[key] && ![...control.options].some((option) => option.value === filters[key])) {
+      control.add(new Option(sourceLabels.get(filters[key]) || filters[key], filters[key]));
+    }
+    control.value = filters[key];
+  }
+}
+
+function applyLocation(url = navigationURL(), { refresh = false } = {}) {
+  const filters = Object.fromEntries(filterFields.map(([key]) => [key, url.searchParams.get(`closet_${key}`) || ""]));
+  const itemId = url.searchParams.get("closet_item") || null;
+  const filtersChanged = filterFields.some(([key]) => filters[key] !== appliedFilters[key]);
+  const first = !locationInitialized;
+  if (first || filtersChanged) {
+    appliedFilters = filters;
+    restoreFilters(filters);
+  }
+  locationInitialized = true;
+  detailClosePending = false;
+  const itemChanged = itemId !== selectedItemId;
+  selectedItemId = itemId;
+  if (!system) return;
+  if (filtersChanged && view !== "inventory") selectView("inventory");
+  if (first || filtersChanged || refresh) void loadInventory();
+  if (first || itemChanged || refresh) void loadDetail(itemId);
+}
+
+function navigate(filters, itemId, { replace = false } = {}) {
+  const url = navigationURL();
+  for (const [key] of filterFields) {
+    url.searchParams.delete(`closet_${key}`);
+    if (filters[key]) url.searchParams.set(`closet_${key}`, filters[key]);
+  }
+  url.searchParams.delete("closet_item");
+  if (itemId) url.searchParams.set("closet_item", itemId);
+  const queued = navigationHost !== window && pendingLocations.length > 0;
+  if (url.href !== navigationURL().href || queued) {
+    if (navigationHost === window) {
+      const previous = object(history.state) ? history.state : {};
+      history[replace ? "replaceState" : "pushState"]({ ...previous, closetItemEntry: Boolean(itemId) && !replace }, "", url);
+    } else if (pendingLocations.at(-1) !== url.href) {
+      pendingLocations.push(url.href);
+      navigationHost.postMessage({ type: "home-assistant/navigate", path: url.pathname + url.search + url.hash, options: { replace } }, url.origin);
+    }
+  }
+  applyLocation(url);
+}
+
+function applyFilters() {
+  const filters = Object.fromEntries(filterFields.map(([key, id]) => [key, key === "q" ? byId(id).value.trim() : byId(id).value]));
+  const unchanged = filterFields.every(([key]) => filters[key] === appliedFilters[key]);
+  navigate(filters, null);
+  if (unchanged) void loadInventory();
+}
+
+function closeDetail() {
+  if (!selectedItemId || detailClosePending) return;
+  detailClosePending = true;
+  if (navigationHost === window && history.state?.closetItemEntry === true) history.back();
+  else navigate(appliedFilters, null, { replace: true });
+}
+
+function locationChanged(event) {
+  const url = navigationURL();
+  if (event.type === "popstate") pendingLocations.length = 0;
+  else if (pendingLocations.length) {
+    // HA processes these messages in order. An earlier identical destination
+    // cannot acknowledge the latest request or admit an intermediate close.
+    if (pendingLocations[0] !== url.href) return;
+    pendingLocations.shift();
+    if (pendingLocations.length) return;
+  }
+  if (system) applyLocation(url);
+}
+
+function startNavigation() {
+  if (navigationListening) return;
+  navigationListening = true;
+  navigationHost.addEventListener("popstate", locationChanged);
+  if (navigationHost !== window) navigationHost.addEventListener("location-changed", locationChanged);
+}
+
+function stopNavigation() {
+  navigationListening = false;
+  pendingLocations.length = 0;
+  navigationHost.removeEventListener("popstate", locationChanged);
+  if (navigationHost !== window) navigationHost.removeEventListener("location-changed", locationChanged);
 }
 
 async function request(path, options = {}) {
@@ -97,9 +209,9 @@ function safeLink(value) {
   } catch { return null; }
 }
 
-function photo(item) {
+function photo(item, index = 0) {
   const wrapper = element("div", "photo");
-  const reference = Array.isArray(item.images) ? item.images[0] : null;
+  const reference = Array.isArray(item.images) ? item.images[index] : null;
   const url = object(reference) ? safeLink(reference.url) : null;
   const placeholder = () => wrapper.replaceChildren(element("span", "photo-placeholder", "No photo"));
   if (!url) { placeholder(); return wrapper; }
@@ -135,7 +247,7 @@ function filterFromBadge(field, value, label) {
   if (![...select.options].some((option) => option.value === value)) select.add(new Option(label, value));
   select.value = value;
   select.focus();
-  void loadInventory();
+  applyFilters();
 }
 
 function sourceTone(source) {
@@ -200,9 +312,8 @@ function fillSources(facets) {
     options.push(new Option(`${facet.label} (${facet.count})`, facet.source));
   }
   if (selected && !facets.some((facet) => facet.source === selected)) {
-    const label = sourceLabels.get(selected);
-    if (label) options.push(new Option(`${label} (0)`, selected));
-    else selected = "";
+    const label = sourceLabels.get(selected) || selected;
+    options.push(new Option(`${label} (0)`, selected));
   }
   options.sort((left, right) => left.label.localeCompare(right.label));
   select.replaceChildren(new Option("All sources", ""), ...options);
@@ -244,8 +355,8 @@ async function loadInventory(append = false, { automatic = false } = {}) {
     // The cursor carries the applied filters, not any unsubmitted search text.
     query.set("page_token", nextPage);
   } else {
-    for (const [key, id] of [["q", "search"], ["brand", "brand"], ["category", "category"], ["source", "source"]]) {
-      const value = key === "q" ? byId(id).value.trim() : byId(id).value;
+    for (const [key] of filterFields) {
+      const value = appliedFilters[key];
       if (value) query.set(key, value);
     }
   }
@@ -299,21 +410,107 @@ async function loadInventory(append = false, { automatic = false } = {}) {
 }
 
 function openDetail(item) {
+  navigate(appliedFilters, item.id);
+}
+
+async function loadDetail(itemId) {
+  detailAbort?.abort();
+  const revision = ++detailRevision;
+  const dialog = byId("detail");
+  if (!itemId) { if (dialog.open) dialog.close(); return; }
+  const controller = new AbortController();
+  detailAbort = controller;
+  byId("detail-brand").textContent = "";
+  byId("detail-title").textContent = "Loading item…";
+  if (dialog.open && byId("detail-content").contains(document.activeElement)) byId("close-detail").focus();
+  byId("detail-content").replaceChildren(element("p", "muted", "Loading item…"));
+  if (!dialog.open) dialog.showModal();
+  try {
+    const item = await request(`v1/items/${encodeURIComponent(itemId)}`, { signal: controller.signal });
+    if (revision !== detailRevision || selectedItemId !== itemId) return;
+    if (!object(item) || item.id !== itemId) throw new APIError(200, "invalid_response");
+    if (item.archived) throw new APIError(404, "item_not_found");
+    items.set(itemId, item);
+    renderDetail(item);
+  } catch (error) {
+    if (error.name === "AbortError" || revision !== detailRevision || selectedItemId !== itemId) return;
+    byId("detail-title").textContent = error instanceof APIError && error.status === 404 ? "Item unavailable" : "Unable to load item";
+    byId("detail-content").replaceChildren(element("p", "muted", error instanceof APIError && error.status === 404 ? "This item is not in the active inventory." : errorMessage(error)));
+  }
+}
+
+function gallery(item) {
+  const panel = element("div", "detail-gallery");
+  const main = element("div", "gallery-main");
+  const information = element("div");
+  const references = Array.isArray(item.images) ? item.images : [];
+  const thumbnails = [];
+  const counter = element("span", "gallery-counter");
+  let selected = 0;
+  const select = (index, focus = false) => {
+    selected = (index + references.length) % references.length || 0;
+    const picture = photo(item, selected);
+    main.replaceChildren(picture);
+    information.replaceChildren();
+    const reference = references[selected];
+    if (object(reference)) {
+      if (reference.notes) information.append(element("p", "image-note", reference.notes));
+      const source = safeLink(reference.source_url || reference.url);
+      if (source) {
+        const link = element("a", "reference-link", reference.source_url ? "View product ↗" : "Open photo ↗");
+        link.href = source; link.target = "_blank"; link.rel = "noopener noreferrer";
+        information.append(link);
+        if (!reference.source_url) picture.querySelector("img")?.addEventListener("error", () => link.remove(), { once: true });
+      }
+    }
+    counter.textContent = `${selected + 1} of ${references.length}`;
+    thumbnails.forEach((button, index) => {
+      button.setAttribute("aria-pressed", String(index === selected));
+      button.tabIndex = index === selected ? 0 : -1;
+    });
+    if (focus) thumbnails[selected]?.focus();
+  };
+  panel.append(main);
+  if (references.length > 1) {
+    const controls = element("div", "gallery-controls");
+    const previous = element("button", "quiet", "←");
+    previous.type = "button"; previous.setAttribute("aria-label", "Previous photo");
+    previous.addEventListener("click", () => select(selected - 1));
+    const next = element("button", "quiet", "→");
+    next.type = "button"; next.setAttribute("aria-label", "Next photo");
+    next.addEventListener("click", () => select(selected + 1));
+    counter.setAttribute("role", "status");
+    counter.setAttribute("aria-live", "polite");
+    controls.append(previous, counter, next);
+    const strip = element("div", "gallery-thumbnails");
+    strip.setAttribute("role", "group"); strip.setAttribute("aria-label", "Item photos");
+    references.forEach((reference, index) => {
+      const button = element("button", "photo-thumbnail");
+      button.type = "button"; button.setAttribute("aria-label", `Show photo ${index + 1}`);
+      const preview = photo(item, index);
+      const image = preview.querySelector("img");
+      if (image) image.alt = "";
+      button.append(preview);
+      button.addEventListener("click", () => select(index));
+      thumbnails.push(button); strip.append(button);
+    });
+    strip.addEventListener("keydown", (event) => {
+      const index = { ArrowLeft: selected - 1, ArrowRight: selected + 1, Home: 0, End: references.length - 1 }[event.key];
+      if (index === undefined) return;
+      event.preventDefault(); select(index, true);
+    });
+    panel.append(controls, strip);
+  }
+  panel.append(information);
+  select(0);
+  return panel;
+}
+
+function renderDetail(item) {
   byId("detail-brand").textContent = item.brand || "";
   byId("detail-title").textContent = item.name;
   const layout = element("div", "detail-layout");
-  const imagePanel = element("div");
-  imagePanel.append(photo(item));
-  const reference = Array.isArray(item.images) ? item.images[0] : null;
-  if (object(reference)) {
-    if (reference.notes) imagePanel.append(element("p", "image-note", reference.notes));
-    const source = safeLink(reference.source_url || reference.url);
-    if (source) {
-      const link = element("a", "reference-link", reference.source_url ? "View product ↗" : "Open photo ↗");
-      link.href = source; link.target = "_blank"; link.rel = "noopener noreferrer";
-      imagePanel.append(link);
-    }
-  }
+  const imagePanel = gallery(item);
   const values = [
     ["Category", item.category], ["Color", item.color], ["Size", item.size],
     ["Quantity", item.quantity], ["Material", item.material], ["SKU", item.sku],
@@ -344,10 +541,8 @@ function openDetail(item) {
     for (const note of item.notes) notes.append(element("p", "", note));
     copy.append(notes);
   }
-  copy.append(element("p", "detail-notes muted", "To change this item, edit its source JSON and sync the catalog."));
   layout.append(imagePanel, copy);
   byId("detail-content").replaceChildren(layout);
-  byId("detail").showModal();
 }
 
 function inputValues() {
@@ -508,7 +703,7 @@ async function connect() {
   byId("app-footer").hidden = false;
   byId("app-version").textContent = data.version;
   byId("service-status").textContent = "Connected";
-  await loadInventory();
+  applyLocation(navigationURL(), { refresh: true });
 }
 
 function selectView(next) {
@@ -535,15 +730,17 @@ byId("refresh").addEventListener("click", async () => {
   items.clear();
   if (view === "today") { pollDeadline = 0; await loadToday(); }
   else await loadInventory();
+  if (selectedItemId) void loadDetail(selectedItemId);
 });
-byId("filters").addEventListener("submit", (event) => { event.preventDefault(); void loadInventory(); });
-byId("brand").addEventListener("change", () => void loadInventory());
-byId("category").addEventListener("change", () => void loadInventory());
-byId("source").addEventListener("change", () => void loadInventory());
+byId("filters").addEventListener("submit", (event) => { event.preventDefault(); applyFilters(); });
+byId("brand").addEventListener("change", applyFilters);
+byId("category").addEventListener("change", applyFilters);
+byId("source").addEventListener("change", applyFilters);
 byId("load-more").addEventListener("click", () => void loadInventory(true));
 byId("inventory-tab").addEventListener("click", () => selectView("inventory"));
 byId("today-tab").addEventListener("click", () => selectView("today"));
-byId("close-detail").addEventListener("click", () => byId("detail").close());
+byId("close-detail").addEventListener("click", closeDetail);
+byId("detail").addEventListener("cancel", (event) => { event.preventDefault(); closeDetail(); });
 byId("generate").addEventListener("submit", generate);
 byId("generate").addEventListener("change", () => { todayDraft = true; byId("today-input-note").hidden = !lastToday?.result || JSON.stringify(inputValues()) === JSON.stringify(lastToday.result.inputs); });
 document.addEventListener("visibilitychange", () => {
@@ -553,6 +750,7 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && view === "today" && system) void loadToday();
   if (!document.hidden && view === "inventory") observeNextPage();
 });
-window.addEventListener("pagehide", () => { clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); });
-window.addEventListener("pageshow", () => observeNextPage());
+window.addEventListener("pagehide", () => { clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); detailAbort?.abort(); detailRevision += 1; stopNavigation(); });
+window.addEventListener("pageshow", () => { startNavigation(); if (system) applyLocation(navigationURL(), { refresh: true }); observeNextPage(); });
+startNavigation();
 connect().catch((error) => { if (error instanceof APIError && error.status === 401) byId("login").hidden = false; else notice(errorMessage(error)); });

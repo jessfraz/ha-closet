@@ -31,7 +31,7 @@
         </nav>
         <section id="inventory" aria-labelledby="inventory-heading">
           <div class="page-heading"><div><p class="eyebrow">YOUR CATALOG</p><h1 id="inventory-heading">Inventory</h1></div><p id="inventory-count" class="muted" role="status" aria-live="polite"></p></div>
-          <div class="catalog-note"><p class="muted">The JSON file owns the inventory. Closet keeps a synced copy.</p><details><summary>Update the catalog</summary><p class="muted">Edit the source JSON, validate it, then preview and apply a sync with the CLI. This screen never edits the source file.</p><pre><code>ha-closet inventory validate --input wardrobe.json
+          <div class="catalog-note"><details><summary>Update the catalog</summary><p class="muted">Edit the source JSON, validate it, then preview and apply a sync with the CLI. This screen never edits the source file.</p><pre><code>ha-closet inventory validate --input wardrobe.json
 ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details></div>
           <form id="filters" class="filters" role="search">
             <label class="search-field" for="search">Search<input id="search" type="search" placeholder="Brand, item, or SKU" maxlength="200"></label>

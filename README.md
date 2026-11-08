@@ -8,6 +8,8 @@ keep up to date in the app.
 
 Select a brand or source badge to see its inventory. The filters can also be
 combined to narrow things down.
+You can bookmark a filtered view or an item. Items with multiple photos have
+a thumbnail gallery.
 
 ![Closet inventory](docs/screenshots/inventory.png)
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5
+
+- Keep filters and item details in the URL, including Home Assistant ingress.
+- Browse multiple item photos with thumbnails and previous/next controls.
+- Remove redundant inventory and item-detail instructions.
+
 ## 0.1.4
 
 - Put the brand badge above the item name; keep the source at the bottom.

@@ -108,6 +108,15 @@ dd { margin: 0; }
 .detail-notes { margin-top: 22px; font-size: 13px; line-height: 1.7; }
 .detail-notes p { margin-top: 8px; }
 .reference-link { font-size: 12px; line-height: 1.7; margin-top: 8px; display: inline-block; }
+.detail-gallery { min-width: 0; }
+.gallery-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.gallery-controls button { min-width: 44px; padding: 8px 12px; }
+.gallery-counter { color: var(--muted); font: 12px/1.6 var(--mono); }
+.gallery-thumbnails { display: flex; gap: 8px; overflow-x: auto; padding: 5px; margin: 8px -5px 0; }
+.photo-thumbnail { flex: 0 0 56px; min-width: 0; padding: 3px; background: transparent; border: 1px solid var(--line); }
+.photo-thumbnail[aria-pressed="true"] { border: 2px solid var(--ink); padding: 2px; }
+.photo-thumbnail .photo { border-radius: 3px; }
+.photo-thumbnail .photo-placeholder { font: 9px/1.3 var(--mono); padding: 3px; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #131415; --paper: #1b1c1e; --ink: #e6e6e4; --muted: #9c9fa3; --line: #2f3134; --soft: #242528; --accent: #e6e6e4; --on-accent: #131415; --warning: #f6d48e; --warning-soft: #46391e; --focus: #7fa6ee; }
   .brand-light { display: none; }
