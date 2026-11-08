@@ -57,6 +57,9 @@ Labels are consistent: `Cashmere` does not become a second material because
 another item explicitly reports 100% cashmere. The exact composition remains
 in the source.
 
+Leather labels keep their material noun: `Pebbled leather`, not just `Pebbled`.
+Names such as `Suede` and `Calfskin` already identify the material and stay as-is.
+
 ## Photos
 
 Keep supplier URLs as `remote` images. An edited local photo uses `asset` and

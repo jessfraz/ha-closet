@@ -20,6 +20,25 @@ pub(crate) fn color(spec: &ColorSpec, path: &str, errors: &mut Diagnostics) -> O
         },
     }
 }
+fn leather_animal_label(animal: LeatherAnimal) -> String {
+    match animal {
+        LeatherAnimal::Bovine
+        | LeatherAnimal::Buffalo
+        | LeatherAnimal::Crocodile
+        | LeatherAnimal::Alligator
+        | LeatherAnimal::Ostrich
+        | LeatherAnimal::Lizard => format!("{} leather", animal.label()),
+        LeatherAnimal::Calf
+        | LeatherAnimal::Lamb
+        | LeatherAnimal::Sheep
+        | LeatherAnimal::Goat
+        | LeatherAnimal::Pig
+        | LeatherAnimal::Deer
+        | LeatherAnimal::Horse
+        | LeatherAnimal::Snake => animal.label().into(),
+    }
+}
+
 fn constituent_label(part: &Constituent) -> String {
     match part {
         Constituent::Fiber { fiber, qualifiers } => {
@@ -27,18 +46,27 @@ fn constituent_label(part: &Constituent) -> String {
             words.push(fiber.label());
             words.join(" ")
         }
-        Constituent::Leather { animal, finish } => {
-            let mut words = Vec::new();
-            if let Some(finish) = finish {
-                words.push(finish.label());
+        Constituent::Leather { animal, finish } => match (animal, finish) {
+            (Some(animal), Some(finish)) => {
+                format!("{} {}", finish.label(), leather_animal_label(*animal))
             }
-            if let Some(animal) = animal {
-                words.push(animal.label());
-            } else if finish.is_none() {
-                words.push("Leather");
-            }
-            words.join(" ")
-        }
+            (Some(animal), None) => leather_animal_label(*animal),
+            (None, None) => "Leather".into(),
+            (None, Some(finish)) => match finish {
+                Finish::Suede | Finish::WaxedSuede | Finish::Nubuck | Finish::Shearling => {
+                    finish.label().into()
+                }
+                Finish::Smooth
+                | Finish::Patent
+                | Finish::Grained
+                | Finish::Pebbled
+                | Finish::Embossed
+                | Finish::Nappa
+                | Finish::Box
+                | Finish::Saffiano
+                | Finish::HairOn => format!("{} leather", finish.label()),
+            },
+        },
         Constituent::Rubber => "Rubber".into(),
         Constituent::Metal { metal } => metal.map_or("Metal", Metal::label).into(),
         Constituent::AnimalFill { fill } => fill.label().into(),

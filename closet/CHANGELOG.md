@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.12
+
+- Keep material nouns in labels such as Pebbled leather and Bovine leather.
+
 ## 0.1.11
 
 - Author catalogs in TOML with checked brand, category and fitting references,

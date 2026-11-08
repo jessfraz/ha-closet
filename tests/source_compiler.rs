@@ -400,6 +400,119 @@ fn percent(parts: Vec<(Constituent, u16)>, complete: bool) -> Composition {
         complete,
     }
 }
+
+fn projected_material(path: &Path) -> String {
+    let source = CompiledCatalog::load(path).unwrap();
+    source.materialize(&urls(&source)).unwrap().items()[0]
+        .material
+        .clone()
+        .unwrap()
+}
+
+#[test]
+fn leather_finishes_retain_material_nouns_in_real_projection() {
+    let (_directory, path) = fixture();
+    let mut authored = document(&path);
+    for (finish, expected) in [
+        (None, "Leather"),
+        (Some(Finish::Smooth), "Smooth leather"),
+        (Some(Finish::Patent), "Patent leather"),
+        (Some(Finish::Grained), "Grained leather"),
+        (Some(Finish::Pebbled), "Pebbled leather"),
+        (Some(Finish::Embossed), "Embossed leather"),
+        (Some(Finish::Nappa), "Nappa leather"),
+        (Some(Finish::Box), "Box leather"),
+        (Some(Finish::Saffiano), "Saffiano leather"),
+        (Some(Finish::HairOn), "Hair-on leather"),
+        (Some(Finish::Suede), "Suede"),
+        (Some(Finish::WaxedSuede), "Waxed suede"),
+        (Some(Finish::Nubuck), "Nubuck"),
+        (Some(Finish::Shearling), "Shearling"),
+    ] {
+        authored.variants[0].materials = vec![component(listed(vec![Constituent::Leather {
+            animal: None,
+            finish,
+        }]))]
+        .try_into()
+        .unwrap();
+        produce(&path, &authored);
+        assert_eq!(projected_material(&path), expected, "{finish:?}");
+    }
+}
+
+#[test]
+fn leather_animal_labels_retain_nouns_without_duplicate_skin_or_hide() {
+    let (_directory, path) = fixture();
+    let mut authored = document(&path);
+    for (animal, expected) in [
+        (LeatherAnimal::Bovine, "Bovine leather"),
+        (LeatherAnimal::Calf, "Calfskin"),
+        (LeatherAnimal::Lamb, "Lambskin"),
+        (LeatherAnimal::Sheep, "Sheepskin"),
+        (LeatherAnimal::Goat, "Goatskin"),
+        (LeatherAnimal::Pig, "Pigskin"),
+        (LeatherAnimal::Deer, "Deerskin"),
+        (LeatherAnimal::Horse, "Horsehide"),
+        (LeatherAnimal::Buffalo, "Buffalo leather"),
+        (LeatherAnimal::Snake, "Snakeskin"),
+        (LeatherAnimal::Crocodile, "Crocodile leather"),
+        (LeatherAnimal::Alligator, "Alligator leather"),
+        (LeatherAnimal::Ostrich, "Ostrich leather"),
+        (LeatherAnimal::Lizard, "Lizard leather"),
+    ] {
+        authored.variants[0].materials = vec![component(listed(vec![Constituent::Leather {
+            animal: Some(animal),
+            finish: None,
+        }]))]
+        .try_into()
+        .unwrap();
+        produce(&path, &authored);
+        assert_eq!(projected_material(&path), expected, "{animal:?}");
+    }
+}
+
+#[test]
+fn leather_nouns_survive_percentages_and_separate_components() {
+    let (_directory, path) = fixture();
+    let mut authored = document(&path);
+    let main = component(percent(
+        vec![(
+            Constituent::Leather {
+                animal: None,
+                finish: Some(Finish::Pebbled),
+            },
+            5000,
+        )],
+        false,
+    ));
+    let mut lining = component(listed(vec![Constituent::Leather {
+        animal: None,
+        finish: Some(Finish::Suede),
+    }]));
+    lining.part = MaterialPart::Lining;
+    let mut trim = component(listed(vec![Constituent::Leather {
+        animal: Some(LeatherAnimal::Calf),
+        finish: Some(Finish::Smooth),
+    }]));
+    trim.part = MaterialPart::Trim;
+    let mut sole = component(percent(
+        vec![(
+            Constituent::Leather {
+                animal: Some(LeatherAnimal::Bovine),
+                finish: None,
+            },
+            10000,
+        )],
+        true,
+    ));
+    sole.part = MaterialPart::Sole;
+    authored.variants[0].materials = vec![main, lining, trim, sole].try_into().unwrap();
+    produce(&path, &authored);
+    assert_eq!(
+        projected_material(&path),
+        "50% Pebbled leather; Lining: Suede; Trim: Smooth Calfskin; Sole: Bovine leather"
+    );
+}
 #[test]
 fn compositions_preserve_unknown_amounts_component_totals_and_real_qualifiers() {
     let (_directory, path) = fixture();
