@@ -774,7 +774,7 @@ wheels = [
 
 [[package]]
 name = "closet-home-assistant"
-version = "0.1.12"
+version = "0.1.13"
 source = { virtual = "." }
 
 [package.dev-dependencies]

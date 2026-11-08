@@ -1,5 +1,5 @@
 name: Closet
-version: "0.1.12"
+version: "0.1.13"
 slug: closet
 description: A wardrobe inventory with an optional outfit lottery
 url: https://github.com/jessfraz/ha-closet

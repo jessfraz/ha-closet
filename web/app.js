@@ -209,7 +209,14 @@ function safeLink(value) {
   } catch { return null; }
 }
 
-function photo(item, index = 0) {
+function nativePreviewURL(value, size) {
+  const url = new URL(value);
+  if (url.search || !/^\/api\/image\/serve\/[a-f0-9]{32}\/original$/.test(url.pathname)) return value;
+  url.pathname = url.pathname.replace(/original$/, `${size}x${size}`);
+  return url.href;
+}
+
+function photo(item, index = 0, presentation = "card") {
   const wrapper = element("div", "photo");
   const reference = Array.isArray(item.images) ? item.images[index] : null;
   const url = object(reference) ? safeLink(reference.url) : null;
@@ -218,8 +225,13 @@ function photo(item, index = 0) {
   const image = document.createElement("img");
   image.alt = item.name || "Item";
   image.referrerPolicy = "no-referrer";
-  image.loading = "lazy";
-  image.addEventListener("error", placeholder, { once: true });
+  image.decoding = "async";
+  image.loading = presentation === "detail" ? "eager" : "lazy";
+  if (presentation === "detail") image.fetchPriority = "high";
+  image.addEventListener("error", () => {
+    if (image.src !== url) image.src = url;
+    else placeholder();
+  });
   const crop = reference.crop;
   if (object(crop)) {
     image.addEventListener("load", () => {
@@ -234,7 +246,11 @@ function photo(item, index = 0) {
       wrapper.replaceChildren(viewport);
     }, { once: true });
   }
-  image.src = url;
+  // Tight source crops need the original pixels; a whole-image thumbnail could
+  // leave too little resolution for the visible garment. Native previews retain
+  // aspect ratio, transparency and color profiles, and share HA's image cache.
+  image.src = presentation === "detail" || object(crop)
+    ? url : nativePreviewURL(url, presentation === "thumbnail" ? 256 : 512);
   wrapper.append(image);
   return wrapper;
 }
@@ -388,6 +404,10 @@ async function loadInventory(append = false, { automatic = false } = {}) {
       if (!object(item) || typeof item.id !== "string" || typeof item.name !== "string") throw new APIError(200, "invalid_response");
       items.set(item.id, item);
       const card = itemCard(item);
+      if (!append && firstAddedButton === null) {
+        const image = card.querySelector("img");
+        if (image) { image.loading = "eager"; image.fetchPriority = "high"; }
+      }
       firstAddedButton ||= card.querySelector(".item-open");
       byId("item-grid").append(card);
     }
@@ -462,7 +482,7 @@ function gallery(item) {
   let selected = 0;
   const select = (index, focus = false) => {
     selected = (index + references.length) % references.length || 0;
-    const picture = photo(item, selected);
+    const picture = photo(item, selected, "detail");
     main.replaceChildren(picture);
     information.replaceChildren();
     const reference = references[selected];
@@ -500,7 +520,7 @@ function gallery(item) {
     references.forEach((reference, index) => {
       const button = element("button", "photo-thumbnail");
       button.type = "button"; button.setAttribute("aria-label", `Show photo ${index + 1}`);
-      const preview = photo(item, index);
+      const preview = photo(item, index, "thumbnail");
       const image = preview.querySelector("img");
       if (image) image.alt = "";
       button.append(preview);
