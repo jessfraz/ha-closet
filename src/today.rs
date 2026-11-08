@@ -845,7 +845,6 @@ mod tests {
             sku: None,
             purchase_source: Some("example-source-not-for-model".into()),
             images: Vec::new(),
-            condition_at_purchase: None,
             notes: vec!["example-note-not-for-model".into()],
             price: None,
             shop: None,

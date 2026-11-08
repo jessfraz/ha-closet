@@ -106,7 +106,6 @@ fn catalog() -> Vec<CatalogItem> {
             notes: Some("Reference in a different color".into()),
             crop: None,
         }],
-        condition_at_purchase: Some("Pre-owned".into()),
         notes: vec!["Fictional example".into()],
         price: Some(Price {
             amount: 50.0,
@@ -125,6 +124,43 @@ fn catalog() -> Vec<CatalogItem> {
 
 fn bytes(value: &impl Serialize) -> Vec<u8> {
     serde_json::to_vec(value).unwrap()
+}
+
+#[test]
+fn removed_condition_is_rejected_before_config_or_network_for_validate_and_sync() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let source = include_str!("fixtures/catalog-crop.json");
+    for condition in ["\"Lightly Worn\"", "null"] {
+        let legacy = source.replacen(
+            "\"images\":",
+            &format!("\"condition_at_purchase\":{condition},\"images\":"),
+            1,
+        );
+        for arguments in [
+            vec!["--token-file", "/does-not-exist", "inventory", "validate"],
+            vec![
+                "--token-file",
+                "/does-not-exist",
+                "inventory",
+                "sync",
+                "--dry-run",
+            ],
+        ] {
+            let output = call(
+                &arguments,
+                legacy.as_bytes(),
+                &[("CLOSET_API_URL", &origin)],
+            );
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Lightly Worn"));
+            failure(output, None, "invalid_catalog_json");
+        }
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]

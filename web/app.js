@@ -528,7 +528,6 @@ function renderDetail(item) {
   const values = [
     ["Category", item.category], ["Color", item.color], ["Size", item.size],
     ["Quantity", item.quantity], ["Material", item.material], ["SKU", item.sku],
-    ["Condition at purchase", item.condition_at_purchase],
   ];
   if (item.purchase_source) values.push(["Purchase source", item.purchase_source]);
   if (object(item.shop)) {

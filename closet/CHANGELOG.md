@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7
+
+- Remove purchase condition from the catalog and app. Existing databases upgrade
+  automatically without losing inventory, saved outfits or retry history.
+
 ## 0.1.6
 
 - Display faithful image crops without changing or hosting the original photo.

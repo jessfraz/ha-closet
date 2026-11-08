@@ -38,11 +38,11 @@ and reactivates IDs restored to the file. An empty snapshot requires an explicit
 allow-empty option. Invalid input, a stale revision or a conflicting retry key
 does not replace the catalog.
 
-Older JSON files must drop `current_ownership_confirmed`. Existing databases
-upgrade automatically and keep their inventory and retry records. A historical
-sync key whose original snapshot is no longer recoverable stays reserved and
-rejects mismatched retries. Preview the current file with a new key for a new
-sync.
+Older JSON files must drop `current_ownership_confirmed` and
+`condition_at_purchase`. Existing databases upgrade automatically and keep
+their inventory, saved outfits and retry records. A historical sync key whose
+original snapshot is no longer recoverable stays reserved and rejects
+mismatched retries. Preview the current file with a new key for a new sync.
 
 Product photos remain public HTTPS references, not an offline image archive.
 Broken photos show a placeholder. Product photos should match the item’s

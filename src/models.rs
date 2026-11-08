@@ -26,8 +26,6 @@ pub struct CatalogItem {
     pub purchase_source: Option<String>,
     pub images: Vec<ImageReference>,
     #[serde(default)]
-    pub condition_at_purchase: Option<String>,
-    #[serde(default)]
     pub notes: Vec<String>,
     #[serde(default)]
     pub price: Option<Price>,
@@ -292,7 +290,6 @@ pub fn validate_catalog(mut items: Vec<CatalogItem>) -> Result<ValidatedCatalog,
             ("material", &item.material),
             ("sku", &item.sku),
             ("purchase_source", &item.purchase_source),
-            ("condition_at_purchase", &item.condition_at_purchase),
         ] {
             check(
                 field,
@@ -634,7 +631,7 @@ mod tests {
         let catalog = parse_catalog(input).unwrap();
         assert_eq!(
             catalog.report().source_hash,
-            "6343da4793816f15138afa6c693be129a9cad5222e29f0f11d8aefe266e49cdc"
+            "b64f9c533a950bfdc864e348a386f62026b72d27f1c6fd801d2b8c2bb2868a61"
         );
         let item = &catalog.items()[0];
         assert_eq!(

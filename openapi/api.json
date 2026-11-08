@@ -34,11 +34,6 @@
             "nullable": true,
             "type": "string"
           },
-          "condition_at_purchase": {
-            "default": null,
-            "nullable": true,
-            "type": "string"
-          },
           "id": {
             "type": "string"
           },
@@ -339,11 +334,6 @@
             "type": "string"
           },
           "color": {
-            "nullable": true,
-            "type": "string"
-          },
-          "condition_at_purchase": {
-            "default": null,
             "nullable": true,
             "type": "string"
           },
@@ -862,7 +852,7 @@
   "info": {
     "description": "JSON-authoritative inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.1.6"
+    "version": "0.1.7"
   },
   "openapi": "3.0.3",
   "paths": {

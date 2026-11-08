@@ -151,6 +151,13 @@ const MIGRATION_REWRITE_SYNC_OPERATION_SQL: &str =
 const MIGRATION_RESULTS_SQL: &str = "SELECT local_date,json_remove(body,'$.inputs.ownership_scope') AS body,signatures FROM today_results";
 const MIGRATION_REWRITE_RESULT_SQL: &str =
     "UPDATE today_results SET body=?,signatures=? WHERE local_date=?";
+const CONDITION_PENDING_SQL: &str = "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='condition_removal_pending')";
+const CONDITION_ITEMS_SQL: &str = "SELECT id,body,archived FROM items ORDER BY id";
+const CONDITION_REWRITE_ITEM_SQL: &str = "UPDATE items SET body=? WHERE id=?";
+const CONDITION_GENERATIONS_SQL: &str = "SELECT id,basis FROM generations ORDER BY id";
+const CONDITION_REWRITE_GENERATION_SQL: &str = "UPDATE generations SET basis=? WHERE id=?";
+const CONDITION_OPERATIONS_SQL: &str =
+    "SELECT actor,key,request_hash,response FROM operations WHERE scope='sync'";
 
 // Frozen 0.1.2 shapes are confined to the one-time migration. The explicit
 // serializer preserves the old field order so its request digests remain
@@ -160,6 +167,7 @@ struct PreviousCatalogItem {
     #[serde(flatten)]
     item: CatalogItem,
     current_ownership_confirmed: bool,
+    condition_at_purchase: Option<String>,
 }
 impl Serialize for PreviousCatalogItem {
     fn serialize<S: serde::Serializer>(
@@ -184,7 +192,7 @@ impl Serialize for PreviousCatalogItem {
             &self.current_ownership_confirmed,
         )?;
         record.serialize_field("images", &item.images)?;
-        record.serialize_field("condition_at_purchase", &item.condition_at_purchase)?;
+        record.serialize_field("condition_at_purchase", &self.condition_at_purchase)?;
         record.serialize_field("notes", &item.notes)?;
         record.serialize_field("price", &item.price)?;
         record.serialize_field("shop", &item.shop)?;
@@ -230,6 +238,82 @@ fn remember_previous_snapshot(
     Ok(())
 }
 
+// Frozen 0.1.6 catalog shape. Missing differs from null: an earlier migration
+// in this startup may already have removed the field. Never invent a value to
+// translate a historical operation hash that cannot actually be recovered.
+#[derive(Deserialize)]
+struct ConditionCatalogItem {
+    #[serde(flatten)]
+    item: CatalogItem,
+    #[serde(default, deserialize_with = "previous_condition")]
+    condition_at_purchase: Option<Option<String>>,
+}
+fn previous_condition<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+impl Serialize for ConditionCatalogItem {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let item = &self.item;
+        let mut record = serializer.serialize_struct("CatalogItem", 15)?;
+        record.serialize_field("id", &item.id)?;
+        record.serialize_field("brand", &item.brand)?;
+        record.serialize_field("name", &item.name)?;
+        record.serialize_field("category", &item.category)?;
+        record.serialize_field("color", &item.color)?;
+        record.serialize_field("size", &item.size)?;
+        record.serialize_field("quantity", &item.quantity)?;
+        record.serialize_field("material", &item.material)?;
+        record.serialize_field("sku", &item.sku)?;
+        record.serialize_field("purchase_source", &item.purchase_source)?;
+        record.serialize_field("images", &item.images)?;
+        if let Some(condition) = &self.condition_at_purchase {
+            record.serialize_field("condition_at_purchase", condition)?;
+        }
+        record.serialize_field("notes", &item.notes)?;
+        record.serialize_field("price", &item.price)?;
+        record.serialize_field("shop", &item.shop)?;
+        record.end()
+    }
+}
+#[derive(Deserialize)]
+struct ConditionGenerationBasis {
+    date: String,
+    timezone: String,
+    config_hash: String,
+    items: Vec<ConditionCatalogItem>,
+}
+fn remember_condition_snapshot(
+    previous: &[ConditionCatalogItem],
+    snapshots: &mut BTreeMap<String, (String, String)>,
+) -> Result<()> {
+    if previous
+        .iter()
+        .any(|item| item.condition_at_purchase.is_none())
+    {
+        return Ok(());
+    }
+    let mut sorted: Vec<_> = previous.iter().collect();
+    sorted.sort_by(|left, right| left.item.id.cmp(&right.item.id));
+    let current: Vec<_> = sorted.iter().map(|previous| &previous.item).collect();
+    let source_hash = hash(&serde_json::to_vec(&current)?);
+    for allow_empty in [false, true] {
+        snapshots.insert(
+            hash(&serde_json::to_vec(&(&sorted, allow_empty))?),
+            (
+                hash(&serde_json::to_vec(&(&current, allow_empty))?),
+                source_hash.clone(),
+            ),
+        );
+    }
+    Ok(())
+}
+
 impl Store {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let options = SqliteConnectOptions::new()
@@ -247,12 +331,91 @@ impl Store {
         sqlx::migrate!("./migrations").run(&pool).await?;
         let store = Self { pool };
         store.remove_ownership_confirmation().await?;
+        store.remove_purchase_condition().await?;
         store.interrupt_running().await?;
         Ok(store)
     }
 
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+
+    async fn remove_purchase_condition(&self) -> Result<()> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let pending: bool = sqlx::query_scalar(CONDITION_PENDING_SQL)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !pending {
+            tx.commit().await?;
+            return Ok(());
+        }
+        let mut active = Vec::new();
+        for row in sqlx::query(CONDITION_ITEMS_SQL).fetch_all(&mut *tx).await? {
+            let previous: ConditionCatalogItem = serde_json::from_str(row.try_get("body")?)?;
+            sqlx::query(CONDITION_REWRITE_ITEM_SQL)
+                .bind(serde_json::to_string(&previous.item)?)
+                .bind(row.try_get::<String, _>("id")?)
+                .execute(&mut *tx)
+                .await?;
+            if !row.try_get::<bool, _>("archived")? {
+                active.push(previous);
+            }
+        }
+        let mut snapshots = BTreeMap::new();
+        remember_condition_snapshot(&active, &mut snapshots)?;
+        if state(&mut tx).await?.0 > 0 {
+            let current: Vec<_> = active.iter().map(|previous| &previous.item).collect();
+            sqlx::query(MIGRATION_REWRITE_STATE_SQL)
+                .bind(hash(&serde_json::to_vec(&current)?))
+                .execute(&mut *tx)
+                .await?;
+        }
+        for row in sqlx::query(CONDITION_GENERATIONS_SQL)
+            .fetch_all(&mut *tx)
+            .await?
+        {
+            let previous: ConditionGenerationBasis = serde_json::from_str(row.try_get("basis")?)?;
+            remember_condition_snapshot(&previous.items, &mut snapshots)?;
+            let basis = GenerationBasis {
+                date: previous.date,
+                timezone: previous.timezone,
+                config_hash: previous.config_hash,
+                items: previous
+                    .items
+                    .into_iter()
+                    .map(|previous| previous.item)
+                    .collect(),
+            };
+            sqlx::query(CONDITION_REWRITE_GENERATION_SQL)
+                .bind(serde_json::to_string(&basis)?)
+                .bind(row.try_get::<String, _>("id")?)
+                .execute(&mut *tx)
+                .await?;
+        }
+        for row in sqlx::query(CONDITION_OPERATIONS_SQL)
+            .fetch_all(&mut *tx)
+            .await?
+        {
+            let previous_hash: String = row.try_get("request_hash")?;
+            if let Some((request_hash, source_hash)) = snapshots.get(&previous_hash) {
+                let mut report: SyncReport = serde_json::from_str(row.try_get("response")?)?;
+                report.source_hash.clone_from(source_hash);
+                sqlx::query(MIGRATION_REWRITE_SYNC_OPERATION_SQL)
+                    .bind(request_hash)
+                    .bind(serde_json::to_string(&report)?)
+                    .bind(row.try_get::<String, _>("actor")?)
+                    .bind(row.try_get::<String, _>("key")?)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        // Condition never contributed to styling, Today inputs or signatures.
+        // Preserve those bodies and hashes byte-for-byte, including stale ones.
+        sqlx::query("DROP TABLE condition_removal_pending")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn remove_ownership_confirmation(&self) -> Result<()> {
@@ -1061,11 +1224,11 @@ mod tests {
         },
         store::{
             ACTIVE_ITEMS_SQL, BRANDS_SQL, CATEGORIES_SQL, COUNTS_SQL, CURRENT_GENERATION_SQL,
-            CURSOR_POSITION_SQL, GENERATION_BASIS_SQL, GENERATION_SQL, GenerationBasis, ITEM_SQL,
-            OPERATION_SQL, PreviousCatalogItem, PreviousScope, PreviousTodayRequest,
-            RUNNING_EXISTS_SQL, RUNNING_GENERATIONS_SQL, SCOPE_COUNT_SQL, STATE_SQL, Store,
-            StoreError, TODAY_RESULT_SQL, count_selection, hash, reconciliation, selection,
-            signature_selection, source_facets,
+            CURSOR_POSITION_SQL, ConditionCatalogItem, GENERATION_BASIS_SQL, GENERATION_SQL,
+            GenerationBasis, ITEM_SQL, OPERATION_SQL, PreviousCatalogItem, PreviousScope,
+            PreviousTodayRequest, RUNNING_EXISTS_SQL, RUNNING_GENERATIONS_SQL, SCOPE_COUNT_SQL,
+            STATE_SQL, Store, StoreError, TODAY_RESULT_SQL, count_selection, hash, reconciliation,
+            selection, signature_selection, source_facets,
         },
     };
 
@@ -1091,7 +1254,6 @@ mod tests {
                 _ => None,
             },
             images: Vec::new(),
-            condition_at_purchase: None,
             notes: Vec::new(),
             price: None,
             shop: index.is_multiple_of(4).then(|| Shop {
@@ -1131,6 +1293,7 @@ mod tests {
             .map(|(index, item)| PreviousCatalogItem {
                 item,
                 current_ownership_confirmed: index.is_multiple_of(2),
+                condition_at_purchase: Some("Example condition".into()),
             })
             .collect();
         for (index, item) in previous.iter().enumerate() {
@@ -1290,6 +1453,7 @@ mod tests {
         let previous = PreviousCatalogItem {
             item,
             current_ownership_confirmed: false,
+            condition_at_purchase: None,
         };
         let encoded = serde_json::to_vec(&vec![previous]).unwrap();
         assert_eq!(
@@ -1298,6 +1462,368 @@ mod tests {
         );
         let decoded: Vec<PreviousCatalogItem> = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded[0].item.id, "example-source");
+    }
+
+    #[test]
+    fn condition_serializer_matches_the_released_digest_without_guessing_missing_values() {
+        let item = parse_catalog(include_bytes!("../tests/fixtures/catalog-seasons.json"))
+            .unwrap()
+            .into_items()
+            .remove(0);
+        let previous = ConditionCatalogItem {
+            item,
+            condition_at_purchase: Some(None),
+        };
+        let encoded = serde_json::to_vec(&vec![previous]).unwrap();
+        assert_eq!(
+            hash(&encoded),
+            "6343da4793816f15138afa6c693be129a9cad5222e29f0f11d8aefe266e49cdc"
+        );
+        let decoded: Vec<ConditionCatalogItem> = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded[0].condition_at_purchase, Some(None));
+        let current = serde_json::to_vec(&decoded[0].item).unwrap();
+        let absent: ConditionCatalogItem = serde_json::from_slice(&current).unwrap();
+        assert_eq!(absent.condition_at_purchase, None);
+        let mut snapshots = BTreeMap::new();
+        crate::store::remember_condition_snapshot(&[absent], &mut snapshots).unwrap();
+        assert!(snapshots.is_empty());
+    }
+
+    async fn condition_database(path: &Path) -> Store {
+        let pool = sqlx::SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        let mut previous = sqlx::migrate!("./migrations");
+        previous.migrations = Cow::Owned(
+            previous
+                .iter()
+                .filter(|migration| migration.version <= 2)
+                .cloned()
+                .collect(),
+        );
+        previous.run(&pool).await.unwrap();
+        // A fresh 0.1.6 store consumed the ownership marker before use.
+        sqlx::query("DROP TABLE ownership_removal_pending")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let store = Store { pool };
+        let mut items: Vec<_> = (0..3).map(example).collect();
+        items[0].category = "clothing.dress".into();
+        let old: Vec<_> = items
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, item)| ConditionCatalogItem {
+                item,
+                condition_at_purchase: Some((index != 0).then(|| "Example condition".into())),
+            })
+            .collect();
+        for (key, count, revision) in [("historical", 3, 0), ("current", 2, 1)] {
+            let mut report = store
+                .sync(
+                    SyncRequest {
+                        items: items[..count].to_vec(),
+                        dry_run: false,
+                        allow_empty: false,
+                    },
+                    Some(revision),
+                    "example-owner",
+                    Some(key),
+                )
+                .await
+                .unwrap();
+            report.source_hash = hash(&serde_json::to_vec(&old[..count]).unwrap());
+            sqlx::query(
+                "UPDATE operations SET request_hash=?,response=? WHERE scope='sync' AND key=?",
+            )
+            .bind(hash(&serde_json::to_vec(&(&old[..count], false)).unwrap()))
+            .bind(serde_json::to_string(&report).unwrap())
+            .bind(key)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        let now = Utc::now();
+        let basis = GenerationBasis {
+            date: now.date_naive().to_string(),
+            timezone: "UTC".into(),
+            config_hash: "example-config".into(),
+            items: items.clone(),
+        };
+        let inputs = TodayRequest {
+            occasion: Occasion::Everyday,
+            weather_mode: WeatherMode::Ignored,
+        };
+        let generation = store
+            .reserve_generation(inputs.clone(), basis.clone(), "example-owner", "saved")
+            .await
+            .unwrap()
+            .generation;
+        store
+            .finish_generation(
+                &generation.id,
+                Ok(TodayResult {
+                    generation_id: generation.id.clone(),
+                    inputs: inputs.clone(),
+                    generated_at: now,
+                    expires_at: now + Duration::hours(6),
+                    freshness: Freshness::Ready,
+                    stale_reasons: Vec::new(),
+                    weather: None,
+                    suggestions: vec![Suggestion {
+                        label: "Example outfit".into(),
+                        item_ids: vec![items[0].id.clone(), items[1].id.clone()],
+                        advisory_reason: "An invented combination".into(),
+                        warnings: Vec::new(),
+                    }],
+                }),
+            )
+            .await
+            .unwrap();
+        store
+            .reserve_generation(inputs, basis, "example-owner", "running")
+            .await
+            .unwrap();
+        for previous in &old {
+            sqlx::query("UPDATE items SET body=? WHERE id=?")
+                .bind(serde_json::to_string(previous).unwrap())
+                .bind(&previous.item.id)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE catalog_state SET source_hash=? WHERE singleton=1")
+            .bind(hash(&serde_json::to_vec(&old[..2]).unwrap()))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE generations SET basis=json_set(basis,'$.items',json(?))")
+            .bind(serde_json::to_string(&old).unwrap())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let report = SyncReport {
+            catalog_revision: 1,
+            source_hash: "unrecoverable-source-hash".into(),
+            created: 1,
+            updated: 0,
+            archived: 0,
+            unchanged: 0,
+        };
+        sqlx::query("INSERT INTO operations (scope,actor,key,request_hash,response) VALUES ('sync','example-owner','unrecoverable','unrecoverable-request-hash',?)")
+            .bind(serde_json::to_string(&report).unwrap()).execute(&store.pool).await.unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn condition_upgrade_keeps_archives_today_and_recoverable_retry_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("condition.sqlite3");
+        let previous = condition_database(&path).await;
+        let saved_before: (String, String) =
+            sqlx::query_as("SELECT body,signatures FROM today_results")
+                .fetch_one(&previous.pool)
+                .await
+                .unwrap();
+        let generation_before: String =
+            sqlx::query_scalar("SELECT body FROM generations WHERE status='succeeded'")
+                .fetch_one(&previous.pool)
+                .await
+                .unwrap();
+        let today_operations_before: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT key,request_hash,resource_id FROM operations WHERE scope='today' ORDER BY key",
+        )
+        .fetch_all(&previous.pool)
+        .await
+        .unwrap();
+        previous.close().await;
+        let store = Store::open(&path).await.unwrap();
+        assert_eq!(store.counts().await.unwrap(), (2, 2, 1));
+        assert_eq!(store.item("example-0000").await.unwrap().revision, 1);
+        let archived = store.item("example-0002").await.unwrap();
+        assert!(archived.archived);
+        assert_eq!(archived.revision, 2);
+        let items = store.active_items().await.unwrap();
+        let request = || SyncRequest {
+            items: items.clone(),
+            dry_run: false,
+            allow_empty: false,
+        };
+        let replay = store
+            .sync(request(), Some(0), "example-owner", Some("current"))
+            .await
+            .unwrap();
+        assert_eq!(replay.catalog_revision, 2);
+        assert_eq!(
+            replay.source_hash,
+            parse_catalog(&serde_json::to_vec(&items).unwrap())
+                .unwrap()
+                .report()
+                .source_hash
+        );
+        let mut historical = items.clone();
+        historical.push(archived.catalog);
+        let replay_history = store
+            .sync(
+                SyncRequest {
+                    items: historical,
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(0),
+                "example-owner",
+                Some("historical"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay_history.catalog_revision, 1);
+        assert_eq!(
+            store
+                .sync(request(), Some(2), "example-owner", Some("new-key"))
+                .await
+                .unwrap()
+                .catalog_revision,
+            2
+        );
+        assert!(matches!(
+            store
+                .sync(request(), Some(2), "example-owner", Some("unrecoverable"))
+                .await,
+            Err(StoreError::Conflict("idempotency_conflict"))
+        ));
+        let original: (String,String) = sqlx::query_as("SELECT request_hash,json_extract(response,'$.source_hash') FROM operations WHERE key='unrecoverable'").fetch_one(&store.pool).await.unwrap();
+        assert_eq!(
+            original,
+            (
+                "unrecoverable-request-hash".into(),
+                "unrecoverable-source-hash".into()
+            )
+        );
+        let saved_after: (String, String) =
+            sqlx::query_as("SELECT body,signatures FROM today_results")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(saved_before, saved_after);
+        let generation_after: String =
+            sqlx::query_scalar("SELECT body FROM generations WHERE status='succeeded'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(generation_before, generation_after);
+        let today_operations_after: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT key,request_hash,resource_id FROM operations WHERE scope='today' ORDER BY key",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(today_operations_before, today_operations_after);
+        let now = Utc::now();
+        let today = store
+            .today(&now.date_naive().to_string(), "UTC", "example-config", now)
+            .await
+            .unwrap();
+        assert!(matches!(today.result.unwrap().freshness, Freshness::Ready));
+        assert_eq!(
+            today.generation.unwrap().status,
+            GenerationStatus::Interrupted
+        );
+        for (key, _, id) in today_operations_before {
+            let reservation = store
+                .reserve_generation(
+                    TodayRequest {
+                        occasion: Occasion::Everyday,
+                        weather_mode: WeatherMode::Ignored,
+                    },
+                    GenerationBasis {
+                        date: now.date_naive().to_string(),
+                        timezone: "UTC".into(),
+                        config_hash: "example-config".into(),
+                        items: items.clone(),
+                    },
+                    "example-owner",
+                    &key,
+                )
+                .await
+                .unwrap();
+            assert!(!reservation.fresh);
+            assert_eq!(reservation.generation.id, id);
+        }
+        let condition_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM (SELECT body AS document FROM items UNION ALL SELECT basis FROM generations) JOIN json_tree(document) WHERE key='condition_at_purchase'").fetch_one(&store.pool).await.unwrap();
+        assert_eq!(condition_count, 0);
+        assert!(
+            !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='condition_removal_pending')"
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
+        store.close().await;
+        let reopened = Store::open(&path).await.unwrap();
+        assert_eq!(
+            reopened
+                .sync(request(), Some(0), "example-owner", Some("current"))
+                .await
+                .unwrap(),
+            replay
+        );
+        reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn condition_upgrade_rolls_back_a_malformed_snapshot_and_can_resume() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("condition-retry.sqlite3");
+        let previous = condition_database(&path).await;
+        let saved: Vec<(String, String)> = sqlx::query_as("SELECT id,basis FROM generations")
+            .fetch_all(&previous.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE generations SET basis='invalid'")
+            .execute(&previous.pool)
+            .await
+            .unwrap();
+        previous.close().await;
+        assert!(matches!(
+            Store::open(&path).await,
+            Err(StoreError::Serialization(_))
+        ));
+        let mut connection =
+            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+                .await
+                .unwrap();
+        assert!(
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM condition_removal_pending)")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap()
+        );
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT json_type(body,'$.condition_at_purchase') IS NOT NULL FROM items LIMIT 1"
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap()
+        );
+        for (id, basis) in saved {
+            sqlx::query("UPDATE generations SET basis=? WHERE id=?")
+                .bind(basis)
+                .bind(id)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+        }
+        connection.close().await.unwrap();
+        let store = Store::open(&path).await.unwrap();
+        assert_eq!(store.counts().await.unwrap(), (2, 2, 1));
+        store.close().await;
     }
 
     #[tokio::test]
@@ -1686,7 +2212,7 @@ mod tests {
                 "migration generation rewrite",
                 sqlx::query(crate::store::MIGRATION_REWRITE_GENERATION_SQL)
                     .bind(generation_body)
-                    .bind(generation_basis)
+                    .bind(&generation_basis)
                     .bind("example-generation-10"),
             ),
             (
@@ -1718,6 +2244,34 @@ mod tests {
                     .bind(result_body)
                     .bind(result_signatures)
                     .bind(Utc::now().date_naive().to_string()),
+            ),
+            (
+                "condition migration pending marker",
+                sqlx::query(crate::store::CONDITION_PENDING_SQL),
+            ),
+            (
+                "condition migration catalog scan",
+                sqlx::query(crate::store::CONDITION_ITEMS_SQL),
+            ),
+            (
+                "condition migration item rewrite",
+                sqlx::query(crate::store::CONDITION_REWRITE_ITEM_SQL)
+                    .bind(serde_json::to_string(&example(4300)).unwrap())
+                    .bind("example-4300"),
+            ),
+            (
+                "condition migration generation scan",
+                sqlx::query(crate::store::CONDITION_GENERATIONS_SQL),
+            ),
+            (
+                "condition migration generation rewrite",
+                sqlx::query(crate::store::CONDITION_REWRITE_GENERATION_SQL)
+                    .bind(&generation_basis)
+                    .bind("example-generation-10"),
+            ),
+            (
+                "condition migration sync operation scan",
+                sqlx::query(crate::store::CONDITION_OPERATIONS_SQL),
             ),
         ] {
             let arguments = query.take_arguments().unwrap().unwrap();

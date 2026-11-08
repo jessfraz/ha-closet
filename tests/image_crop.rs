@@ -16,7 +16,7 @@ fn source_with_a_non_destructive_crop_is_valid_catalog_input() {
 }
 
 #[test]
-fn crops_round_trip_and_absent_crops_keep_the_previous_source_hash() {
+fn crops_round_trip_and_absent_crops_keep_the_current_canonical_shape() {
     let catalog = parse_catalog(include_bytes!("fixtures/catalog-crop.json")).unwrap();
     let mut items = catalog.into_items();
     let crop = ImageCrop {
@@ -29,13 +29,13 @@ fn crops_round_trip_and_absent_crops_keep_the_previous_source_hash() {
     let encoded = serde_json::to_vec(&items).unwrap();
     assert_eq!(parse_catalog(&encoded).unwrap().items(), items);
     items[0].images[0].crop = None;
-    // Produced by the v0.1.5 CLI from this same fictional image catalog.
+    // Canonical catalog digest after purchase-condition removal.
     assert_eq!(
         validate_catalog(items.clone())
             .unwrap()
             .report()
             .source_hash,
-        "f8ee7431a21b4d02d99120bbdab43b97083e1e9ff0376ec922e195351e893870"
+        "d9b2152750f96fe983c94c90185f54516045f8728e1dc057f123bfa3d60d801b"
     );
     let legacy = serde_json::to_vec(&items).unwrap();
     let decoded = parse_catalog(&legacy).unwrap();

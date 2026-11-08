@@ -84,6 +84,9 @@ async def test_inventory_paging_filters_and_read_only_detail(
             await expect(detail).to_be_visible()
             await expect(detail.locator("dt").filter(has_text="Size")).to_have_count(0)
             await expect(
+                detail.locator("dt").filter(has_text="Condition at purchase")
+            ).to_have_count(0)
+            await expect(
                 detail.get_by_text("A fictional catalog note.", exact=True)
             ).to_be_visible()
             await expect(

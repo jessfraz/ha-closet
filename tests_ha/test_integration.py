@@ -446,7 +446,7 @@ async def test_proxy_sync_accepts_valid_catalog_plus_request_envelope(
     """A valid near-1-MiB catalog still fits after sync adds its envelope."""
     records = [catalog_item(f"large-example-{index}") for index in range(4)]
     for record in records:
-        record.update(condition_at_purchase=None, price=None, shop=None)
+        record.update(price=None, shop=None)
         record["notes"] = ["x" * 2614 for _ in range(100)]
     # Match the Rust compact catalog size, leaving room for no more than 16 bytes.
     target_bytes = 1_048_560

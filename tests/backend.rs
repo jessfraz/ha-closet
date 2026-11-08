@@ -35,7 +35,6 @@ fn piece(id: &str, name: &str, category: &str) -> CatalogItem {
             notes: Some("Example reference, not an exact variant".into()),
             crop: None,
         }],
-        condition_at_purchase: Some("Example condition".into()),
         notes: vec!["An invented catalog record".into()],
         price: Some(Price {
             amount: 25.5,
@@ -163,6 +162,77 @@ fn the_actual_catalog_parser_preserves_details_and_rejects_unsafe_shapes() {
     let error = parse_catalog(unknown.as_bytes()).unwrap_err();
     assert_eq!(error.code, "invalid_catalog_json");
     assert!(!error.to_string().contains("unknown_field"));
+}
+
+#[tokio::test]
+async fn removed_condition_rejects_the_whole_http_snapshot_without_reserving_its_key() {
+    let app = App::new().await;
+    let initial = sync(catalog(), false);
+    let url = format!("{}/v1/inventory/sync", app.origin);
+    let response = app
+        .client
+        .post(&url)
+        .bearer_auth(OWNER)
+        .header("if-match", "\"0\"")
+        .header("idempotency-key", "initial")
+        .json(&initial)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = response.json::<SyncReport>().await.unwrap();
+    for (index, condition) in ["\"Lightly Worn\"", "null"].iter().enumerate() {
+        let mut changed = catalog();
+        changed[0].name = "A change that must not persist".into();
+        let legacy = serde_json::to_string(&sync(changed, false))
+            .unwrap()
+            .replacen(
+                "\"images\":",
+                &format!("\"condition_at_purchase\":{condition},\"images\":"),
+                1,
+            );
+        let key = format!("rejected-condition-{index}");
+        let rejected = app
+            .client
+            .post(&url)
+            .bearer_auth(OWNER)
+            .header("if-match", "\"1\"")
+            .header("idempotency-key", &key)
+            .header("content-type", "application/json")
+            .body(legacy)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert!(!rejected.text().await.unwrap().contains("Lightly Worn"));
+        let item = app
+            .client
+            .get(format!("{}/v1/items/example-dress", app.origin))
+            .bearer_auth(OWNER)
+            .send()
+            .await
+            .unwrap()
+            .json::<Item>()
+            .await
+            .unwrap();
+        assert_eq!(item.catalog, catalog().remove(0));
+        let retry = app
+            .client
+            .post(&url)
+            .bearer_auth(OWNER)
+            .header("if-match", "\"1\"")
+            .header("idempotency-key", &key)
+            .json(&initial)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        let unchanged = retry.json::<SyncReport>().await.unwrap();
+        assert_eq!(unchanged.catalog_revision, 1);
+        assert_eq!(unchanged.source_hash, report.source_hash);
+        assert_eq!(unchanged.unchanged, 3);
+    }
+    app.close().await;
 }
 
 #[test]
@@ -625,14 +695,8 @@ async fn actual_http_enforces_auth_preconditions_adapter_scope_and_etags() {
     assert_eq!(response.headers()["cache-control"], "no-store");
     assert_eq!(response.headers()["etag"], "\"1\"");
     assert_eq!(
-        response
-            .json::<Item>()
-            .await
-            .unwrap()
-            .catalog
-            .condition_at_purchase
-            .as_deref(),
-        Some("Example condition")
+        response.json::<Item>().await.unwrap().catalog.name,
+        "Jersey dress"
     );
     let response = app
         .client
