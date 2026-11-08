@@ -4,6 +4,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
@@ -36,6 +37,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ClosetConfigEntry) -> bo
     coordinator = ClosetCoordinator(hass, entry, client, str(integration.version))
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+    registry = er.async_get(hass)
+    obsolete_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry.entry_id}_confirmed_count"
+    )
+    if obsolete_id is not None:
+        obsolete = registry.async_get(obsolete_id)
+        if obsolete is not None and obsolete.config_entry_id == entry.entry_id:
+            registry.async_remove(obsolete_id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

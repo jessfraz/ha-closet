@@ -10,7 +10,6 @@
     "material": null,
     "sku": null,
     "purchase_source": "self_bought",
-    "current_ownership_confirmed": false,
     "images": [],
     "shop": {
       "id": "example-shop",

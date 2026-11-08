@@ -10,7 +10,6 @@
     "material": "Cotton jersey",
     "sku": null,
     "purchase_source": null,
-    "current_ownership_confirmed": true,
     "images": [],
     "notes": [
       "Fictional demonstration item."
@@ -34,7 +33,6 @@
     "material": "Cotton denim",
     "sku": null,
     "purchase_source": null,
-    "current_ownership_confirmed": true,
     "images": [],
     "notes": [
       "Fictional demonstration item."
@@ -57,7 +55,6 @@
     "material": "Leather",
     "sku": null,
     "purchase_source": "self_bought",
-    "current_ownership_confirmed": true,
     "images": [],
     "notes": [
       "Fictional demonstration item."
@@ -74,7 +71,6 @@
     "material": "Cashmere",
     "sku": null,
     "purchase_source": "self_bought",
-    "current_ownership_confirmed": false,
     "images": [],
     "notes": [
       "Fictional demonstration item."

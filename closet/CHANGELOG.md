@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- Remove ownership confirmation throughout the app. Inventory membership means
+  owned.
+- Hide missing sizes, compact the source badges, and load more items on scroll.
+- Remove the Unspecified source category and filter.
+- Require a shop or purchase source when validating and syncing a catalog.
+
 ## 0.1.2
 
 - Match phone header spacing and stacked footers across the apps.

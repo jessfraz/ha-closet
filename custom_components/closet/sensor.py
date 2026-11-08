@@ -15,11 +15,6 @@ DESCRIPTIONS = (
         key="item_count", translation_key="items", icon="mdi:hanger"
     ),
     SensorEntityDescription(
-        key="confirmed_count",
-        translation_key="confirmed",
-        icon="mdi:check-circle-outline",
-    ),
-    SensorEntityDescription(
         key="archived_count",
         translation_key="archived",
         icon="mdi:archive-outline",
@@ -64,7 +59,6 @@ class ClosetSensor(CoordinatorEntity[ClosetCoordinator], SensorEntity):
         data = self.coordinator.data
         self._attr_native_value = {
             "item_count": data.item_count,
-            "confirmed_count": data.confirmed_count,
             "archived_count": data.archived_count,
         }[self.entity_description.key]
 

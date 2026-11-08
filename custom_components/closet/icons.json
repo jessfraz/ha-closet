@@ -2,7 +2,6 @@
   "entity": {
     "sensor": {
       "items": {"default": "mdi:hanger"},
-      "confirmed": {"default": "mdi:check-circle-outline"},
       "archived": {"default": "mdi:archive-outline"}
     }
   }

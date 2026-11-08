@@ -9,9 +9,9 @@ use std::{
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use closet::models::{
-    FieldError, Freshness, Generation, GenerationStatus, Item, ItemsPage, Occasion, OwnershipScope,
-    Source, SyncReport, SyncRequest, System, TodayRequest, TodayResponse, ValidationError,
-    WeatherMode, parse_catalog, valid_id,
+    FieldError, Freshness, Generation, GenerationStatus, Item, ItemsPage, Occasion, Source,
+    SyncReport, SyncRequest, System, TodayRequest, TodayResponse, ValidationError, WeatherMode,
+    parse_catalog, valid_id,
 };
 use reqwest::{
     Client, Method, RequestBuilder, Url,
@@ -118,15 +118,13 @@ enum Items {
         brand: Option<String>,
         #[arg(long)]
         category: Option<String>,
-        /// Exact source key: shop:<id>, purchase:<value>, or unspecified.
+        /// Exact source key: shop:<id> or purchase:<value>.
         #[arg(long)]
         source: Option<Source>,
-        #[arg(long)]
-        confirmed_only: bool,
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: Option<u32>,
         /// Continue the applied query without repeating filters.
-        #[arg(long, conflicts_with_all = ["q", "brand", "category", "source", "confirmed_only"])]
+        #[arg(long, conflicts_with_all = ["q", "brand", "category", "source"])]
         page_token: Option<String>,
         #[arg(long, value_enum, default_value = "json")]
         format: Format,
@@ -148,8 +146,6 @@ enum Today {
     Generate {
         #[arg(long, default_value = "everyday", value_parser = parse_occasion)]
         occasion: Occasion,
-        #[arg(long, default_value = "all_inventory", value_parser = parse_ownership_scope)]
-        ownership_scope: OwnershipScope,
         #[arg(long, default_value = "required", value_parser = parse_weather_mode)]
         weather_mode: WeatherMode,
         #[arg(long, value_parser = parse_key)]
@@ -218,11 +214,6 @@ fn parse_occasion(value: &str) -> std::result::Result<Occasion, &'static str> {
     value
         .parse()
         .map_err(|_| "expected everyday, work, or dinner")
-}
-fn parse_ownership_scope(value: &str) -> std::result::Result<OwnershipScope, &'static str> {
-    value
-        .parse()
-        .map_err(|_| "expected all_inventory or confirmed_only")
 }
 fn parse_weather_mode(value: &str) -> std::result::Result<WeatherMode, &'static str> {
     value.parse().map_err(|_| "expected required or ignored")
@@ -511,7 +502,6 @@ async fn run(cli: Cli) -> Result<()> {
             brand,
             category,
             source,
-            confirmed_only,
             limit,
             page_token,
             format,
@@ -527,9 +517,6 @@ async fn run(cli: Cli) -> Result<()> {
                 if let Some(value) = value {
                     query.push((key, value));
                 }
-            }
-            if confirmed_only {
-                query.push(("confirmed_only", "true".to_owned()));
             }
             if let Some(limit) = limit {
                 query.push(("limit", limit.to_string()));
@@ -550,7 +537,6 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Today(Today::Generate {
             occasion,
-            ownership_scope,
             weather_mode,
             idempotency_key,
         }) => {
@@ -559,7 +545,6 @@ async fn run(cli: Cli) -> Result<()> {
                     .header("Idempotency-Key", idempotency_key)
                     .json(&TodayRequest {
                         occasion,
-                        ownership_scope,
                         weather_mode,
                     }),
             )
@@ -570,13 +555,13 @@ async fn run(cli: Cli) -> Result<()> {
 
 fn write_items_table(page: &ItemsPage) -> Result<()> {
     let mut writer = std::io::stdout().lock();
-    writeln!(writer, "ID\tBRAND\tITEM\tSIZE\tCOLOR\tOWNERSHIP")
+    writeln!(writer, "ID\tBRAND\tITEM\tSIZE\tCOLOR")
         .map_err(|_| Failure::local("output_failed"))?;
     for item in &page.items {
         let catalog = &item.catalog;
         writeln!(
             writer,
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             display_text(&catalog.id),
             catalog
                 .brand
@@ -593,12 +578,7 @@ fn write_items_table(page: &ItemsPage) -> Result<()> {
                 .color
                 .as_deref()
                 .map(display_text)
-                .unwrap_or_default(),
-            if catalog.current_ownership_confirmed {
-                "confirmed"
-            } else {
-                "unconfirmed"
-            }
+                .unwrap_or_default()
         )
         .map_err(|_| Failure::local("output_failed"))?;
     }
@@ -640,8 +620,8 @@ fn write_today_table(today: &TodayResponse) -> Result<()> {
         };
         writeln!(
             writer,
-            "Result: {freshness}; {} / {} / weather {}",
-            result.inputs.occasion, result.inputs.ownership_scope, result.inputs.weather_mode
+            "Result: {freshness}; {} / weather {}",
+            result.inputs.occasion, result.inputs.weather_mode
         )
         .map_err(|_| Failure::local("output_failed"))?;
         if !result.stale_reasons.is_empty() {

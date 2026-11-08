@@ -29,6 +29,8 @@ def source_records() -> list[JsonObjectType]:
             item["purchase_source"] = "self_bought"
         elif index < 94:
             item["purchase_source"] = "self_bought"
+        else:
+            item["purchase_source"] = "Example gift"
         if index >= 103:
             item["category"] = "footwear"
         records.append(item)
@@ -43,8 +45,17 @@ async def test_badges_filter_the_full_catalog_and_form_can_combine_sources(
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page()
-            await login(page, rust_backend)
+            await login(page, rust_backend, manual_paging=True)
             await expect(page.locator(".item-card")).to_have_count(50)
+            await expect(page.locator(".item-card .source-badge")).to_have_count(50)
+            assert set(
+                await page.locator(".item-card .source-badge").all_text_contents()
+            ) == {"Demo atelier", "Self-bought", "Example gift"}
+            await expect(
+                page.get_by_label("Source", exact=True)
+                .get_by_role("option")
+                .filter(has_text="Unspecified")
+            ).to_have_count(0)
             await page.get_by_label("Category", exact=True).select_option(
                 "clothing.top"
             )
@@ -100,10 +111,17 @@ async def test_badges_filter_the_full_catalog_and_form_can_combine_sources(
                 [
                     "All sources",
                     "Demo atelier (64)",
+                    "Example gift (12)",
                     "Self-bought (30)",
-                    "Unspecified (12)",
                 ]
             )
+            await page.get_by_label("Source", exact=True).select_option(
+                "purchase:Example gift"
+            )
+            await expect(page.locator(".item-card")).to_have_count(5)
+            assert set(
+                await page.locator(".item-card .source-badge").all_text_contents()
+            ) == {"Example gift"}
             await page.get_by_label("Source", exact=True).select_option("")
             await expect(page.locator("#inventory-count")).to_have_text(
                 "52 items · 106 in inventory"
@@ -136,7 +154,7 @@ async def test_new_badge_filter_cancels_old_source_page_without_duplicate_cards(
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page()
-            await login(page, rust_backend)
+            await login(page, rust_backend, manual_paging=True)
             await page.route("**/v1/items?**", delayed_source)
             await page.get_by_role(
                 "button", name="Show all items from Demo atelier", exact=True
@@ -225,7 +243,7 @@ async def test_load_more_uses_applied_query_until_search_is_submitted(
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page()
-            await login(page, rust_backend)
+            await login(page, rust_backend, manual_paging=True)
             await expect(page.locator(".item-card")).to_have_count(50)
             await page.get_by_label("Search", exact=True).fill("Example piece 000")
             await page.get_by_role("button", name="Load more", exact=True).click()
@@ -252,7 +270,7 @@ async def test_keyboard_paging_keeps_focus_until_the_last_page(
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page()
-            await login(page, rust_backend)
+            await login(page, rust_backend, manual_paging=True)
             await expect(page.locator(".item-card")).to_have_count(50)
             more = page.get_by_role("button", name="Load more", exact=True)
             await more.focus()

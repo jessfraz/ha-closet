@@ -57,22 +57,25 @@ async def connect(hass: HomeAssistant, backend: RustBackend) -> ClosetConfigEntr
 async def test_flow_counts_diagnostics_and_unload(
     hass: HomeAssistant, hass_client: ClientSessionGenerator, rust_backend: RustBackend
 ) -> None:
-    await rust_backend.sync([catalog_item(confirmed=True)])
+    await rust_backend.sync([catalog_item()])
     entry = await connect(hass, rust_backend)
     registry = er.async_get(hass)
     item_entity = registry.async_get_entity_id(
         "sensor", DOMAIN, f"{entry.entry_id}_item_count"
     )
-    confirmed = registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{entry.entry_id}_confirmed_count"
-    )
-    assert item_entity is not None and confirmed is not None
+    assert item_entity is not None
     item_state = hass.states.get(item_entity)
-    confirmed_state = hass.states.get(confirmed)
     assert item_state is not None and item_state.state == "1"
-    assert confirmed_state is not None and confirmed_state.state == "1"
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert diagnostics["item_count"] == 1
+    assert set(diagnostics) == {
+        "integration_version",
+        "available",
+        "backend_version",
+        "item_count",
+        "archived_count",
+        "today_configured",
+    }
     rendered = json.dumps(diagnostics)
     assert "example-tee" not in rendered
     assert "Example cotton tee" not in rendered
@@ -86,6 +89,42 @@ async def test_flow_counts_diagnostics_and_unload(
     await hass.async_block_till_done()
     reloaded_state = hass.states.get(item_entity)
     assert reloaded_state is not None and reloaded_state.state == "1"
+
+
+async def test_upgrade_removes_only_the_retired_entry_owned_sensor(
+    hass: HomeAssistant, rust_backend: RustBackend
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    entry = await connect(hass, rust_backend)
+    hass.config_entries.async_update_entry(entry, options={"preserved_setting": "keep"})
+    original_data = dict(entry.data)
+    registry = er.async_get(hass)
+    item_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry.entry_id}_item_count"
+    )
+    archived_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry.entry_id}_archived_count"
+    )
+    assert item_id is not None and archived_id is not None
+    registry.async_update_entity(item_id, name="Custom inventory total")
+    obsolete = registry.async_get_or_create(
+        "sensor", DOMAIN, f"{entry.entry_id}_confirmed_count", config_entry=entry
+    )
+    other = registry.async_get_or_create(
+        "sensor", DOMAIN, f"{entry.entry_id}_unrelated_metric", config_entry=entry
+    )
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert registry.async_get(obsolete.entity_id) is None
+    retained = registry.async_get(item_id)
+    assert retained is not None and retained.name == "Custom inventory total"
+    assert registry.async_get(archived_id) is not None
+    assert registry.async_get(other.entity_id) is not None
+    assert dict(entry.data) == original_data
+    assert dict(entry.options) == {"preserved_setting": "keep"}
+    state = hass.states.get(item_id)
+    assert state is not None and state.state == "1"
 
 
 async def test_admin_sync_and_untrusted_actor_headers(
@@ -170,6 +209,7 @@ async def test_proxy_filters_sources_and_returns_global_facets(
         "years": [],
     }
     records[2]["purchase_source"] = "self_bought"
+    records[3]["purchase_source"] = "Example gift"
     await rust_backend.sync(records)
     await connect(hass, rust_backend)
     client = await hass_client(hass_user_token)
@@ -185,7 +225,7 @@ async def test_proxy_filters_sources_and_returns_global_facets(
     } == {
         "shop:demo-atelier": 2,
         "purchase:self_bought": 1,
-        "unspecified": 1,
+        "purchase:Example gift": 1,
     }
     assert first["items"][0]["shop"]["season"] == "Spring/Summer"
     page = await client.get(
@@ -204,10 +244,77 @@ async def test_proxy_filters_sources_and_returns_global_facets(
         await client.get(f"{PREFIX}/items", params={"source": "purchase:self_bought"})
     ).json()
     assert [item["id"] for item in bought["items"]] == ["source-example-2"]
-    unspecified = await (
-        await client.get(f"{PREFIX}/items", params={"source": "unspecified"})
+    gifted = await (
+        await client.get(f"{PREFIX}/items", params={"source": "purchase:Example gift"})
     ).json()
-    assert [item["id"] for item in unspecified["items"]] == ["source-example-3"]
+    assert [item["id"] for item in gifted["items"]] == ["source-example-3"]
+    rejected = await client.get(f"{PREFIX}/items", params={"source": "unspecified"})
+    assert rejected.status == 400
+
+
+async def test_missing_source_is_rejected_offline_and_ha_sync_is_atomic(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    rust_backend: RustBackend,
+) -> None:
+    original = catalog_item("source-existing", name="Original example")
+    await rust_backend.sync([original])
+    await connect(hass, rust_backend)
+    changed = {**original, "name": "Changed example"}
+    missing = catalog_item("source-missing")
+    missing["purchase_source"] = None
+    records = [changed, missing]
+    backend_binary = await asyncio.to_thread(
+        Path(os.environ.get("CLOSET_TEST_BINARY", "target/debug/closet")).resolve
+    )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("CLOSET_", "HOME_ASSISTANT_", "SUPERVISOR"))
+    }
+    process = await asyncio.create_subprocess_exec(
+        str(backend_binary.with_name("ha-closet")),
+        "inventory",
+        "validate",
+        "--input",
+        "-",
+        env=environment,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(15):
+            output, error = await process.communicate(json.dumps(records).encode())
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+    assert process.returncode != 0
+    assert not output
+    diagnostic = json.loads(error)
+    assert diagnostic["status"] is None
+    assert diagnostic["error_code"] == "invalid_catalog"
+    assert any(
+        field["index"] == 1 and field["code"] == "source_required"
+        for field in diagnostic["errors"]
+    )
+    client = await hass_client()
+    validated = await client.post(f"{PREFIX}/inventory/validate", json=records)
+    assert validated.status == 400
+    assert (await validated.json())["error_code"] == "invalid_catalog"
+    rejected = await client.post(
+        f"{PREFIX}/inventory/sync",
+        json={"items": records, "dry_run": False, "allow_empty": False},
+        headers={"If-Match": '"1"', "Idempotency-Key": "missing-source-must-not-apply"},
+    )
+    assert rejected.status == 400
+    assert (await rejected.json())["error_code"] == "invalid_catalog"
+    projection = await (await client.get(f"{PREFIX}/items")).json()
+    assert projection["catalog_revision"] == 1
+    assert projection["total"] == 1
+    assert projection["items"][0]["id"] == "source-existing"
+    assert projection["items"][0]["name"] == "Original example"
 
 
 async def test_proxy_pages_maximum_escaped_filters_with_cursor_only(
@@ -218,9 +325,7 @@ async def test_proxy_pages_maximum_escaped_filters_with_cursor_only(
 ) -> None:
     """HTTP and the actual CLI page legal filters through the real HA bridge."""
     records = [
-        catalog_item(
-            "a" * 199 + suffix, name='"' * 512, category="a" * 200, confirmed=True
-        )
+        catalog_item("a" * 199 + suffix, name='"' * 512, category="a" * 200)
         for suffix in ("0", "1")
     ]
     for record in records:
@@ -238,7 +343,6 @@ async def test_proxy_pages_maximum_escaped_filters_with_cursor_only(
                 "brand": '"' * 1024,
                 "q": '"' * 256,
                 "category": "a" * 200,
-                "confirmed_only": "true",
             },
         ),
     ):
@@ -306,7 +410,6 @@ async def test_proxy_pages_maximum_escaped_filters_with_cursor_only(
         '"' * 256,
         "--category",
         "a" * 200,
-        "--confirmed-only",
     )
     code, output, error = await run_cli(*filters, "--limit", "1")
     assert code == 0, error
@@ -543,6 +646,10 @@ async def test_assist_reads_actual_inventory_and_respects_revoked_exposure(
         llm.ToolInput(tool_name="closet__query", tool_args={"q": "cotton"})
     )
     assert not result.error
+    items = result.data.get("items")
+    assert isinstance(items, list) and isinstance(items[0], dict)
+    assert "size" not in items[0]
+    assert "material" not in items[0]
     serialized = json.dumps(result.data)
     assert "example-tee" in serialized
     assert "excluded-example-provenance" not in serialized

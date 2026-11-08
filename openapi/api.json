@@ -39,9 +39,6 @@
             "nullable": true,
             "type": "string"
           },
-          "current_ownership_confirmed": {
-            "type": "boolean"
-          },
           "id": {
             "type": "string"
           },
@@ -75,6 +72,7 @@
             "nullable": true
           },
           "purchase_source": {
+            "description": "Catalog imports require either a purchase source or a shop.",
             "nullable": true,
             "type": "string"
           },
@@ -104,7 +102,6 @@
         },
         "required": [
           "category",
-          "current_ownership_confirmed",
           "id",
           "images",
           "name"
@@ -304,9 +301,6 @@
             "nullable": true,
             "type": "string"
           },
-          "current_ownership_confirmed": {
-            "type": "boolean"
-          },
           "id": {
             "type": "string"
           },
@@ -340,6 +334,7 @@
             "nullable": true
           },
           "purchase_source": {
+            "description": "Catalog imports require either a purchase source or a shop.",
             "nullable": true,
             "type": "string"
           },
@@ -374,7 +369,6 @@
         "required": [
           "archived",
           "category",
-          "current_ownership_confirmed",
           "id",
           "images",
           "name",
@@ -424,13 +418,6 @@
           "everyday",
           "work",
           "dinner"
-        ],
-        "type": "string"
-      },
-      "OwnershipScope": {
-        "enum": [
-          "all_inventory",
-          "confirmed_only"
         ],
         "type": "string"
       },
@@ -513,7 +500,7 @@
             "type": "string"
           },
           "source": {
-            "description": "`shop:<id>`, `purchase:<value>`, or `unspecified`.",
+            "description": "`shop:<id>` or `purchase:<value>`.",
             "type": "string"
           }
         },
@@ -627,10 +614,6 @@
             "format": "int64",
             "type": "integer"
           },
-          "confirmed_count": {
-            "format": "int64",
-            "type": "integer"
-          },
           "item_count": {
             "format": "int64",
             "type": "integer"
@@ -648,7 +631,6 @@
         "required": [
           "archived_count",
           "catalog_revision",
-          "confirmed_count",
           "item_count",
           "role",
           "today_configured",
@@ -666,14 +648,6 @@
               }
             ],
             "default": "everyday"
-          },
-          "ownership_scope": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/OwnershipScope"
-              }
-            ],
-            "default": "all_inventory"
           },
           "weather_mode": {
             "allOf": [
@@ -842,7 +816,7 @@
   "info": {
     "description": "JSON-authoritative inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.1.2"
+    "version": "0.1.3"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -1135,14 +1109,6 @@
           },
           {
             "in": "query",
-            "name": "confirmed_only",
-            "schema": {
-              "nullable": true,
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
             "name": "limit",
             "schema": {
               "format": "uint32",
@@ -1168,7 +1134,7 @@
             }
           },
           {
-            "description": "`shop:<id>`, `purchase:<value>`, or `unspecified`; omit for all sources.",
+            "description": "`shop:<id>` or `purchase:<value>`; omit for all sources.",
             "in": "query",
             "name": "source",
             "schema": {

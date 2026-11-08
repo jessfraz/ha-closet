@@ -119,7 +119,6 @@ def catalog_item(
     *,
     name: str = "Example cotton tee",
     category: str = "clothing.top",
-    confirmed: bool = False,
 ) -> JsonObjectType:
     """Invented catalog data, not a household or merchant fixture."""
     return {
@@ -132,8 +131,7 @@ def catalog_item(
         "quantity": 1,
         "material": None,
         "sku": None,
-        "purchase_source": None,
-        "current_ownership_confirmed": confirmed,
+        "purchase_source": "self_bought",
         "images": [],
         "notes": [],
     }

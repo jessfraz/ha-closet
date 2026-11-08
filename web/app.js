@@ -8,6 +8,10 @@ let view = "inventory";
 let nextPage = null;
 let listAbort = null;
 let listRevision = 0;
+let listLoading = false;
+let pageObserver = null;
+let autoPagingPaused = false;
+let listAutomatic = false;
 let todayRevision = 0;
 let pollTimer = null;
 let pollDeadline = 0;
@@ -111,8 +115,6 @@ function photo(item) {
 
 function qualifiers(item) {
   const values = [];
-  if (item.current_ownership_confirmed !== true) values.push("Ownership unconfirmed");
-  if (item.quantity === null) values.push("Quantity unknown");
   if (Array.isArray(item.images) && item.images.length) values.push("Reference photo");
   return values;
 }
@@ -123,13 +125,14 @@ function itemButton(item, compact = false) {
   button.setAttribute("aria-label", `View ${item.name}`);
   button.append(photo(item));
   button.append(element("span", "item-name", item.name));
-  if (!compact) button.append(element("span", "item-meta", `${item.size || "Size unknown"} · ${item.color || "Color unknown"}`));
+  const metadata = [item.size, item.color].filter((value) => value !== null && value !== undefined && value !== "");
+  if (!compact && metadata.length) button.append(element("span", "item-meta", metadata.join(" · ")));
   const labels = qualifiers(item);
   if (labels.length) button.append(element("span", "qualifier", labels.join(" · ")));
   const reference = Array.isArray(item.images) ? item.images[0] : null;
   if (object(reference) && reference.notes) button.append(element("span", "image-note", reference.notes));
   const description = [item.brand];
-  if (!compact) description.push(item.size || "Size unknown", item.color || "Color unknown");
+  if (!compact) description.push(...metadata);
   description.push(...labels);
   if (object(reference) && reference.notes) description.push(reference.notes);
   button.setAttribute("aria-description", description.filter(Boolean).join(" · "));
@@ -140,15 +143,16 @@ function itemButton(item, compact = false) {
 function sourceOf(item) {
   if (object(item.shop) && typeof item.shop.id === "string") return `shop:${item.shop.id}`;
   if (typeof item.purchase_source === "string") return `purchase:${item.purchase_source}`;
-  return "unspecified";
+  return null;
 }
 
 function sourceLabel(item) {
   const source = sourceOf(item);
+  if (source === null) return null;
   if (sourceLabels.has(source)) return sourceLabels.get(source);
   if (object(item.shop) && item.shop.label) return item.shop.label;
   if (item.purchase_source === "self_bought") return "Self-bought";
-  return item.purchase_source || "Unspecified";
+  return item.purchase_source || null;
 }
 
 function filterFromBadge(field, value, label) {
@@ -161,6 +165,12 @@ function filterFromBadge(field, value, label) {
   void loadInventory();
 }
 
+function sourceTone(source) {
+  let hash = 0;
+  for (const character of source) hash = (Math.imul(hash, 31) + character.codePointAt(0)) >>> 0;
+  return hash % 6;
+}
+
 function itemCard(item, compact = false) {
   const card = element("article", compact ? "item-piece" : "item-card");
   const badges = element("div", "item-badges");
@@ -169,14 +179,17 @@ function itemCard(item, compact = false) {
     button.type = "button";
     button.setAttribute("aria-label", accessibleLabel);
     button.title = accessibleLabel;
+    if (field === "source") button.classList.add(`source-tone-${sourceTone(value)}`);
     button.addEventListener("click", () => filterFromBadge(field, value, label));
     return button;
   };
   if (item.brand) badges.append(badge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
   const source = sourceOf(item);
   const label = sourceLabel(item);
-  sourceLabels.set(source, label);
-  badges.append(badge("source", source, label, `Show all items from ${label}`));
+  if (source !== null && label !== null) {
+    sourceLabels.set(source, label);
+    badges.append(badge("source", source, label, `Show all items from ${label}`));
+  }
   card.append(itemButton(item, compact), badges);
   return card;
 }
@@ -192,26 +205,53 @@ function fillOptions(select, values, allLabel) {
 
 function fillSources(facets) {
   const select = byId("source");
-  const selected = select.value;
+  let selected = select.value;
   const options = [];
   for (const facet of facets) {
     if (!object(facet) || typeof facet.source !== "string" || typeof facet.label !== "string" || !Number.isInteger(facet.count) || facet.count < 0) throw new APIError(200, "invalid_response");
     sourceLabels.set(facet.source, facet.label);
     options.push(new Option(`${facet.label} (${facet.count})`, facet.source));
   }
-  if (selected && !facets.some((facet) => facet.source === selected)) options.push(new Option(`${sourceLabels.get(selected) || "Unspecified"} (0)`, selected));
+  if (selected && !facets.some((facet) => facet.source === selected)) {
+    const label = sourceLabels.get(selected);
+    if (label) options.push(new Option(`${label} (0)`, selected));
+    else selected = "";
+  }
   options.sort((left, right) => left.label.localeCompare(right.label));
   select.replaceChildren(new Option("All sources", ""), ...options);
   select.value = selected;
 }
 
-async function loadInventory(append = false) {
-  if (append && !nextPage) return;
-  const moveFocus = append && document.activeElement === byId("load-more");
+function stopAutoPaging() {
+  pageObserver?.disconnect();
+  pageObserver = null;
+}
+
+function observeNextPage() {
+  stopAutoPaging();
+  if (view !== "inventory" || !system || document.hidden || listLoading || autoPagingPaused || !nextPage || typeof IntersectionObserver !== "function") return;
+  const revision = listRevision;
+  const observer = new IntersectionObserver((entries) => {
+    if (pageObserver !== observer || revision !== listRevision || !entries.some((entry) => entry.isIntersecting)) return;
+    stopAutoPaging();
+    void loadInventory(true, { automatic: true });
+  }, { rootMargin: "240px 0px" });
+  pageObserver = observer;
+  observer.observe(byId("page-sentinel"));
+}
+
+async function loadInventory(append = false, { automatic = false } = {}) {
+  if (append && (!nextPage || listLoading)) return;
+  const more = byId("load-more");
+  const moveFocus = !automatic && append && document.activeElement === more;
+  stopAutoPaging();
   listAbort?.abort();
   const controller = new AbortController();
   listAbort = controller;
   const revision = ++listRevision;
+  listLoading = true;
+  listAutomatic = automatic;
+  if (!append) autoPagingPaused = false;
   const query = new URLSearchParams({ limit: "50" });
   if (append) {
     // The cursor carries the applied filters, not any unsubmitted search text.
@@ -222,8 +262,10 @@ async function loadInventory(append = false) {
       if (value) query.set(key, value);
     }
   }
-  if (!append) { nextPage = null; byId("load-more").hidden = true; }
-  byId("load-more").disabled = true;
+  if (!append) { nextPage = null; more.hidden = true; byId("page-sentinel").hidden = true; }
+  more.setAttribute("aria-disabled", "true");
+  more.setAttribute("aria-busy", "true");
+  more.textContent = "Loading more…";
   try {
     const data = await request(`v1/items?${query}`, { signal: controller.signal });
     if (revision !== listRevision) return;
@@ -239,7 +281,9 @@ async function loadInventory(append = false) {
       byId("item-grid").append(card);
     }
     nextPage = typeof data.next_page === "string" ? data.next_page : null;
-    byId("load-more").hidden = nextPage === null;
+    autoPagingPaused = false;
+    more.hidden = nextPage === null;
+    byId("page-sentinel").hidden = nextPage === null;
     if (moveFocus && nextPage === null && document.activeElement === document.body) firstAddedButton?.focus();
     byId("inventory-empty").hidden = data.total !== 0;
     byId("inventory-empty").querySelector("h2").textContent = data.scope_total === 0 ? "No items yet" : "No matching items";
@@ -251,12 +295,18 @@ async function loadInventory(append = false) {
   } catch (error) {
     if (error.name !== "AbortError" && revision === listRevision) {
       const previous = byId("item-grid").childElementCount ? " The previous inventory result is still shown." : "";
-      notice(errorMessage(error) + previous);
+      autoPagingPaused = true;
+      notice(errorMessage(error) + previous + (automatic ? " Use Load more to try again." : ""));
     }
   } finally {
     if (revision === listRevision) {
-      byId("load-more").disabled = false;
-      if (moveFocus && nextPage !== null && document.activeElement === document.body) byId("load-more").focus();
+      listLoading = false;
+      listAutomatic = false;
+      more.removeAttribute("aria-disabled");
+      more.removeAttribute("aria-busy");
+      more.textContent = "Load more";
+      if (moveFocus && nextPage !== null && document.activeElement === document.body) more.focus();
+      observeNextPage();
     }
   }
 }
@@ -280,7 +330,6 @@ function openDetail(item) {
   const values = [
     ["Category", item.category], ["Color", item.color], ["Size", item.size],
     ["Quantity", item.quantity], ["Material", item.material], ["SKU", item.sku],
-    ["Ownership", item.current_ownership_confirmed ? "Confirmed" : "Unconfirmed"],
     ["Condition at purchase", item.condition_at_purchase],
   ];
   if (item.purchase_source) values.push(["Purchase source", item.purchase_source]);
@@ -298,7 +347,9 @@ function openDetail(item) {
     if (item.price.quantity_basis) values.push(["Quantity basis", item.price.quantity_basis]);
   }
   const definition = element("dl");
-  for (const [label, value] of values) definition.append(element("dt", "", label), element("dd", "", value === null || value === undefined || value === "" ? "Unknown" : value));
+  for (const [label, value] of values) {
+    if (value !== null && value !== undefined && value !== "") definition.append(element("dt", "", label), element("dd", "", value));
+  }
   const copy = element("div"); copy.append(definition);
   if (Array.isArray(item.notes) && item.notes.length) {
     const notes = element("div", "detail-notes");
@@ -313,12 +364,12 @@ function openDetail(item) {
 }
 
 function inputValues() {
-  return { occasion: byId("occasion").value, ownership_scope: byId("ownership").value, weather_mode: byId("weather-mode").value };
+  return { occasion: byId("occasion").value, weather_mode: byId("weather-mode").value };
 }
 
 function inputLabel(inputs) {
   const occasion = { everyday: "Everyday", work: "Work", dinner: "Dinner" }[inputs.occasion] || "Unknown occasion";
-  return `${occasion} · ${inputs.ownership_scope === "confirmed_only" ? "Confirmed only" : "Includes unconfirmed inventory"} · ${inputs.weather_mode === "ignored" ? "Weather ignored" : "Uses forecast"}`;
+  return `${occasion} · ${inputs.weather_mode === "ignored" ? "Weather ignored" : "Uses forecast"}`;
 }
 
 function generationMessage(generation) {
@@ -385,12 +436,11 @@ async function renderToday(data, revision) {
     const inputs = result?.inputs || generation?.inputs;
     if (object(inputs)) {
       byId("occasion").value = inputs.occasion;
-      byId("ownership").value = inputs.ownership_scope;
       byId("weather-mode").value = inputs.weather_mode;
     }
   }
   const running = generation?.status === "running";
-  for (const id of ["occasion", "ownership", "weather-mode"]) byId(id).disabled = running || pendingGeneration !== null;
+  for (const id of ["occasion", "weather-mode"]) byId(id).disabled = running || pendingGeneration !== null;
   byId("suggest").disabled = running || system?.role !== "owner";
   byId("suggest").textContent = pendingGeneration ? "Retry same request" : result ? "Suggest again" : "Suggest outfits";
   const message = pendingGeneration ? "The last request was not acknowledged. Retry the same request to recover it before changing the controls." : system?.role !== "owner" ? "Owner access is needed to request suggestions. Reading existing results is available." : generationMessage(generation);
@@ -411,7 +461,8 @@ async function renderToday(data, revision) {
       for (const item of records) pieces.append(itemCard(item, true));
       const copy = element("div", "suggestion-copy");
       copy.append(element("h3", "", suggestion.label || "Another combination"), element("p", "muted", suggestion.advisory_reason || ""));
-      if (Array.isArray(suggestion.warnings) && suggestion.warnings.length) copy.append(element("p", "qualifier", suggestion.warnings.join(" · ").replaceAll("_", " ")));
+      const warnings = Array.isArray(suggestion.warnings) ? suggestion.warnings.filter((warning) => warning !== "unknown_quantity") : [];
+      if (warnings.length) copy.append(element("p", "qualifier", warnings.join(" · ").replaceAll("_", " ")));
       card.append(pieces, copy); cards.append(card);
     }
   }
@@ -443,7 +494,7 @@ async function generate(event) {
     pendingGeneration = { key, inputs: inputValues() };
   }
   byId("suggest").disabled = true;
-  for (const id of ["occasion", "ownership", "weather-mode"]) byId(id).disabled = true;
+  for (const id of ["occasion", "weather-mode"]) byId(id).disabled = true;
   try {
     await request("v1/today/generate", { method: "POST", headers: { "Idempotency-Key": pendingGeneration.key }, body: JSON.stringify(pendingGeneration.inputs) });
     pendingGeneration = null; todayDraft = false; notice(); pollDeadline = 0;
@@ -455,7 +506,7 @@ async function generate(event) {
     notice(pendingGeneration ? "The request was not acknowledged. Retry the same request to recover its result without starting another attempt." : errorMessage(error));
     byId("suggest").disabled = false;
     byId("suggest").textContent = pendingGeneration ? "Retry same request" : "Suggest outfits";
-    if (!pendingGeneration) for (const id of ["occasion", "ownership", "weather-mode"]) byId(id).disabled = false;
+    if (!pendingGeneration) for (const id of ["occasion", "weather-mode"]) byId(id).disabled = false;
   }
 }
 
@@ -475,7 +526,9 @@ async function connect() {
 
 function selectView(next) {
   todayRevision += 1;
+  stopAutoPaging();
   view = next;
+  if (view !== "inventory" && listAutomatic) listAbort?.abort();
   byId("inventory").hidden = view !== "inventory";
   byId("today").hidden = view !== "today";
   byId("inventory-tab").setAttribute("aria-pressed", String(view === "inventory"));
@@ -483,6 +536,7 @@ function selectView(next) {
   clearTimeout(pollTimer);
   notice();
   if (view === "today") { pollDeadline = 0; void loadToday(); }
+  else observeNextPage();
 }
 
 byId("login").addEventListener("submit", async (event) => {
@@ -505,6 +559,13 @@ byId("today-tab").addEventListener("click", () => selectView("today"));
 byId("close-detail").addEventListener("click", () => byId("detail").close());
 byId("generate").addEventListener("submit", generate);
 byId("generate").addEventListener("change", () => { todayDraft = true; byId("today-input-note").hidden = !lastToday?.result || JSON.stringify(inputValues()) === JSON.stringify(lastToday.result.inputs); });
-document.addEventListener("visibilitychange", () => { clearTimeout(pollTimer); if (!document.hidden && view === "today" && system) void loadToday(); });
-window.addEventListener("pagehide", () => { clearTimeout(pollTimer); listAbort?.abort(); });
+document.addEventListener("visibilitychange", () => {
+  clearTimeout(pollTimer);
+  stopAutoPaging();
+  if (document.hidden && listAutomatic) listAbort?.abort();
+  if (!document.hidden && view === "today" && system) void loadToday();
+  if (!document.hidden && view === "inventory") observeNextPage();
+});
+window.addEventListener("pagehide", () => { clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); });
+window.addEventListener("pageshow", () => observeNextPage());
 connect().catch((error) => { if (error instanceof APIError && error.status === 401) byId("login").hidden = false; else notice(errorMessage(error)); });

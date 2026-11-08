@@ -27,7 +27,6 @@ _LIST_QUERY = {
     "brand",
     "category",
     "source",
-    "confirmed_only",
     "limit",
     "page_token",
 }

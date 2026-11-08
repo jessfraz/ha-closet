@@ -10,8 +10,13 @@ from playwright.async_api import Page, Request, Route, async_playwright, expect
 from tests_ha.conftest import HAProtocol, RustBackend, catalog_item
 
 
-async def login(page: Page, backend: RustBackend) -> None:
+async def login(
+    page: Page, backend: RustBackend, *, manual_paging: bool = False
+) -> None:
     """Use the real standalone connection form, without storing a browser token."""
+    if manual_paging:
+        # Exercise the accessible fallback when the native enhancement is absent.
+        await page.add_init_script("delete globalThis.IntersectionObserver;")
     await page.goto(backend.origin)
     await page.get_by_label("API token", exact=True).fill(backend.owner_token)
     await page.get_by_role("button", name="Connect", exact=True).click()
@@ -45,7 +50,7 @@ async def test_inventory_paging_filters_and_read_only_detail(
         try:
             page = await browser.new_page()
             await page.route("https://example.invalid/**", lambda route: route.abort())
-            await login(page, rust_backend)
+            await login(page, rust_backend, manual_paging=True)
             await expect(page.locator(".item-card")).to_have_count(50)
             await page.get_by_role("button", name="Load more", exact=True).click()
             await expect(page.locator(".item-card")).to_have_count(52)
@@ -70,16 +75,15 @@ async def test_inventory_paging_filters_and_read_only_detail(
             await expect(
                 page.get_by_role("button", name="View Example piece 051", exact=True)
             ).to_have_accessible_description(
-                "Second example label · Size unknown · Cool white · "
-                "Ownership unconfirmed · Reference photo · Different-color reference."
+                "Second example label · Cool white · "
+                "Reference photo · Different-color reference."
             )
             await page.get_by_role(
                 "button", name="View Example piece 051", exact=True
             ).click()
             detail = page.get_by_role("dialog", name="Example piece 051")
             await expect(detail).to_be_visible()
-            await expect(detail.get_by_text("Ownership unconfirmed")).to_have_count(0)
-            await expect(detail.get_by_text("Unconfirmed", exact=True)).to_be_visible()
+            await expect(detail.locator("dt").filter(has_text="Size")).to_have_count(0)
             await expect(
                 detail.get_by_text("A fictional catalog note.", exact=True)
             ).to_be_visible()
@@ -149,14 +153,116 @@ async def test_shell_and_item_controls_fit_mobile_and_dark_mode(
             ).all():
                 box = await control.bounding_box()
                 assert box is not None
-                assert box["height"] >= 44
-                assert box["width"] >= 44
+                minimum = (
+                    26
+                    if "item-badge" in (await control.get_attribute("class") or "")
+                    else 44
+                )
+                assert box["height"] >= minimum
+                assert box["width"] >= minimum
             await expect(page.locator("#app-version")).to_have_text(version)
             await expect(page.get_by_text("Connected", exact=True)).to_be_visible()
+            if width <= 620:
+                header = await page.locator(".app-header").bounding_box()
+                wordmark = await page.locator(".wordmark").bounding_box()
+                refresh = await page.get_by_role(
+                    "button", name="Refresh", exact=True
+                ).bounding_box()
+                assert header is not None and header["height"] == 79
+                assert wordmark is not None and wordmark["x"] == 20
+                assert (
+                    refresh is not None
+                    and refresh["x"] + refresh["width"] == width - 20
+                )
+                footer_rows = []
+                for row in await page.locator(".app-footer > p, .app-footer > a").all():
+                    box = await row.bounding_box()
+                    assert box is not None and box["x"] == 20
+                    footer_rows.append(box["y"])
+                assert footer_rows[0] < footer_rows[1] < footer_rows[2]
             await page.screenshot(
                 path=str(tmp_path / f"inventory-{width}-{theme}.png"), full_page=True
             )
             assert not errors
+        finally:
+            await browser.close()
+
+
+async def test_optional_item_facts_are_omitted_when_absent(
+    rust_backend: RustBackend,
+) -> None:
+    minimal = catalog_item("example-minimal", name="Example minimal item")
+    minimal.update(color=None, quantity=None)
+    sized = catalog_item("example-sized", name="Example sized item")
+    sized.update(size="M", color="Blue", quantity=2)
+    await rust_backend.sync([minimal, sized])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            card = page.locator(".item-card").filter(
+                has=page.get_by_role(
+                    "button", name="View Example minimal item", exact=True
+                )
+            )
+            await expect(card.locator(".item-meta")).to_have_count(0)
+            await expect(card.locator(".qualifier")).to_have_count(0)
+            button = card.get_by_role(
+                "button", name="View Example minimal item", exact=True
+            )
+            await expect(button).to_have_accessible_description("Example label")
+            await button.click()
+            detail = page.get_by_role("dialog", name="Example minimal item")
+            await expect(detail.locator("dt")).to_have_text(
+                ["Category", "Purchase source"]
+            )
+            await detail.get_by_role("button", name="Close item details").click()
+            sized_button = page.get_by_role(
+                "button", name="View Example sized item", exact=True
+            )
+            await expect(sized_button).to_have_accessible_description(
+                "Example label · M · Blue"
+            )
+            await sized_button.click()
+            detail = page.get_by_role("dialog", name="Example sized item")
+            await expect(detail.locator("dt")).to_have_text(
+                ["Category", "Color", "Size", "Quantity", "Purchase source"]
+            )
+            await expect(detail.get_by_text("M", exact=True)).to_be_visible()
+            await expect(detail.get_by_text("2", exact=True)).to_be_visible()
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("rust_backend", [True], indirect=True)
+async def test_today_omits_absent_item_facts_and_metadata_notices(
+    rust_backend: RustBackend,
+) -> None:
+    records = [
+        catalog_item("example-top"),
+        catalog_item("example-jeans", category="clothing.jeans"),
+        catalog_item("example-flats", category="footwear"),
+    ]
+    for record in records:
+        record.update(size=None, color=None, quantity=None)
+    await rust_backend.sync(records)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Today", exact=True).click()
+            await expect(
+                page.locator(".today-controls").get_by_role("combobox")
+            ).to_have_count(2)
+            await page.get_by_role("button", name="Suggest outfits", exact=True).click()
+            await expect(page.locator(".pieces .item-open")).to_have_count(3)
+            await expect(page.locator(".pieces .item-meta")).to_have_count(0)
+            await expect(page.locator(".pieces .qualifier")).to_have_count(0)
+            await expect(page.locator(".suggestion-copy .qualifier")).to_have_count(0)
+            for item in await page.locator(".pieces .item-open").all():
+                await expect(item).to_have_accessible_description("Example label")
         finally:
             await browser.close()
 
@@ -354,7 +460,6 @@ async def test_uncertain_gateway_reply_retries_the_accepted_generation(
                 == attempts[1].post_data_json
                 == {
                     "occasion": "dinner",
-                    "ownership_scope": "all_inventory",
                     "weather_mode": "ignored",
                 }
             )

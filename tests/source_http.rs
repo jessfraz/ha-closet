@@ -9,6 +9,7 @@ use closet::{
 };
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
 const OWNER: &str = "example-source-test-credential";
 const SHOP: &str = "shop:example-shop";
@@ -99,7 +100,6 @@ async fn source_filters_page_the_full_catalog_and_keep_global_active_facets() {
     let other_shop = input[6].shop.as_mut().unwrap();
     other_shop.id = "example-second-shop".into();
     other_shop.label = "Example pop-up".into();
-    input[2].current_ownership_confirmed = true;
     input[2].category = "footwear.shoes".into();
     input[2].brand = Some("Example second label".into());
     store
@@ -181,7 +181,6 @@ async fn source_filters_page_the_full_catalog_and_keep_global_active_facets() {
         .bearer_auth(OWNER)
         .query(&[
             ("source", SHOP),
-            ("confirmed_only", "true"),
             ("category", "footwear"),
             ("brand", "Example second label"),
         ])
@@ -197,9 +196,9 @@ async fn source_filters_page_the_full_catalog_and_keep_global_active_facets() {
 
     let gift = input.remove(5);
     input.push(piece(
-        "example-unspecified",
-        "G unknown source",
-        None,
+        "example-exchange",
+        "G exchanged piece",
+        Some("Example exchange"),
         false,
     ));
     store
@@ -215,23 +214,23 @@ async fn source_filters_page_the_full_catalog_and_keep_global_active_facets() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    let unspecified = client
+    let exchanged = client
         .get(&endpoint)
         .bearer_auth(OWNER)
-        .query(&[("source", "unspecified")])
+        .query(&[("source", "purchase:Example exchange")])
         .send()
         .await
         .unwrap()
         .json::<WirePage>()
         .await
         .unwrap();
-    assert_eq!((unspecified.total, unspecified.scope_total), (1, 7));
-    assert_eq!(unspecified.items[0].catalog.id, "example-unspecified");
+    assert_eq!((exchanged.total, exchanged.scope_total), (1, 7));
+    assert_eq!(exchanged.items[0].catalog.id, "example-exchange");
     assert_eq!(
-        facets(&unspecified).get("unspecified"),
-        Some(&("Unspecified", 1))
+        facets(&exchanged).get("purchase:Example exchange"),
+        Some(&("Example exchange", 1))
     );
-    assert!(!facets(&unspecified).contains_key("purchase:Example gift / café"));
+    assert!(!facets(&exchanged).contains_key("purchase:Example gift / café"));
 
     input.push(gift);
     store
@@ -287,6 +286,7 @@ async fn source_queries_reject_invalid_keys_and_bind_values_literally() {
         "shop",
         "shop:",
         "purchase:",
+        "unspecified",
         "unspecified:any",
         "Shop:example",
         "all",
@@ -327,6 +327,122 @@ async fn source_queries_reject_invalid_keys_and_bind_values_literally() {
 }
 
 #[tokio::test]
+async fn legacy_sourceless_rows_remain_readable_without_a_source_facet() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("legacy.sqlite3");
+    let store = Store::open(&path).await.unwrap();
+    let input = vec![
+        piece(
+            "example-legacy",
+            "Legacy piece",
+            Some("Example exchange"),
+            false,
+        ),
+        piece("example-shop", "Shop piece", None, true),
+    ];
+    store
+        .sync(snapshot(input.clone()), Some(0), "owner", Some("initial"))
+        .await
+        .unwrap();
+    let options = SqliteConnectOptions::new().filename(&path);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    // Seed the persisted shape accepted before source became required. New
+    // imports go through the validator and cannot create this legacy state.
+    let mut legacy = input[0].clone();
+    legacy.purchase_source = None;
+    sqlx::query("UPDATE items SET body=? WHERE id=?")
+        .bind(serde_json::to_string(&legacy).unwrap())
+        .bind(&legacy.id)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let context = Arc::new(api::Context::new(store.clone(), OWNER));
+    let server = api::start("127.0.0.1:0".parse().unwrap(), context.clone()).unwrap();
+    let endpoint = format!("http://{}/v1/items", server.local_addr());
+    let client = Client::new();
+    let all = client
+        .get(&endpoint)
+        .bearer_auth(OWNER)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<WirePage>()
+        .await
+        .unwrap();
+    assert_eq!((all.total, all.scope_total, all.items.len()), (2, 2, 2));
+    assert_eq!(facets(&all), BTreeMap::from([(SHOP, ("Example shop", 1))]));
+    assert_eq!(
+        all.items
+            .iter()
+            .find(|item| item.catalog.id == legacy.id)
+            .unwrap()
+            .catalog,
+        legacy
+    );
+    let detail = client
+        .get(format!("{endpoint}/{}", legacy.id))
+        .bearer_auth(OWNER)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<Item>()
+        .await
+        .unwrap();
+    assert_eq!(detail.catalog, legacy);
+    let filtered = client
+        .get(&endpoint)
+        .bearer_auth(OWNER)
+        .query(&[("source", SHOP)])
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<WirePage>()
+        .await
+        .unwrap();
+    assert_eq!((filtered.total, filtered.scope_total), (1, 2));
+    assert_eq!(filtered.items[0].catalog.id, "example-shop");
+
+    let mut second_legacy = input[1].clone();
+    second_legacy.shop = None;
+    sqlx::query("UPDATE items SET body=? WHERE id=?")
+        .bind(serde_json::to_string(&second_legacy).unwrap())
+        .bind(&second_legacy.id)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let all_legacy = client
+        .get(&endpoint)
+        .bearer_auth(OWNER)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<WirePage>()
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            all_legacy.total,
+            all_legacy.scope_total,
+            all_legacy.items.len()
+        ),
+        (2, 2, 2)
+    );
+    assert!(all_legacy.facets.sources.is_empty());
+    connection.close().await.unwrap();
+    server.close().await.unwrap();
+    context.shutdown().await.unwrap();
+    store.close().await;
+}
+
+#[tokio::test]
 async fn source_cursor_boundaries_roundtrip_within_home_assistant_request_lines() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().join("source.sqlite3"))
@@ -347,7 +463,6 @@ async fn source_cursor_boundaries_roundtrip_within_home_assistant_request_lines(
     let mut first = piece(&first_id, &name, Some(&purchase), false);
     first.brand = Some(brand.clone());
     first.category = category.clone();
-    first.current_ownership_confirmed = true;
     let mut second = first.clone();
     second.id = second_id.clone();
     store
@@ -367,7 +482,6 @@ async fn source_cursor_boundaries_roundtrip_within_home_assistant_request_lines(
             ("brand", brand.as_str()),
             ("q", search.as_str()),
             ("category", category.as_str()),
-            ("confirmed_only", "true"),
             ("limit", "1"),
         ],
     ] {

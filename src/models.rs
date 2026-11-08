@@ -22,8 +22,8 @@ pub struct CatalogItem {
     pub quantity: Option<u32>,
     pub material: Option<String>,
     pub sku: Option<String>,
+    /// Catalog imports require either a purchase source or a shop.
     pub purchase_source: Option<String>,
-    pub current_ownership_confirmed: bool,
     pub images: Vec<ImageReference>,
     #[serde(default)]
     pub condition_at_purchase: Option<String>,
@@ -35,13 +35,13 @@ pub struct CatalogItem {
     pub shop: Option<Shop>,
 }
 impl CatalogItem {
-    pub fn source(&self) -> Source {
+    pub fn source(&self) -> Option<Source> {
         if let Some(shop) = &self.shop {
-            Source::Shop(shop.id.clone())
-        } else if let Some(purchase) = &self.purchase_source {
-            Source::Purchase(purchase.clone())
+            Some(Source::Shop(shop.id.clone()))
         } else {
-            Source::Unspecified
+            self.purchase_source
+                .as_ref()
+                .map(|purchase| Source::Purchase(purchase.clone()))
         }
     }
 }
@@ -96,13 +96,12 @@ pub enum ShopSeason {
     FallWinter,
 }
 
-/// A derived source key: `shop:<id>`, `purchase:<value>`, or `unspecified`.
+/// A derived source key: `shop:<id>` or `purchase:<value>`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(try_from = "String", into = "String")]
 pub enum Source {
     Shop(String),
     Purchase(String),
-    Unspecified,
 }
 impl JsonSchema for Source {
     fn schema_name() -> String {
@@ -123,7 +122,6 @@ impl Source {
         match self {
             Self::Shop(id) => valid_text(id, 200),
             Self::Purchase(value) => valid_text(value, 1024),
-            Self::Unspecified => true,
         }
     }
 }
@@ -131,9 +129,7 @@ impl FromStr for Source {
     type Err = &'static str;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let source = if value == "unspecified" {
-            Self::Unspecified
-        } else if let Some(id) = value.strip_prefix("shop:") {
+        let source = if let Some(id) = value.strip_prefix("shop:") {
             Self::Shop(id.into())
         } else if let Some(purchase) = value.strip_prefix("purchase:") {
             Self::Purchase(purchase.into())
@@ -164,14 +160,13 @@ impl fmt::Display for Source {
         match self {
             Self::Shop(id) => write!(output, "shop:{id}"),
             Self::Purchase(value) => write!(output, "purchase:{value}"),
-            Self::Unspecified => output.write_str("unspecified"),
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SourceFacet {
-    /// `shop:<id>`, `purchase:<value>`, or `unspecified`.
+    /// `shop:<id>` or `purchase:<value>`.
     pub source: Source,
     pub label: String,
     pub count: i64,
@@ -278,6 +273,11 @@ pub fn validate_catalog(mut items: Vec<CatalogItem>) -> Result<ValidatedCatalog,
                 "invalid_text",
             );
         }
+        check(
+            "purchase_source",
+            item.shop.is_some() || item.purchase_source.is_some(),
+            "source_required",
+        );
         check(
             "quantity",
             item.quantity != Some(0),
@@ -417,7 +417,6 @@ pub struct ItemFilters {
     pub brand: Option<String>,
     pub category: Option<String>,
     pub source: Option<Source>,
-    pub confirmed_only: Option<bool>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -425,9 +424,8 @@ pub struct ListQuery {
     pub q: Option<String>,
     pub brand: Option<String>,
     pub category: Option<String>,
-    /// `shop:<id>`, `purchase:<value>`, or `unspecified`; omit for all sources.
+    /// `shop:<id>` or `purchase:<value>`; omit for all sources.
     pub source: Option<Source>,
-    pub confirmed_only: Option<bool>,
     pub limit: Option<u32>,
     pub page_token: Option<String>,
 }
@@ -438,7 +436,6 @@ impl ListQuery {
             brand: self.brand.clone(),
             category: self.category.clone(),
             source: self.source.clone(),
-            confirmed_only: self.confirmed_only,
         }
     }
 }
@@ -487,7 +484,6 @@ pub struct System {
     pub role: AccessRole,
     pub catalog_revision: i64,
     pub item_count: i64,
-    pub confirmed_count: i64,
     pub archived_count: i64,
     pub today_configured: bool,
 }
@@ -511,7 +507,6 @@ macro_rules! choice {
     };
 }
 choice!(Occasion, Everyday, {Everyday => "everyday", Work => "work", Dinner => "dinner"});
-choice!(OwnershipScope, AllInventory, {AllInventory => "all_inventory", ConfirmedOnly => "confirmed_only"});
 choice!(WeatherMode, Required, {Required => "required", Ignored => "ignored"});
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -519,8 +514,6 @@ choice!(WeatherMode, Required, {Required => "required", Ignored => "ignored"});
 pub struct TodayRequest {
     #[serde(default)]
     pub occasion: Occasion,
-    #[serde(default)]
-    pub ownership_scope: OwnershipScope,
     #[serde(default)]
     pub weather_mode: WeatherMode,
 }
@@ -604,13 +597,12 @@ mod tests {
     use crate::models::{ShopSeason, Source, parse_catalog};
 
     #[test]
-    fn typed_seasons_preserve_the_released_catalog_wire_shape_and_hash() {
+    fn typed_seasons_preserve_the_catalog_wire_shape_and_hash() {
         let input = include_bytes!("../tests/fixtures/catalog-seasons.json");
         let catalog = parse_catalog(input).unwrap();
-        // Captured with the released 0.1.0 binary, before String became ShopSeason.
         assert_eq!(
             catalog.report().source_hash,
-            "4f82c38e155797950e58699ad3d33a7dd0a297d0681b73be51239cdec28be9cc"
+            "6343da4793816f15138afa6c693be129a9cad5222e29f0f11d8aefe266e49cdc"
         );
         let item = &catalog.items()[0];
         assert_eq!(
@@ -660,10 +652,9 @@ mod tests {
                 Source::Purchase("Example gift / café".into()),
             ),
             (
-                "purchase:unspecified",
-                Source::Purchase("unspecified".into()),
+                "purchase:Example exchange",
+                Source::Purchase("Example exchange".into()),
             ),
-            ("unspecified", Source::Unspecified),
         ] {
             assert_eq!(source.to_string(), key);
             assert_eq!(key.parse::<Source>().unwrap(), source);
@@ -675,6 +666,7 @@ mod tests {
             "all",
             "shop:",
             "purchase:",
+            "unspecified",
             "unspecified:any",
             "shop: ",
             "purchase:\nexample",
@@ -695,10 +687,10 @@ mod tests {
             .unwrap()
             .into_items()
             .remove(0);
-        assert_eq!(item.source(), Source::Shop("example-shop".into()));
+        assert_eq!(item.source(), Some(Source::Shop("example-shop".into())));
         item.shop = None;
-        assert_eq!(item.source(), Source::Purchase("self_bought".into()));
+        assert_eq!(item.source(), Some(Source::Purchase("self_bought".into())));
         item.purchase_source = None;
-        assert_eq!(item.source(), Source::Unspecified);
+        assert_eq!(item.source(), None);
     }
 }

@@ -65,9 +65,6 @@
       "items": {
         "name": "Items"
       },
-      "confirmed": {
-        "name": "Confirmed items"
-      },
       "archived": {
         "name": "Archived items"
       }

@@ -37,6 +37,8 @@ ha-closet inventory validate --input wardrobe.json
 ha-closet inventory sync --input wardrobe.json --dry-run
 ```
 
+Each item needs a shop or purchase source.
+
 Validation is offline. It needs no running service, credentials, or model.
 Sync checks the same format and applies the whole snapshot atomically. Missing
 IDs are archived, not deleted. Invalid files leave the current inventory alone.

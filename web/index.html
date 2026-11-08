@@ -43,6 +43,7 @@ ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details><
           <div id="inventory-empty" class="empty" hidden><h2>No items yet</h2><p class="muted">Validate and sync a JSON catalog to fill the closet.</p></div>
           <div id="item-grid" class="item-grid"></div>
           <button id="load-more" type="button" class="quiet" hidden>Load more</button>
+          <div id="page-sentinel" aria-hidden="true" hidden></div>
         </section>
         <section id="today" aria-labelledby="today-heading" hidden>
           <div class="page-heading"><div><p id="today-date" class="eyebrow"></p><h1 id="today-heading">Today</h1></div><span class="experiment-label">OPTIONAL EXPERIMENT</span></div>
@@ -50,7 +51,6 @@ ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details><
           <div id="weather" class="weather"></div>
           <form id="generate" class="filters today-controls">
             <div class="field"><label for="occasion">Occasion</label><select id="occasion"><option value="everyday">Everyday</option><option value="work">Work</option><option value="dinner">Dinner</option></select></div>
-            <div class="field"><label for="ownership">Inventory</label><select id="ownership"><option value="all_inventory">Include unconfirmed</option><option value="confirmed_only">Confirmed only</option></select></div>
             <div class="field"><label for="weather-mode">Weather</label><select id="weather-mode"><option value="required">Use forecast</option><option value="ignored">Ignore forecast</option></select></div>
             <button id="suggest" type="submit">Suggest outfits</button>
           </form>

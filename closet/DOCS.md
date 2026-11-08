@@ -25,12 +25,12 @@ Empty model/weather configuration does not block inventory or sync. A request
 that requires an unavailable forecast fails clearly; Ignore forecast is an
 explicit choice, not a silent fallback.
 
-## Catalog ownership
+## Inventory
 
-The JSON file owns the item metadata, ownership confirmations and image
-references. There is no separate Add/Edit workflow in the app. Change the
-source file, validate it, preview the diff and sync the reviewed snapshot.
-Never infer current ownership from an order or delivery alone.
+The JSON file is the source of truth for item metadata and image references.
+There is no separate Add/Edit workflow in the app. Change the source file,
+validate it, preview the diff and sync the reviewed snapshot.
+Every item in the catalog is owned.
 
 IDs are stable purchase identities, not descriptions or SKUs. Unknown details
 stay null. Sync updates the projection in one transaction, archives absent IDs,
@@ -38,9 +38,15 @@ and reactivates IDs restored to the file. An empty snapshot requires an explicit
 allow-empty option. Invalid input, a stale revision or a conflicting retry key
 does not replace the catalog.
 
+Older JSON files must drop `current_ownership_confirmed`. Existing databases
+upgrade automatically and keep their inventory and retry records. A historical
+sync key whose original snapshot is no longer recoverable stays reserved and
+rejects mismatched retries. Preview the current file with a new key for a new
+sync.
+
 Product photos remain public HTTPS references, not an offline image archive.
 Broken or qualified images retain their labels and placeholders. Source
-references do not establish an exact style, color or current ownership.
+references should match the item’s style and color.
 
 ## Today
 
@@ -50,7 +56,7 @@ shortlist and the selected occasion/weather context. It does not receive photo
 files, receipts, source notes, shop metadata or prices.
 
 Model output is advisory. The app validates item IDs and outfit roles but
-cannot prove that an outfit is good. Unconfirmed pieces remain labeled.
+cannot prove that an outfit is good.
 Failed refreshes preserve the previous result with its own inputs and freshness.
 A timeout does not prove the upstream model stopped; retry the same operation
 key to reconcile it before deliberately starting a new attempt.

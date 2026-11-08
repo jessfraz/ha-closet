@@ -14,6 +14,7 @@ ha-closet inventory sync --input wardrobe.json --dry-run
 
 Validation is offline. It does not resolve a server URL, read a credential,
 connect to Home Assistant, or write anything. This is the command to run in CI.
+Every item needs a shop or purchase source; missing sources fail validation.
 Invalid input exits nonzero with safe field locations and error codes, without
 printing item names or input values.
 
@@ -79,9 +80,9 @@ ha-closet items get example-shirt
 ha-closet --transport home-assistant items list
 ```
 
-List filters are `--q`, `--brand`, `--category`, `--source` and `--confirmed-only`.
+List filters are `--q`, `--brand`, `--category` and `--source`.
 Category filters include their dot-delimited descendants. Source keys are
-`shop:<id>`, `purchase:<value>`, or `unspecified`; copy an exact key from the JSON
+`shop:<id>` or `purchase:<value>`; copy an exact key from the JSON
 `facets.sources` list. A shop takes precedence over a purchase source.
 Each invocation fetches one page. Apply filters on the first request, then pass
 the returned `next_page` value with `--page-token` and no filters. The cursor
@@ -101,7 +102,7 @@ private.
 ```sh
 ha-closet today get
 ha-closet today generate --occasion everyday \
-  --ownership-scope all_inventory --weather-mode required \
+  --weather-mode required \
   --idempotency-key outfit-attempt-1
 ha-closet today get --format table
 ```
@@ -111,10 +112,9 @@ ha-closet today get --format table
 there is no hidden polling or automatic retry. Reusing the exact original key
 and inputs reads that operation rather than paying for another generation.
 
-Occasions are `everyday`, `work`, and `dinner`. Ownership scope is
-`all_inventory` or `confirmed_only`. Weather is `required` unless explicitly
-set to `ignored`. These settings are supplied to the server-owned request type;
-there is no arbitrary prompt or model credential in the CLI.
+Occasions are `everyday`, `work`, and `dinner`. Weather is `required` unless
+explicitly set to `ignored`. These settings are supplied to the server-owned
+request type; there is no arbitrary prompt or model credential in the CLI.
 
 ## Failures
 

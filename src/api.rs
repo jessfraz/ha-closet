@@ -258,14 +258,13 @@ async fn system(
 ) -> Result<HttpResponseHeaders<HttpResponseOk<System>, PrivateHeaders>, HttpError> {
     let principal = authenticate(&request)?;
     let context = request.context();
-    let (catalog_revision, item_count, confirmed_count, archived_count) =
+    let (catalog_revision, item_count, archived_count) =
         context.store.counts().await.map_err(store_error)?;
     Ok(private(System {
         version: env!("CARGO_PKG_VERSION").into(),
         role: principal.role,
         catalog_revision,
         item_count,
-        confirmed_count,
         archived_count,
         today_configured: context
             .today

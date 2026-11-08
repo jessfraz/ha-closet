@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
 use closet::{
     api,
     models::{
-        CatalogItem, Generation, GenerationStatus, ImageConfidence, ImageReference, Item,
-        ListQuery, OwnershipScope, Price, Shop, SyncReport, SyncRequest, TodayRequest,
+        CatalogItem, FieldError, Generation, GenerationStatus, ImageConfidence, ImageReference,
+        Item, ListQuery, Occasion, Price, Shop, SyncReport, SyncRequest, TodayRequest,
         TodayResponse, parse_catalog,
     },
     store::{GenerationBasis, Store, StoreError},
@@ -27,7 +27,6 @@ fn piece(id: &str, name: &str, category: &str) -> CatalogItem {
         material: None,
         sku: None,
         purchase_source: Some("example".into()),
-        current_ownership_confirmed: false,
         images: vec![ImageReference {
             url: "https://images.example.invalid/reference.jpg".into(),
             source_url: Some("https://example.invalid/product".into()),
@@ -165,6 +164,208 @@ fn the_actual_catalog_parser_preserves_details_and_rejects_unsafe_shapes() {
     assert!(!error.to_string().contains("unknown_field"));
 }
 
+#[test]
+fn catalog_membership_needs_no_confirmation_field() {
+    let catalog = parse_catalog(include_bytes!("fixtures/catalog-seasons.json")).unwrap();
+    assert_eq!(catalog.report().count, 1);
+}
+
+#[derive(serde::Deserialize)]
+struct RemovedItemField {
+    current_ownership_confirmed: Option<bool>,
+}
+#[derive(serde::Deserialize)]
+struct RemovedSystemField {
+    confirmed_count: Option<i64>,
+}
+#[derive(serde::Serialize)]
+struct RemovedTodayInput {
+    ownership_scope: &'static str,
+}
+
+#[tokio::test]
+async fn ownership_controls_are_absent_from_real_http_inventory_and_today() {
+    let app = App::new().await;
+    app.store
+        .sync(sync(catalog(), false), Some(0), "owner", Some("initial"))
+        .await
+        .unwrap();
+    let detail = app
+        .client
+        .get(format!("{}/v1/items/example-dress", app.origin))
+        .bearer_auth(OWNER)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<RemovedItemField>()
+        .await
+        .unwrap();
+    assert!(detail.current_ownership_confirmed.is_none());
+    let system = app
+        .client
+        .get(format!("{}/v1/system", app.origin))
+        .bearer_auth(OWNER)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<RemovedSystemField>()
+        .await
+        .unwrap();
+    assert!(system.confirmed_count.is_none());
+    for confirmed in ["true", "false"] {
+        let response = app
+            .client
+            .get(format!("{}/v1/items", app.origin))
+            .bearer_auth(OWNER)
+            .query(&[("confirmed_only", confirmed)])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    let response = app
+        .client
+        .post(format!("{}/v1/today/generate", app.origin))
+        .bearer_auth(OWNER)
+        .header("idempotency-key", "removed-input")
+        .json(&RemovedTodayInput {
+            ownership_scope: "confirmed_only",
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    app.close().await;
+}
+
+#[test]
+fn required_source_validation_preserves_known_catalog_shape_and_rejects_missing_sources() {
+    let mut known = catalog();
+    known[0].purchase_source = None;
+    known[1].shop = None;
+    let bytes = serde_json::to_vec(&known).unwrap();
+    let parsed = parse_catalog(&bytes).unwrap();
+    for item in &known {
+        assert_eq!(
+            parsed.items().iter().find(|other| other.id == item.id),
+            Some(item)
+        );
+    }
+
+    let mut missing = known.clone();
+    missing[0].shop = None;
+    missing[2].shop = None;
+    missing[2].purchase_source = None;
+    let error = parse_catalog(&serde_json::to_vec(&missing).unwrap()).unwrap_err();
+    assert_eq!(error.code, "invalid_catalog");
+    assert_eq!(
+        error.errors,
+        [
+            FieldError {
+                index: Some(0),
+                field: "purchase_source".into(),
+                code: "source_required".into(),
+            },
+            FieldError {
+                index: Some(2),
+                field: "purchase_source".into(),
+                code: "source_required".into(),
+            },
+        ]
+    );
+    // A malformed explicit source is still an error, never a default or guess.
+    missing[0].purchase_source = Some(" ".into());
+    let error = parse_catalog(&serde_json::to_vec(&missing).unwrap()).unwrap_err();
+    assert!(error.errors.contains(&FieldError {
+        index: Some(0),
+        field: "purchase_source".into(),
+        code: "invalid_text".into(),
+    }));
+}
+
+#[derive(serde::Deserialize)]
+struct HttpFailure {
+    error_code: String,
+}
+
+#[tokio::test]
+async fn required_source_http_rejection_is_atomic_and_does_not_reserve_idempotency_keys() {
+    let app = App::new().await;
+    let initial = catalog();
+    app.store
+        .sync(
+            sync(initial.clone(), false),
+            Some(0),
+            "owner",
+            Some("initial"),
+        )
+        .await
+        .unwrap();
+    let before_counts = app.store.counts().await.unwrap();
+    let mut changed = initial[..2].to_vec();
+    changed[0].name = "This edit must not survive rejection".into();
+    changed[1].shop = None;
+    changed[1].purchase_source = None;
+    changed.push(piece("example-new", "New piece", "clothing.top"));
+    let endpoint = format!("{}/v1/inventory/sync", app.origin);
+    for dry_run in [true, false] {
+        let response = app
+            .client
+            .post(&endpoint)
+            .bearer_auth(OWNER)
+            .header("if-match", "\"1\"")
+            .header("idempotency-key", "source-correction")
+            .json(&sync(changed.clone(), dry_run))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.json::<HttpFailure>().await.unwrap().error_code,
+            "invalid_catalog"
+        );
+        assert_eq!(app.store.counts().await.unwrap(), before_counts);
+        for item in &initial {
+            let persisted = app.store.item(&item.id).await.unwrap();
+            assert_eq!(persisted.catalog, *item);
+            assert!(!persisted.archived);
+            assert_eq!(persisted.revision, 1);
+        }
+        assert!(matches!(
+            app.store.item("example-new").await,
+            Err(StoreError::NotFound)
+        ));
+    }
+
+    changed[1].purchase_source = Some("Example exchange".into());
+    let response = app
+        .client
+        .post(&endpoint)
+        .bearer_auth(OWNER)
+        .header("if-match", "\"1\"")
+        .header("idempotency-key", "source-correction")
+        .json(&sync(changed, false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = response.json::<SyncReport>().await.unwrap();
+    assert_eq!(
+        (
+            report.created,
+            report.updated,
+            report.archived,
+            report.catalog_revision
+        ),
+        (1, 2, 1, 2)
+    );
+    app.close().await;
+}
+
 #[tokio::test]
 async fn sync_is_atomic_revision_checked_and_replays_across_restart() {
     let directory = tempfile::tempdir().unwrap();
@@ -176,7 +377,7 @@ async fn sync_is_atomic_revision_checked_and_replays_across_restart() {
         .await
         .unwrap();
     assert_eq!((preview.created, preview.catalog_revision), (3, 0));
-    assert_eq!(store.counts().await.unwrap(), (0, 0, 0, 0));
+    assert_eq!(store.counts().await.unwrap(), (0, 0, 0));
     let first = store
         .sync(
             sync(input.clone(), false),
@@ -578,7 +779,7 @@ async fn today_get_never_generates_and_unconfigured_attempt_is_honest() {
     );
     assert!(done.result.is_none());
     let changed = TodayRequest {
-        ownership_scope: OwnershipScope::ConfirmedOnly,
+        occasion: Occasion::Dinner,
         ..Default::default()
     };
     let response = app

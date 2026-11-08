@@ -98,7 +98,6 @@ fn catalog() -> Vec<CatalogItem> {
         material: Some("Cotton".into()),
         sku: None,
         purchase_source: Some("direct".into()),
-        current_ownership_confirmed: false,
         images: vec![ImageReference {
             url: "https://images.example.invalid/shirt.jpg".into(),
             source_url: Some("https://shop.example.invalid/shirt".into()),
@@ -186,6 +185,50 @@ fn validation_reports_safe_locations_without_echoing_private_values() {
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-secret"));
     failure(output, None, "invalid_catalog_json");
+}
+
+#[test]
+fn catalog_sources_are_required_before_validation_or_sync_can_reach_the_network() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let mut items = catalog();
+    items[0].name = "sentinel-private-item-not-to-print".into();
+    items[0].shop = None;
+    items[0].purchase_source = None;
+    for command in [
+        vec!["inventory", "validate"],
+        vec!["inventory", "sync", "--dry-run"],
+        vec![
+            "inventory",
+            "sync",
+            "--if-match",
+            "\"0\"",
+            "--idempotency-key",
+            "example-source-required",
+        ],
+    ] {
+        let mut args = vec!["--timeout", "1"];
+        args.extend(command);
+        let output = call(
+            &args,
+            &bytes(&items),
+            &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-private"));
+        let diagnostic = failure(output, None, "invalid_catalog");
+        assert!(
+            diagnostic
+                .errors
+                .unwrap()
+                .iter()
+                .any(|error| { error.index == Some(0) && error.code == "source_required" })
+        );
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]
@@ -329,7 +372,10 @@ async fn real_service_sync_reads_and_conditional_replay_preserve_source_fields()
     let human = service.call(&["items", "list", "--format", "table"], b"");
     assert!(human.status.success());
     assert!(String::from_utf8_lossy(&human.stdout).contains("Cotton shirt"));
-    assert!(String::from_utf8_lossy(&human.stdout).contains("unconfirmed"));
+    assert_eq!(
+        String::from_utf8_lossy(&human.stdout).lines().next(),
+        Some("ID\tBRAND\tITEM\tSIZE\tCOLOR")
+    );
     failure(
         service.call(
             &[
@@ -367,11 +413,11 @@ async fn real_service_source_filter_preserves_identity_encoding_and_pagination()
     direct.id = "example-direct".into();
     direct.shop = None;
     items.push(direct);
-    let mut unspecified = items[0].clone();
-    unspecified.id = "example-unspecified".into();
-    unspecified.shop = None;
-    unspecified.purchase_source = None;
-    items.push(unspecified);
+    let mut gift = items[0].clone();
+    gift.id = "example-gift".into();
+    gift.shop = None;
+    gift.purchase_source = Some("Example gift".into());
+    items.push(gift);
     success::<SyncReport>(
         service.call(
             &[
@@ -393,7 +439,7 @@ async fn real_service_source_filter_preserves_identity_encoding_and_pagination()
             "example-purchase",
         ),
         ("purchase:direct", "example-direct"),
-        ("unspecified", "example-unspecified"),
+        ("purchase:Example gift", "example-gift"),
     ] {
         let result = success::<ItemsPage>(
             service.call(&["items", "list", "--source", source], b""),
@@ -468,10 +514,44 @@ fn invalid_source_filters_fail_without_a_request_or_echoing_the_value() {
         "shop:sentinel-private\ninvalid",
         "purchase:",
         "unknown:sentinel-private",
+        "unspecified",
         "unspecified:sentinel-private",
     ] {
         let output = call(
             &["items", "list", "--source", source],
+            b"",
+            &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-private"));
+        failure(output, None, "invalid_arguments");
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn removed_ownership_options_fail_locally_without_a_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    for args in [
+        vec!["--timeout", "1", "items", "list", "--confirmed-only"],
+        vec![
+            "--timeout",
+            "1",
+            "today",
+            "generate",
+            "--ownership-scope",
+            "confirmed_only",
+            "--idempotency-key",
+            "sentinel-private-key",
+        ],
+    ] {
+        let output = call(
+            &args,
             b"",
             &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
         );
@@ -495,7 +575,6 @@ fn page_tokens_reject_filters_locally_without_echoing_private_values() {
         vec!["--brand", "sentinel-private-brand"],
         vec!["--category", "sentinel-private-category"],
         vec!["--source", "purchase:sentinel-private-source"],
-        vec!["--confirmed-only"],
     ] {
         let mut args = vec![
             "--timeout",
@@ -590,7 +669,6 @@ fn system() -> System {
         role: AccessRole::Owner,
         catalog_revision: 0,
         item_count: 0,
-        confirmed_count: 0,
         archived_count: 0,
         today_configured: false,
     }
@@ -678,7 +756,6 @@ async fn source_filter_survives_home_assistant_transport_query_encoding() {
                 "list",
                 "--source",
                 source,
-                "--confirmed-only",
             ],
             b"",
             &[
@@ -700,10 +777,7 @@ async fn source_filter_survives_home_assistant_transport_query_encoding() {
     assert!(url.fragment().is_none());
     assert_eq!(
         url.query_pairs().collect::<Vec<_>>(),
-        vec![
-            ("source".into(), source.into()),
-            ("confirmed_only".into(), "true".into()),
-        ]
+        vec![("source".into(), source.into())]
     );
     assert!(
         request

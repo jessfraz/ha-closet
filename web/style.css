@@ -58,14 +58,22 @@ select { max-width: 250px; }
 .photo img { width: 100%; height: 100%; object-fit: contain; }
 .photo-placeholder { padding: 18px; color: var(--muted); font: 12px/1.6 var(--mono); text-align: center; }
 .item-name { display: block; font-size: 14px; line-height: 1.5; margin-top: 12px; }
-.item-badges { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: 10px; }
-.item-badge { display: block; min-width: 44px; max-width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 500; line-height: 1.5; text-align: left; overflow-wrap: anywhere; }
-.item-badge:hover { color: var(--ink); background: var(--soft); opacity: 1; }
+.item-badges { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin-top: 8px; }
+.item-badge { display: block; min-width: 26px; max-width: 100%; min-height: 26px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 500; line-height: 1.45; text-align: left; overflow-wrap: anywhere; }
+.item-badge:hover { border-color: currentColor; opacity: 1; }
 .brand-badge { color: var(--ink); background: var(--paper); }
+.source-tone-0 { background: #deefd9; color: #35532c; border-color: #b9d5b0; }
+.source-tone-1 { background: #ffedb3; color: #75531a; border-color: #e6ce87; }
+.source-tone-2 { background: #eadcff; color: #5c3c83; border-color: #cdb3ea; }
+.source-tone-3 { background: #d5e5ff; color: #2d517a; border-color: #acc8ec; }
+.source-tone-4 { background: #f8dce5; color: #803c4c; border-color: #e6b2c2; }
+.source-tone-5 { background: #c8eee5; color: #286058; border-color: #9bcfc3; }
 .item-meta { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.6; }
 .qualifier { display: block; font-size: 12px; line-height: 1.5; color: var(--muted); margin-top: 5px; }
 .image-note { display: block; font-size: 12px; line-height: 1.5; color: var(--warning); margin-top: 5px; }
 #load-more { margin-top: 6px; }
+#load-more[aria-disabled="true"] { opacity: .55; cursor: progress; }
+#page-sentinel { height: 1px; }
 .empty { padding: 40px 0 55px; }
 #notice:empty { display: none; }
 #notice { margin: 0 0 22px; color: var(--warning); font-size: 13px; line-height: 1.6; }
@@ -100,6 +108,12 @@ dd { margin: 0; }
   :root { --bg: #131415; --paper: #1b1c1e; --ink: #e6e6e4; --muted: #9c9fa3; --line: #2f3134; --soft: #242528; --accent: #e6e6e4; --on-accent: #131415; --warning: #f6d48e; --warning-soft: #46391e; --focus: #7fa6ee; }
   .brand-light { display: none; }
   .brand-dark { display: block; }
+  .source-tone-0 { background: #283a24; color: #c8dfbe; border-color: #4a6940; }
+  .source-tone-1 { background: #43371d; color: #f0d58d; border-color: #776032; }
+  .source-tone-2 { background: #352843; color: #d9c0f3; border-color: #634c7e; }
+  .source-tone-3 { background: #22374f; color: #bad7f6; border-color: #40658d; }
+  .source-tone-4 { background: #492b34; color: #f3c0ce; border-color: #80505f; }
+  .source-tone-5 { background: #1d3e38; color: #ace1d7; border-color: #3a7368; }
 }
 @media (max-width: 760px) {
   .item-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
