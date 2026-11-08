@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::Context as _;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use dropshot::{
     ApiDescription, Body, ClientErrorStatusCode as Status, ConfigDropshot, HttpError,
@@ -23,6 +24,7 @@ use subtle::ConstantTimeEq;
 use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::{
+    clock::{Clock, SystemClock},
     fence::{
         FenceAcquire, FencePrepare, FenceRelease, FenceReleased, FenceResolve, FenceStatus,
         FenceToken, FenceUpload, UploadClaimStatus,
@@ -34,6 +36,10 @@ use crate::{
     },
     store::{GenerationBasis, Store, StoreError},
     today::TodayConfig,
+    tracking::models::{
+        CommandResult, HistoryPage, IngestResult, ObservationBatch, TrackingCommand, TrackingError,
+        TrackingExport, TrackingSnapshot, UnitId,
+    },
 };
 
 #[derive(Clone)]
@@ -45,6 +51,7 @@ pub struct Context {
     today: Option<TodayConfig>,
     tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
     stopping: Arc<AtomicBool>,
+    clock: Arc<dyn Clock>,
 }
 impl Context {
     pub fn new(store: Store, owner: &str) -> Self {
@@ -56,10 +63,15 @@ impl Context {
             today: None,
             tasks: Arc::new(Mutex::new(Vec::new())),
             stopping: Arc::new(AtomicBool::new(false)),
+            clock: Arc::new(SystemClock),
         }
     }
     pub fn with_integration(mut self, token: &str) -> Self {
         self.integration = Some(Sha256::digest(token).into());
+        self
+    }
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
         self
     }
     pub fn with_today(mut self, config: TodayConfig) -> Self {
@@ -209,6 +221,19 @@ fn store_error(error: StoreError) -> HttpError {
         StoreError::Revision => Status::PRECONDITION_FAILED,
         StoreError::Precondition => Status::PRECONDITION_REQUIRED,
         StoreError::Database(_) | StoreError::Migration(_) | StoreError::Serialization(_) => {
+            return HttpError::for_internal_error(error.code().into());
+        }
+    };
+    fail(status, error.code())
+}
+
+fn tracking_error(error: TrackingError) -> HttpError {
+    let status = match error {
+        TrackingError::Invalid { .. } => Status::BAD_REQUEST,
+        TrackingError::Conflict(_) => Status::CONFLICT,
+        TrackingError::Revision => Status::PRECONDITION_FAILED,
+        TrackingError::NotFound => Status::NOT_FOUND,
+        TrackingError::Database(_) | TrackingError::Serialization(_) => {
             return HttpError::for_internal_error(error.code().into());
         }
     };
@@ -477,7 +502,24 @@ async fn today_generate(
             "shutting_down".into(),
         ));
     }
-    let items = context.store.active_items().await.map_err(store_error)?;
+    let availability = context
+        .store
+        .tracking_availability(context.clock.now())
+        .await
+        .map_err(tracking_error)?;
+    let items = context
+        .store
+        .active_items()
+        .await
+        .map_err(store_error)?
+        .into_iter()
+        .filter(|item| {
+            availability
+                .eligible_catalog_ids
+                .binary_search(&item.id)
+                .is_ok()
+        })
+        .collect();
     let basis = if let Some(config) = &context.today {
         config.basis(items)
     } else {
@@ -514,6 +556,279 @@ async fn today_generate(
             location: "/v1/today".into(),
             cache_control: "no-store".into(),
         },
+    ))
+}
+
+/// Physical-unit state is separate from authoritative garment metadata.
+#[endpoint {method=GET,path="/v1/tracking",tags=["tracking"]}]
+async fn tracking_snapshot(
+    request: RequestContext<Arc<Context>>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<TrackingSnapshot>, RevisionHeaders>, HttpError> {
+    let principal = authenticate(&request)?;
+    let context = request.context();
+    let mut snapshot = context
+        .store
+        .tracking_snapshot_clocked(|| context.clock.now())
+        .await
+        .map_err(tracking_error)?;
+    // HA's ordinary coordinator needs status, not raw radio identifiers or
+    // pending enrollment candidates. Only trusted administrators inspect those.
+    if !principal.admin {
+        snapshot.sessions.clear();
+        snapshot.diagnostics.recent_reads.clear();
+    }
+    let headers = revision_headers(snapshot.tracking_revision);
+    Ok(HttpResponseHeaders::new(HttpResponseOk(snapshot), headers))
+}
+
+#[derive(Serialize, JsonSchema)]
+struct ProjectedUnit {
+    id: UnitId,
+    ordinal: u32,
+    status: crate::tracking::models::UnitStatus,
+    paused: bool,
+    retired: bool,
+    archived: bool,
+    evidence: crate::tracking::models::StateEvidence,
+}
+
+/// A small HA projection, not the enrollment workspace or a second state engine.
+#[derive(Serialize, JsonSchema)]
+struct TrackingProjection {
+    schema_version: u16,
+    tracking_revision: i64,
+    config: crate::tracking::models::TrackingConfig,
+    health: crate::tracking::models::TrackingHealth,
+    counts: crate::tracking::models::TrackingCounts,
+    certified_ready_unit_ids: Vec<UnitId>,
+    units: Vec<ProjectedUnit>,
+    next_page: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectionQuery {
+    limit: Option<u16>,
+    page_token: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectionCursor {
+    revision: i64,
+    after: UnitId,
+}
+
+#[endpoint {method=GET,path="/v1/tracking/projection",tags=["tracking"]}]
+async fn tracking_projection(
+    request: RequestContext<Arc<Context>>,
+    query: Query<ProjectionQuery>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<TrackingProjection>, RevisionHeaders>, HttpError> {
+    authenticate(&request)?;
+    let query = query.into_inner();
+    let limit = query.limit.unwrap_or(500);
+    if !(1..=1000).contains(&limit) {
+        return Err(fail(Status::BAD_REQUEST, "invalid_limit"));
+    }
+    let cursor: Option<ProjectionCursor> = query
+        .page_token
+        .map(|token| {
+            if token.len() > 512 {
+                return Err(fail(Status::BAD_REQUEST, "invalid_page_token"));
+            }
+            let bytes = URL_SAFE_NO_PAD
+                .decode(token)
+                .map_err(|_| fail(Status::BAD_REQUEST, "invalid_page_token"))?;
+            serde_json::from_slice(&bytes)
+                .map_err(|_| fail(Status::BAD_REQUEST, "invalid_page_token"))
+        })
+        .transpose()?;
+    let context = request.context();
+    let snapshot = context
+        .store
+        .tracking_snapshot_clocked(|| context.clock.now())
+        .await
+        .map_err(tracking_error)?;
+    if cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.revision != snapshot.tracking_revision)
+    {
+        return Err(fail(Status::CONFLICT, "page_invalidated"));
+    }
+    if cursor.as_ref().is_some_and(|cursor| {
+        !snapshot
+            .units
+            .iter()
+            .any(|unit| unit.id == cursor.after && !unit.archived && !unit.retired)
+    }) {
+        return Err(fail(Status::BAD_REQUEST, "invalid_page_token"));
+    }
+    let headers = revision_headers(snapshot.tracking_revision);
+    let mut units: Vec<_> = snapshot
+        .units
+        .into_iter()
+        .filter(|unit| {
+            !unit.archived
+                && !unit.retired
+                && cursor.as_ref().is_none_or(|cursor| unit.id > cursor.after)
+        })
+        .take(usize::from(limit) + 1)
+        .collect();
+    let more = units.len() > usize::from(limit);
+    units.truncate(usize::from(limit));
+    let next_page = if more {
+        units
+            .last()
+            .map(|unit| {
+                serde_json::to_vec(&ProjectionCursor {
+                    revision: snapshot.tracking_revision,
+                    after: unit.id,
+                })
+                .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+            })
+            .transpose()
+            .map_err(|_| HttpError::for_internal_error("cursor_unavailable".into()))?
+    } else {
+        None
+    };
+    let page_ids: std::collections::BTreeSet<_> = units.iter().map(|unit| unit.id).collect();
+    let projection = TrackingProjection {
+        schema_version: snapshot.schema_version,
+        tracking_revision: snapshot.tracking_revision,
+        config: snapshot.config,
+        health: snapshot.health,
+        counts: snapshot.counts,
+        certified_ready_unit_ids: snapshot
+            .certified_ready_unit_ids
+            .into_iter()
+            .filter(|id| page_ids.contains(id))
+            .collect(),
+        units: units
+            .into_iter()
+            .map(|unit| ProjectedUnit {
+                id: unit.id,
+                ordinal: unit.ordinal,
+                status: unit.status,
+                paused: unit.paused,
+                retired: unit.retired,
+                archived: unit.archived,
+                evidence: unit.evidence,
+            })
+            .collect(),
+        next_page,
+    };
+    Ok(HttpResponseHeaders::new(
+        HttpResponseOk(projection),
+        headers,
+    ))
+}
+
+/// Every administrative tracking operation uses its own revision and replay key.
+#[endpoint {method=POST,path="/v1/tracking/commands",tags=["tracking"],request_body_max_bytes=8388608}]
+async fn tracking_command(
+    request: RequestContext<Arc<Context>>,
+    body: TypedBody<TrackingCommand>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<CommandResult>, RevisionHeaders>, HttpError> {
+    let principal = administrator(&request)?;
+    let revision = expected_revision(&request)?
+        .ok_or_else(|| fail(Status::PRECONDITION_REQUIRED, "tracking_revision_required"))?;
+    let key = idempotency(&request)?;
+    let context = request.context();
+    if context.stopping.load(Ordering::Acquire) {
+        return Err(HttpError::for_unavail(None, "service_stopping".into()));
+    }
+    let result = context
+        .store
+        .tracking_command_clocked(&principal.actor, key, revision, body.into_inner(), || {
+            context.clock.now()
+        })
+        .await
+        .map_err(tracking_error)?;
+    let headers = revision_headers(result.tracking_revision);
+    Ok(HttpResponseHeaders::new(HttpResponseOk(result), headers))
+}
+
+/// Reader sessions and sequences deduplicate bounded normalized evidence.
+/// Receipt time is supplied by the server, never trusted from an HTTP caller.
+#[endpoint {method=POST,path="/v1/tracking/observations",tags=["tracking"],request_body_max_bytes=1048576}]
+async fn tracking_observations(
+    request: RequestContext<Arc<Context>>,
+    body: TypedBody<ObservationBatch>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<IngestResult>, RevisionHeaders>, HttpError> {
+    administrator(&request)?;
+    let context = request.context();
+    let result = context
+        .store
+        .tracking_ingest_clocked(body.into_inner(), || context.clock.now())
+        .await
+        .map_err(tracking_error)?;
+    let headers = revision_headers(result.tracking_revision);
+    Ok(HttpResponseHeaders::new(HttpResponseOk(result), headers))
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct HistoryQuery {
+    before: Option<i64>,
+    limit: Option<u16>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct UnitPath {
+    id: UnitId,
+}
+
+/// Audit history includes bindings; routine HA entities do not expose EPCs.
+#[endpoint {method=GET,path="/v1/tracking/history",tags=["tracking"]}]
+async fn tracking_history(
+    request: RequestContext<Arc<Context>>,
+    query: Query<HistoryQuery>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<HistoryPage>, PrivateHeaders>, HttpError> {
+    administrator(&request)?;
+    let query = query.into_inner();
+    let history = request
+        .context()
+        .store
+        .tracking_history(None, query.before, query.limit.unwrap_or(50))
+        .await
+        .map_err(tracking_error)?;
+    Ok(private(history))
+}
+
+#[endpoint {method=GET,path="/v1/tracking/units/{id}/history",tags=["tracking"]}]
+async fn tracking_unit_history(
+    request: RequestContext<Arc<Context>>,
+    path: Path<UnitPath>,
+    query: Query<HistoryQuery>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<HistoryPage>, PrivateHeaders>, HttpError> {
+    administrator(&request)?;
+    let query = query.into_inner();
+    let history = request
+        .context()
+        .store
+        .tracking_history(
+            Some(path.into_inner().id),
+            query.before,
+            query.limit.unwrap_or(50),
+        )
+        .await
+        .map_err(tracking_error)?;
+    Ok(private(history))
+}
+
+/// Private versioned operational export. Catalog metadata is not copied here.
+#[endpoint {method=GET,path="/v1/tracking/export",tags=["tracking"]}]
+async fn tracking_export(
+    request: RequestContext<Arc<Context>>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<TrackingExport>, PrivateHeaders>, HttpError> {
+    administrator(&request)?;
+    let context = request.context();
+    Ok(private(
+        context
+            .store
+            .tracking_export_clocked(|| context.clock.now())
+            .await
+            .map_err(tracking_error)?,
     ))
 }
 
@@ -578,6 +893,16 @@ async fn style(request: RequestContext<Arc<Context>>) -> Result<Response<Body>, 
         "text/css; charset=utf-8",
     )
 }
+#[endpoint {method=GET,path="/tracking.js",tags=["web"]}]
+async fn tracking_script(
+    request: RequestContext<Arc<Context>>,
+) -> Result<Response<Body>, HttpError> {
+    ingress_access(&request)?;
+    static_response(
+        include_str!("../web/tracking.js").into(),
+        "text/javascript; charset=utf-8",
+    )
+}
 #[endpoint {method=GET,path="/brand.svg",tags=["web"]}]
 async fn brand(request: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
     ingress_access(&request)?;
@@ -605,7 +930,7 @@ async fn schema(request: RequestContext<Arc<Context>>) -> Result<Response<Body>,
 
 pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     let mut api = ApiDescription::new();
-    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 20] = [
+    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 28] = [
         health.into(),
         system.into(),
         items_list.into(),
@@ -619,9 +944,17 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
         fence_upload.into(),
         today_get.into(),
         today_generate.into(),
+        tracking_snapshot.into(),
+        tracking_projection.into(),
+        tracking_command.into(),
+        tracking_observations.into(),
+        tracking_history.into(),
+        tracking_unit_history.into(),
+        tracking_export.into(),
         index.into(),
         detail.into(),
         script.into(),
+        tracking_script.into(),
         style.into(),
         brand.into(),
         brand_dark.into(),

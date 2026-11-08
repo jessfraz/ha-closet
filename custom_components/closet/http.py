@@ -27,6 +27,12 @@ _ROUTES = (
     ),
     (re.compile(r"inventory/fence"), frozenset({"POST", "DELETE"})),
     (re.compile(r"today/generate"), frozenset({"POST"})),
+    (
+        re.compile(r"tracking|tracking/projection|tracking/export|tracking/history"),
+        frozenset({"GET"}),
+    ),
+    (re.compile(r"tracking/units/[a-f0-9-]{36}/history"), frozenset({"GET"})),
+    (re.compile(r"tracking/commands|tracking/observations"), frozenset({"POST"})),
 )
 _LIST_QUERY = {
     "q",
@@ -35,6 +41,9 @@ _LIST_QUERY = {
     "source",
     "limit",
     "page_token",
+    "ready_to_wear",
+    "status",
+    "area",
 }
 
 
@@ -62,24 +71,42 @@ class ClosetView(HomeAssistantView):
             raise web.HTTPNotFound
         if request.method not in route[1]:
             raise web.HTTPMethodNotAllowed(request.method, route[1])
-        allowed_query = _LIST_QUERY if path == "items" else set()
+        allowed_query = (
+            _LIST_QUERY
+            if path == "items"
+            else {"limit", "page_token"}
+            if path == "tracking/projection"
+            else {"before", "limit"}
+            if path.endswith("/history")
+            else set()
+        )
         if (
             len(request.query_string) > _MAX_QUERY_CHARS
             or request.query.keys() - allowed_query
         ):
             raise web.HTTPBadRequest(reason="Unsupported query parameters")
         user = request["hass_user"]
-        if not user.is_active or (request.method != "GET" and not user.is_admin):
+        private_tracking = path == "tracking/export" or path.endswith("/history")
+        if not user.is_active or (
+            (request.method != "GET" or private_tracking) and not user.is_admin
+        ):
             raise web.HTTPForbidden
         coordinator = loaded_coordinator(self._hass)
         if coordinator is None:
             raise web.HTTPServiceUnavailable
+        max_bytes = (
+            8 * 1024 * 1024
+            if path == "tracking/commands"
+            else 1024 * 1024
+            if path == "tracking/observations"
+            else MAX_REQUEST_BYTES
+        )
         payload = bytearray()
         async for chunk in request.content.iter_chunked(16 * 1024):
             payload.extend(chunk)
-            if len(payload) > MAX_REQUEST_BYTES:
+            if len(payload) > max_bytes:
                 raise web.HTTPRequestEntityTooLarge(
-                    max_size=MAX_REQUEST_BYTES, actual_size=len(payload)
+                    max_size=max_bytes, actual_size=len(payload)
                 )
         headers = {
             key: request.headers[key]
@@ -108,7 +135,10 @@ class ClosetView(HomeAssistantView):
             raise web.HTTPGatewayTimeout from None
         except ClientError, ResponseTooLarge:
             raise web.HTTPBadGateway from None
-        if path in {"inventory/sync", "today/generate"} and response.status < 300:
+        if (
+            path in {"inventory/sync", "today/generate", "tracking/commands"}
+            and response.status < 300
+        ):
             entry = coordinator.config_entry
             if entry is not None:
                 entry.async_create_background_task(

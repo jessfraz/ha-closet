@@ -448,6 +448,17 @@ pub struct ItemFilters {
     pub brand: Option<String>,
     pub category: Option<String>,
     pub source: Option<Source>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_to_wear: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::tracking::models::UnitStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<crate::tracking::models::AreaId>,
+}
+impl ItemFilters {
+    pub fn uses_tracking(&self) -> bool {
+        self.ready_to_wear.is_some() || self.status.is_some() || self.area.is_some()
+    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -457,6 +468,10 @@ pub struct ListQuery {
     pub category: Option<String>,
     /// `shop:<id>` or `purchase:<value>`; omit for all sources.
     pub source: Option<Source>,
+    /// Match at least one physical unit with this readiness, not ownership.
+    pub ready_to_wear: Option<bool>,
+    pub status: Option<crate::tracking::models::UnitStatus>,
+    pub area: Option<crate::tracking::models::AreaId>,
     pub limit: Option<u32>,
     pub page_token: Option<String>,
 }
@@ -467,6 +482,9 @@ impl ListQuery {
             brand: self.brand.clone(),
             category: self.category.clone(),
             source: self.source.clone(),
+            ready_to_wear: self.ready_to_wear,
+            status: self.status,
+            area: self.area.clone(),
         }
     }
 }
@@ -484,6 +502,8 @@ pub struct ItemsPage {
     pub scope_total: i64,
     pub facets: Facets,
     pub catalog_revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking_revision: Option<i64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

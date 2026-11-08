@@ -155,7 +155,8 @@ ha-closet items get example-shirt
 ha-closet --transport home-assistant items list
 ```
 
-List filters are `--q`, `--brand`, `--category` and `--source`.
+List filters are `--q`, `--brand`, `--category`, `--source`,
+`--ready-to-wear true|false`, `--status` and `--area`.
 Category filters include their dot-delimited descendants. Source keys are
 `shop:<id>` or `purchase:<value>`; copy an exact key from the JSON
 `facets.sources` list. A shop takes precedence over a purchase source.
@@ -172,6 +173,41 @@ Offline validation uses null status/ETag because no HTTP request occurred.
 change the request or fetch additional information. Response bodies are limited
 to 8 MiB. Successful output contains the requested inventory and should be kept
 private.
+
+## Tracking
+
+The same connection and administrator authentication support RFID operations.
+Catalog metadata stays in the catalog; tracking commands change SQLite runtime
+state. Read `tracking status` for the current tracking ETag before a mutation.
+Its revision is independent of the catalog revision.
+
+```sh
+ha-closet tracking config validate --input tracking.json
+ha-closet tracking config apply --input tracking.json \
+  --if-match '"0"' --idempotency-key example-configuration
+ha-closet tracking status
+ha-closet tracking enroll start UNIT_UUID --port example-enroll \
+  --if-match '"1"' --idempotency-key example-enrollment
+ha-closet tracking history --unit UNIT_UUID --limit 50
+ha-closet tracking export --output tracking-backup.json
+ha-closet tracking replay --input config/tracking-replay.example.json
+```
+
+Use the actual returned ETag, UUID and capture version, not the illustrative
+values above. `enroll confirm` requires session, unit, EPC and `--capture-version`;
+`enroll capture` discards earlier candidates. `enroll resume` preserves a saved
+queue but starts a fresh capture. `--replace` on enrollment retires the previous
+tag without replacing the unit. Lookup, baseline, correct, unbind, retire and
+undo are explicit subcommands. `tracking apply --input command.json` covers
+other typed commands, including installation and quantity reconciliation.
+
+Config validation and replay are offline, before credentials are resolved.
+Replay always uses a new in-memory simulator, never the configured production
+origin. Exports are private 0600 files, atomically created without overwriting
+an existing path. Import requires a synced catalog with matching stable IDs and
+the usual tracking revision/retry key. Raw `observe` batches are administrator-
+only and deduplicated by reader session/sequence. They are not ordinary catalog
+writes. [Tracking setup, rules, recovery and hardware](rfid.md).
 
 ## Today
 

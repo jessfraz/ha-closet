@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0
+
+- Pair UHF tags with physical copies of the existing inventory, using photos
+  rather than retyping garment details.
+- Infer one garment status from confirmed area scans, with conservative outage
+  recovery and a separate Ready to wear view. No model makes these decisions.
+- Add reader diagnostics, installation exceptions, tag replacement, audited
+  corrections, private exports and an isolated replay simulator.
+- Project counts, health and optional per-piece status sensors into HA.
+
+## 0.1.13
+
+- Load native image previews in grids and keep full-resolution item galleries.
+
 ## 0.1.12
 
 - Keep material nouns in labels such as Pebbled leather and Bovine leather.

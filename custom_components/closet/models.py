@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from .tracking import TrackingSummary
+
 
 @dataclass(frozen=True, slots=True)
 class ClosetSummary:
@@ -13,6 +15,7 @@ class ClosetSummary:
     item_count: int
     archived_count: int
     today_configured: bool
+    tracking: TrackingSummary | None = None
 
     @classmethod
     def parse(cls, value: object) -> ClosetSummary:
@@ -42,4 +45,4 @@ class ClosetSummary:
         configured = value.get("today_configured")
         if type(configured) is not bool:
             raise ValueError("Invalid Closet capability")
-        return cls(version, role, *counts, configured)
+        return cls(version, role, counts[0], counts[1], counts[2], configured)

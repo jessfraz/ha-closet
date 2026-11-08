@@ -41,7 +41,7 @@
         cargoLock.lockFile = ./Cargo.lock;
         cargoBuildFlags = ["--bin" "ha-closet"];
         # The real-binary HTTP tests run in the package build, too.
-        cargoTestFlags = ["--test" "cli"];
+        cargoTestFlags = ["--test" "cli" "--test" "tracking_replay"];
         # The fixture servers bind only to loopback during the check phase.
         __darwinAllowLocalNetworking = true;
         nativeBuildInputs = [pkgs.pkg-config];

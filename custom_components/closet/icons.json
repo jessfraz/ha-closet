@@ -1,8 +1,60 @@
 {
   "entity": {
     "sensor": {
-      "items": {"default": "mdi:hanger"},
-      "archived": {"default": "mdi:archive-outline"}
+      "items": {
+        "default": "mdi:hanger"
+      },
+      "archived": {
+        "default": "mdi:archive-outline"
+      },
+      "tracking_certified_ready": {
+        "default": "mdi:hanger"
+      },
+      "tracking_total_units": {
+        "default": "mdi:hanger"
+      },
+      "tracking_tagged_units": {
+        "default": "mdi:hanger"
+      },
+      "tracking_clean_ready": {
+        "default": "mdi:hanger"
+      },
+      "tracking_worn_ready": {
+        "default": "mdi:hanger"
+      },
+      "tracking_needs_laundry": {
+        "default": "mdi:hanger"
+      },
+      "tracking_queued_dry_cleaning": {
+        "default": "mdi:hanger"
+      },
+      "tracking_being_worn": {
+        "default": "mdi:hanger"
+      },
+      "tracking_in_wash": {
+        "default": "mdi:hanger"
+      },
+      "tracking_at_cleaners": {
+        "default": "mdi:hanger"
+      },
+      "tracking_unknown": {
+        "default": "mdi:hanger"
+      },
+      "tracking_exceptions": {
+        "default": "mdi:hanger"
+      },
+      "tracking_retired": {
+        "default": "mdi:hanger"
+      },
+      "tracking_archived": {
+        "default": "mdi:hanger"
+      },
+      "tracking_health": {
+        "default": "mdi:access-point"
+      },
+      "unit_status": {
+        "default": "mdi:hanger"
+      }
     }
   }
 }

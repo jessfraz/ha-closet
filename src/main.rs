@@ -1,6 +1,7 @@
 mod config;
 mod logging;
 mod supervisor;
+mod tracking_runtime;
 
 use std::sync::Arc;
 
@@ -20,6 +21,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let logger = logging::logger();
+    let reader_options = tracking_runtime::options(
+        config.reader_secrets_file.as_deref(),
+        config.reader_ca_file.as_deref(),
+    )?;
+    let supervisor = Supervisor::from_environment()?;
     let store = Store::open(&config.database).await?;
     let mut context = api::Context::new(
         store.clone(),
@@ -48,10 +54,24 @@ async fn main() -> Result<()> {
                 logger.clone(),
             )
         })
-        .transpose()?;
+        .transpose();
+    let ingress = match ingress {
+        Ok(ingress) => ingress,
+        Err(error) => {
+            let _ = server.close().await;
+            let _ = context.shutdown().await;
+            store.close().await;
+            return Err(error);
+        }
+    };
     let (stop, mut stopped) = tokio::sync::watch::channel(false);
-    let discovery = if let (Some(supervisor), Some(token)) =
-        (Supervisor::from_environment()?, config.integration_token)
+    let tracking = tokio::spawn(tracking_runtime::run(
+        store.clone(),
+        reader_options,
+        logger.clone(),
+        stopped.clone(),
+    ));
+    let discovery = if let (Some(supervisor), Some(token)) = (supervisor, config.integration_token)
     {
         Some(tokio::spawn(async move {
             loop {
@@ -73,7 +93,7 @@ async fn main() -> Result<()> {
         None
     };
 
-    shutdown().await?;
+    let signal_result = shutdown().await;
     let api_result = server.close().await;
     let ingress_result = if let Some(ingress) = ingress {
         ingress.close().await
@@ -81,13 +101,22 @@ async fn main() -> Result<()> {
         Ok(())
     };
     let _ = stop.send(true);
-    if let Some(discovery) = discovery {
-        discovery.await?;
-    }
+    let discovery_result = if let Some(discovery) = discovery {
+        discovery.await.map_err(anyhow::Error::from)
+    } else {
+        Ok(())
+    };
+    let tracking_result = tracking
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result);
     // Accepted generation work owns its completion state until it drains.
     // Close SQLite only after no request or worker can still publish a result.
     let workers_result = context.shutdown().await;
     store.close().await;
+    signal_result?;
+    discovery_result?;
+    tracking_result?;
     workers_result?;
     api_result.map_err(|_| anyhow::anyhow!("close API listener"))?;
     ingress_result.map_err(|_| anyhow::anyhow!("close ingress listener"))?;

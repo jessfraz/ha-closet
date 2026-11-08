@@ -16,6 +16,9 @@ use closet::models::{
 use reqwest::{Method, RequestBuilder, Url};
 use serde::{Serialize, de::DeserializeOwned};
 
+#[path = "../tracking_cli.rs"]
+mod tracking_cli;
+
 const MAX_INPUT_BYTES: u64 = closet::models::MAX_CATALOG_BYTES as u64;
 type Result<T> = std::result::Result<T, Failure>;
 
@@ -53,6 +56,8 @@ enum Command {
     Items(Items),
     #[command(subcommand)]
     Today(Today),
+    #[command(subcommand)]
+    Tracking(tracking_cli::Command),
 }
 
 #[derive(Subcommand)]
@@ -94,10 +99,16 @@ enum Items {
         /// Exact source key: shop:<id> or purchase:<value>.
         #[arg(long)]
         source: Option<Source>,
+        #[arg(long)]
+        ready_to_wear: Option<bool>,
+        #[arg(long, value_parser = tracking_cli::parse_status)]
+        status: Option<closet::tracking::models::UnitStatus>,
+        #[arg(long)]
+        area: Option<closet::tracking::models::AreaId>,
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: Option<u32>,
         /// Continue the applied query without repeating filters.
-        #[arg(long, conflicts_with_all = ["q", "brand", "category", "source"])]
+        #[arg(long, conflicts_with_all = ["q", "brand", "category", "source", "ready_to_wear", "status", "area"])]
         page_token: Option<String>,
         #[arg(long, value_enum, default_value = "json")]
         format: Format,
@@ -307,6 +318,11 @@ async fn send<T: DeserializeOwned + Serialize>(request: RequestBuilder) -> Resul
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    if let Command::Tracking(command) = &cli.command
+        && let Some(result) = tracking_cli::offline(command).await
+    {
+        return result;
+    }
     // This branch deliberately precedes URL/credential/transport resolution.
     // CI validation uses the server's parser without building an HTTP client.
     if let Command::Inventory(Inventory::Validate(input)) = &cli.command {
@@ -336,9 +352,21 @@ async fn run(cli: Cli) -> Result<()> {
     } else {
         None
     };
+    let tracking = if let Command::Tracking(command) = &cli.command {
+        Some(tracking_cli::prepare(command)?)
+    } else {
+        None
+    };
     let api = configure_api(&cli)?;
     match cli.command {
         Command::System => send::<System>(api.request(Method::GET, "/system")?).await,
+        Command::Tracking(_) => {
+            tracking_cli::send(
+                &api,
+                tracking.ok_or_else(|| Failure::local("invalid_arguments"))?,
+            )
+            .await
+        }
         Command::Inventory(Inventory::Validate(_)) => Err(Failure::local("invalid_arguments")),
         Command::Inventory(Inventory::Sync {
             dry_run,
@@ -371,6 +399,9 @@ async fn run(cli: Cli) -> Result<()> {
             brand,
             category,
             source,
+            ready_to_wear,
+            status,
+            area,
             limit,
             page_token,
             format,
@@ -381,6 +412,12 @@ async fn run(cli: Cli) -> Result<()> {
                 ("brand", brand),
                 ("category", category),
                 ("source", source.map(|source| source.to_string())),
+                (
+                    "ready_to_wear",
+                    ready_to_wear.map(|ready| ready.to_string()),
+                ),
+                ("status", status.map(|status| status.as_str().to_owned())),
+                ("area", area.map(|area| area.to_string())),
                 ("page_token", page_token),
             ] {
                 if let Some(value) = value {

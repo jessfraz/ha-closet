@@ -20,6 +20,105 @@
         ],
         "type": "string"
       },
+      "AreaConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/AreaId"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AreaKind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "thresholds": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AreaThresholds"
+              }
+            ],
+            "default": {
+              "absence_ms": null,
+              "movement_hysteresis_ms": null,
+              "positive_dwell_ms": null,
+              "positive_min_reads": null
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "id",
+          "kind",
+          "label"
+        ],
+        "type": "object"
+      },
+      "AreaId": {
+        "type": "string"
+      },
+      "AreaKind": {
+        "enum": [
+          "closet",
+          "rewear",
+          "hamper",
+          "dry_cleaning_bag"
+        ],
+        "type": "string"
+      },
+      "AreaThresholds": {
+        "additionalProperties": false,
+        "properties": {
+          "absence_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "movement_hysteresis_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "positive_dwell_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "positive_min_reads": {
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "BindingRetirement": {
+        "enum": [
+          "replaced",
+          "unbound",
+          "unit_retired",
+          "undo"
+        ],
+        "type": "string"
+      },
+      "BorrowState": {
+        "enum": [
+          "not_borrowed",
+          "pause_requested",
+          "paused",
+          "restore_requested",
+          "restored",
+          "failed"
+        ],
+        "type": "string"
+      },
       "CatalogItem": {
         "additionalProperties": false,
         "properties": {
@@ -104,6 +203,349 @@
         ],
         "type": "object"
       },
+      "CommandResult": {
+        "additionalProperties": false,
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "event_ids": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EnrollmentSession"
+              }
+            ],
+            "nullable": true
+          },
+          "tracking_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "unit_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "changed",
+          "event_ids",
+          "tracking_revision",
+          "unit_ids"
+        ],
+        "type": "object"
+      },
+      "ConfigurationVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "config": {
+            "$ref": "#/components/schemas/TrackingConfig"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "config",
+          "version"
+        ],
+        "type": "object"
+      },
+      "CoverageProof": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Producer must have independently proven continuous inventory on this port.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "verified_inventory"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "TCP/keepalive/tag reads alone cannot prove healthy empty-area coverage.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "transport_only"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/ReaderFault"
+              },
+              "type": {
+                "enum": [
+                  "fault"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CoverageState": {
+        "enum": [
+          "disabled",
+          "unverified",
+          "warming_up",
+          "healthy",
+          "disconnected",
+          "fault",
+          "borrowed"
+        ],
+        "type": "string"
+      },
+      "DataSource": {
+        "enum": [
+          "live",
+          "simulation"
+        ],
+        "type": "string"
+      },
+      "DecisionDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "area_id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AreaId"
+              }
+            ],
+            "nullable": true
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ObservationRef"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/DecisionReason"
+          },
+          "unit_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "evidence",
+          "reason",
+          "unit_id"
+        ],
+        "type": "object"
+      },
+      "DecisionReason": {
+        "enum": [
+          "manual_baseline",
+          "stable_area",
+          "confirmed_absence",
+          "manual_correction",
+          "tracking_pause",
+          "retirement",
+          "tag_unbound",
+          "tag_bound",
+          "tag_replaced",
+          "undo",
+          "catalog_archive",
+          "catalog_restore",
+          "quantity_reconciliation",
+          "ambiguous_evidence",
+          "insufficient_evidence",
+          "coverage_unavailable",
+          "old_evidence",
+          "invalid_clock",
+          "enrollment_isolation",
+          "installation_update"
+        ],
+        "type": "string"
+      },
+      "EnrollmentCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "bound_unit_id": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "epc": {
+            "$ref": "#/components/schemas/Epc"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "read_count": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selectable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "epc",
+          "first_seen_at",
+          "last_seen_at",
+          "read_count",
+          "selectable"
+        ],
+        "type": "object"
+      },
+      "EnrollmentPurpose": {
+        "enum": [
+          "bind",
+          "replace",
+          "lookup"
+        ],
+        "type": "string"
+      },
+      "EnrollmentSession": {
+        "additionalProperties": false,
+        "properties": {
+          "borrow_state": {
+            "$ref": "#/components/schemas/BorrowState"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/EnrollmentCandidate"
+            },
+            "type": "array"
+          },
+          "capture_overflow": {
+            "type": "boolean"
+          },
+          "capture_started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "capture_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "port_id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/EnrollmentPurpose"
+          },
+          "queue": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/EnrollmentState"
+          }
+        },
+        "required": [
+          "borrow_state",
+          "candidates",
+          "capture_overflow",
+          "capture_started_at",
+          "capture_version",
+          "cursor",
+          "expires_at",
+          "id",
+          "port_id",
+          "purpose",
+          "queue",
+          "state"
+        ],
+        "type": "object"
+      },
+      "EnrollmentState": {
+        "enum": [
+          "active",
+          "complete",
+          "aborted",
+          "expired",
+          "recovery_required"
+        ],
+        "type": "string"
+      },
+      "Epc": {
+        "description": "Canonical uppercase, variable-length byte hex. Leading zeros are significant.",
+        "type": "string"
+      },
       "Error": {
         "description": "Error information from a response.",
         "properties": {
@@ -148,6 +590,39 @@
           "brands",
           "categories",
           "sources"
+        ],
+        "type": "object"
+      },
+      "FaultDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "code": {
+            "$ref": "#/components/schemas/ReaderFault"
+          },
+          "port_id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PortId"
+              }
+            ],
+            "nullable": true
+          },
+          "reader_id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReaderId"
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "required": [
+          "at",
+          "code"
         ],
         "type": "object"
       },
@@ -374,6 +849,119 @@
         ],
         "type": "string"
       },
+      "HistoryEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "after": {
+            "$ref": "#/components/schemas/StoredUnit"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "automatic": {
+            "type": "boolean"
+          },
+          "before": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StoredUnit"
+              }
+            ],
+            "nullable": true
+          },
+          "configuration_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ObservationRef"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/HistoryKind"
+          },
+          "note": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/DecisionReason"
+          },
+          "source_area": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AreaId"
+              }
+            ],
+            "nullable": true
+          },
+          "unit_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor",
+          "after",
+          "at",
+          "automatic",
+          "configuration_version",
+          "evidence",
+          "id",
+          "kind",
+          "reason",
+          "unit_id"
+        ],
+        "type": "object"
+      },
+      "HistoryKind": {
+        "enum": [
+          "baseline",
+          "presence",
+          "absence",
+          "correction",
+          "pause",
+          "retire",
+          "unbind",
+          "bind",
+          "replace",
+          "undo",
+          "archive",
+          "restore",
+          "quantity_reconciliation"
+        ],
+        "type": "string"
+      },
+      "HistoryPage": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryEvent"
+            },
+            "type": "array"
+          },
+          "next_before": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "type": "object"
+      },
       "ImageConfidence": {
         "enum": [
           "high",
@@ -460,6 +1048,122 @@
       },
       "ImageSha": {
         "type": "string"
+      },
+      "IngestResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "candidate_changes": {
+            "type": "boolean"
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "tracking_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "unit_changes": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accepted",
+          "candidate_changes",
+          "duplicate",
+          "tracking_revision",
+          "unit_changes"
+        ],
+        "type": "object"
+      },
+      "Installation": {
+        "additionalProperties": false,
+        "properties": {
+          "no_tag_reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "notes": {
+            "nullable": true,
+            "type": "string"
+          },
+          "placement": {
+            "nullable": true,
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstallationState"
+          },
+          "tag_model": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "InstallationState": {
+        "enum": [
+          "needs_tag",
+          "seamstress_queued",
+          "installed",
+          "exempt"
+        ],
+        "type": "string"
+      },
+      "InventoryUnits": {
+        "additionalProperties": false,
+        "properties": {
+          "active_units": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "capacity_limited": {
+            "type": "boolean"
+          },
+          "catalog_id": {
+            "type": "string"
+          },
+          "catalog_quantity": {
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "declared_quantity": {
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "needs_reconciliation": {
+            "type": "boolean"
+          },
+          "unallocated_units": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active_units",
+          "archived",
+          "capacity_limited",
+          "catalog_id",
+          "needs_reconciliation",
+          "unallocated_units"
+        ],
+        "type": "object"
       },
       "Item": {
         "properties": {
@@ -579,6 +1283,11 @@
           "total": {
             "format": "int64",
             "type": "integer"
+          },
+          "tracking_revision": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
           }
         },
         "required": [
@@ -587,6 +1296,72 @@
           "items",
           "scope_total",
           "total"
+        ],
+        "type": "object"
+      },
+      "KeepaliveTrigger": {
+        "enum": [
+          "none",
+          "periodic"
+        ],
+        "type": "string"
+      },
+      "LlrpControlSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "hold_events_and_reports_upon_reconnect": {
+            "type": "boolean"
+          },
+          "keepalive": {
+            "$ref": "#/components/schemas/LlrpKeepalive"
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/LlrpEventSetting"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hold_events_and_reports_upon_reconnect",
+          "keepalive",
+          "notifications"
+        ],
+        "type": "object"
+      },
+      "LlrpEventSetting": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "event_type": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "event_type"
+        ],
+        "type": "object"
+      },
+      "LlrpKeepalive": {
+        "additionalProperties": false,
+        "properties": {
+          "interval_ms": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/KeepaliveTrigger"
+          }
+        },
+        "required": [
+          "interval_ms",
+          "trigger"
         ],
         "type": "object"
       },
@@ -609,6 +1384,122 @@
       "NativeImageId": {
         "type": "string"
       },
+      "ObservationBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_session": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "coverage": {
+            "items": {
+              "$ref": "#/components/schemas/PortCoverage"
+            },
+            "type": "array"
+          },
+          "data_source": {
+            "$ref": "#/components/schemas/DataSource"
+          },
+          "observations": {
+            "items": {
+              "$ref": "#/components/schemas/TagObservation"
+            },
+            "type": "array"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/ObservationPurpose"
+          },
+          "readback": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReaderReadback"
+              }
+            ],
+            "nullable": true
+          },
+          "reader_id": {
+            "$ref": "#/components/schemas/ReaderId"
+          },
+          "sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connected",
+          "coverage",
+          "data_source",
+          "observations",
+          "observed_at",
+          "purpose",
+          "reader_id",
+          "sequence",
+          "session"
+        ],
+        "type": "object"
+      },
+      "ObservationPurpose": {
+        "enum": [
+          "inventory",
+          "enrollment",
+          "test"
+        ],
+        "type": "string"
+      },
+      "ObservationRef": {
+        "additionalProperties": false,
+        "properties": {
+          "event_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "port_id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "reader_id": {
+            "$ref": "#/components/schemas/ReaderId"
+          },
+          "received_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "observed_at",
+          "port_id",
+          "reader_id",
+          "received_at",
+          "sequence",
+          "session"
+        ],
+        "type": "object"
+      },
       "Occasion": {
         "enum": [
           "all",
@@ -616,6 +1507,279 @@
           "work",
           "dinner",
           "bedtime"
+        ],
+        "type": "string"
+      },
+      "OperationRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "request_hash": {
+            "type": "string"
+          },
+          "response": {
+            "$ref": "#/components/schemas/CommandResult"
+          }
+        },
+        "required": [
+          "actor",
+          "key",
+          "request_hash",
+          "response"
+        ],
+        "type": "object"
+      },
+      "PhysicalUnit": {
+        "additionalProperties": false,
+        "description": "Snapshot deliberately exposes binding presence, not raw EPCs in inventory.",
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "baseline_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "catalog_id": {
+            "type": "string"
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current_area": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AreaId"
+              }
+            ],
+            "nullable": true
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/StateEvidence"
+          },
+          "exception": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TrackingException"
+              }
+            ],
+            "nullable": true
+          },
+          "fence_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "has_binding": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "installation": {
+            "$ref": "#/components/schemas/Installation"
+          },
+          "last_confirmed_area": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AreaId"
+              }
+            ],
+            "nullable": true
+          },
+          "last_event_id": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "ordinal": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "retired": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/UnitStatus"
+          }
+        },
+        "required": [
+          "archived",
+          "catalog_id",
+          "changed_at",
+          "evidence",
+          "fence_at",
+          "has_binding",
+          "id",
+          "installation",
+          "ordinal",
+          "paused",
+          "retired",
+          "status"
+        ],
+        "type": "object"
+      },
+      "PortConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "antenna": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "area_id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AreaId"
+              }
+            ],
+            "nullable": true
+          },
+          "commissioned": {
+            "description": "Operator commission is necessary but never substitutes for live proof.",
+            "type": "boolean"
+          },
+          "dwell_ms": {
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "reader_id": {
+            "$ref": "#/components/schemas/ReaderId"
+          },
+          "required_for_absence": {
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/components/schemas/PortRole"
+          },
+          "transmit_power_cdbm": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "antenna",
+          "commissioned",
+          "enabled",
+          "id",
+          "reader_id",
+          "required_for_absence",
+          "role"
+        ],
+        "type": "object"
+      },
+      "PortCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "ended_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "port_id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/CoverageProof"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ended_at",
+          "port_id",
+          "proof",
+          "started_at"
+        ],
+        "type": "object"
+      },
+      "PortHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "healthy_since": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "last_coverage_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "port_id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CoverageState"
+          }
+        },
+        "required": [
+          "port_id",
+          "state"
+        ],
+        "type": "object"
+      },
+      "PortId": {
+        "type": "string"
+      },
+      "PortReadback": {
+        "additionalProperties": false,
+        "properties": {
+          "antenna": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dwell_ms": {
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "port_id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "transmit_power_cdbm": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "antenna",
+          "enabled",
+          "port_id"
+        ],
+        "type": "object"
+      },
+      "PortRole": {
+        "enum": [
+          "monitor",
+          "enrollment"
         ],
         "type": "string"
       },
@@ -641,6 +1805,432 @@
           "basis",
           "currency",
           "quantity_basis"
+        ],
+        "type": "object"
+      },
+      "ProjectedUnit": {
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/StateEvidence"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "ordinal": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "retired": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/UnitStatus"
+          }
+        },
+        "required": [
+          "archived",
+          "evidence",
+          "id",
+          "ordinal",
+          "paused",
+          "retired",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReaderCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "antenna_ports": {
+            "items": {
+              "format": "uint16",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "continuous_inventory_proof": {
+            "type": "boolean"
+          },
+          "firmware": {
+            "nullable": true,
+            "type": "string"
+          },
+          "inventory_pause": {
+            "type": "boolean"
+          },
+          "max_dwell_ms": {
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "max_power_cdbm": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "min_dwell_ms": {
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "min_power_cdbm": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "antenna_ports",
+          "continuous_inventory_proof",
+          "inventory_pause"
+        ],
+        "type": "object"
+      },
+      "ReaderConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ReaderConnection"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ReaderId"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection",
+          "enabled",
+          "id",
+          "label"
+        ],
+        "type": "object"
+      },
+      "ReaderConnection": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "simulator"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "owned_rospec_id": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "port": {
+                "format": "uint16",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "impinj_llrp"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "host",
+              "owned_rospec_id",
+              "port",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "base_url": {
+                "type": "string"
+              },
+              "credentials": {
+                "$ref": "#/components/schemas/ReaderCredentials"
+              },
+              "type": {
+                "enum": [
+                  "impinj_iot"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "base_url",
+              "credentials",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ReaderControlOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "$ref": "#/components/schemas/LlrpControlSettings"
+          },
+          "configuration_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "original": {
+            "$ref": "#/components/schemas/LlrpControlSettings"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/ReaderControlPhase"
+          },
+          "reader_id": {
+            "$ref": "#/components/schemas/ReaderId"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "applied",
+          "configuration_version",
+          "original",
+          "phase",
+          "reader_id",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ReaderControlPhase": {
+        "enum": [
+          "pending",
+          "applied",
+          "restore_pending",
+          "restored",
+          "recovery_required"
+        ],
+        "type": "string"
+      },
+      "ReaderCredentials": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "none"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "password": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "basic_env"
+                ],
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "password",
+              "type",
+              "username"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ReaderFault": {
+        "enum": [
+          "disconnected",
+          "inventory_stopped",
+          "antenna_fault",
+          "clock_skew",
+          "protocol",
+          "recovery_required"
+        ],
+        "type": "string"
+      },
+      "ReaderId": {
+        "type": "string"
+      },
+      "ReaderOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_fingerprint": {
+            "nullable": true,
+            "type": "string"
+          },
+          "configuration_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "known_fingerprints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "owned_rospec_id": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending_fingerprint": {
+            "nullable": true,
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/ReaderOperationPhase"
+          },
+          "reader_id": {
+            "$ref": "#/components/schemas/ReaderId"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "configuration_version",
+          "known_fingerprints",
+          "owned_rospec_id",
+          "phase",
+          "reader_id",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ReaderOperationPhase": {
+        "enum": [
+          "pending",
+          "applied",
+          "recovery_required"
+        ],
+        "type": "string"
+      },
+      "ReaderReadback": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/ReaderCapabilities"
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/components/schemas/PortReadback"
+            },
+            "type": "array"
+          },
+          "reader_id": {
+            "$ref": "#/components/schemas/ReaderId"
+          }
+        },
+        "required": [
+          "at",
+          "capabilities",
+          "ports",
+          "reader_id"
+        ],
+        "type": "object"
+      },
+      "RecentRead": {
+        "additionalProperties": false,
+        "properties": {
+          "data_source": {
+            "$ref": "#/components/schemas/DataSource"
+          },
+          "epc": {
+            "$ref": "#/components/schemas/Epc"
+          },
+          "event_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "peak_rssi_cdbm": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "port_id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/ObservationPurpose"
+          },
+          "read_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reader_id": {
+            "$ref": "#/components/schemas/ReaderId"
+          },
+          "received_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tid": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "data_source",
+          "epc",
+          "observed_at",
+          "port_id",
+          "purpose",
+          "read_count",
+          "reader_id",
+          "received_at"
         ],
         "type": "object"
       },
@@ -706,6 +2296,42 @@
           "count",
           "label",
           "source"
+        ],
+        "type": "object"
+      },
+      "StateEvidence": {
+        "enum": [
+          "unknown",
+          "manual",
+          "rfid"
+        ],
+        "type": "string"
+      },
+      "StoredUnit": {
+        "additionalProperties": false,
+        "properties": {
+          "epc": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Epc"
+              }
+            ],
+            "nullable": true
+          },
+          "last_confirmed_kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AreaKind"
+              }
+            ],
+            "nullable": true
+          },
+          "unit": {
+            "$ref": "#/components/schemas/PhysicalUnit"
+          }
+        },
+        "required": [
+          "unit"
         ],
         "type": "object"
       },
@@ -924,6 +2550,147 @@
         ],
         "type": "object"
       },
+      "TagBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "bound_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "epc": {
+            "$ref": "#/components/schemas/Epc"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "retired_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "retirement": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BindingRetirement"
+              }
+            ],
+            "nullable": true
+          },
+          "unit_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bound_at",
+          "epc",
+          "id",
+          "unit_id"
+        ],
+        "type": "object"
+      },
+      "TagObservation": {
+        "additionalProperties": false,
+        "properties": {
+          "epc": {
+            "$ref": "#/components/schemas/Epc"
+          },
+          "event_ref": {
+            "nullable": true,
+            "type": "string"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "peak_rssi_cdbm": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "port_id": {
+            "$ref": "#/components/schemas/PortId"
+          },
+          "read_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tid": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "epc",
+          "first_seen_at",
+          "last_seen_at",
+          "port_id",
+          "read_count"
+        ],
+        "type": "object"
+      },
+      "Thresholds": {
+        "additionalProperties": false,
+        "properties": {
+          "absence_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "candidate_fresh_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "coverage_max_gap_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "movement_hysteresis_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "positive_dwell_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "positive_min_reads": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reader_event_max_age_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "warmup_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "absence_ms",
+          "candidate_fresh_ms",
+          "coverage_max_gap_ms",
+          "movement_hysteresis_ms",
+          "positive_dwell_ms",
+          "positive_min_reads",
+          "reader_event_max_age_ms",
+          "warmup_ms"
+        ],
+        "type": "object"
+      },
       "TodayRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1028,6 +2795,973 @@
         ],
         "type": "object"
       },
+      "TrackingCommand": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "config": {
+                "$ref": "#/components/schemas/TrackingConfig"
+              },
+              "type": {
+                "enum": [
+                  "configure"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "config",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "catalog_id": {
+                "type": "string"
+              },
+              "count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "declare_unit_count"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "catalog_id",
+              "count",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "catalog_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "reconcile_units"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "catalog_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "installation": {
+                "$ref": "#/components/schemas/Installation"
+              },
+              "type": {
+                "enum": [
+                  "installation"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "installation",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "area_id": {
+                "$ref": "#/components/schemas/AreaId"
+              },
+              "type": {
+                "enum": [
+                  "baseline"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "area_id",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "note": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/components/schemas/UnitStatus"
+              },
+              "type": {
+                "enum": [
+                  "correct"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "note",
+              "status",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "paused": {
+                "type": "boolean"
+              },
+              "type": {
+                "enum": [
+                  "pause"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "paused",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "note": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "retire"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "note",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "note": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "unbind"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "note",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "event_id": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "note": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "undo"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "event_id",
+              "note",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "borrow": {
+                "type": "boolean"
+              },
+              "port_id": {
+                "$ref": "#/components/schemas/PortId"
+              },
+              "purpose": {
+                "$ref": "#/components/schemas/EnrollmentPurpose"
+              },
+              "ttl_seconds": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "start_enrollment"
+                ],
+                "type": "string"
+              },
+              "unit_ids": {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "borrow",
+              "port_id",
+              "purpose",
+              "ttl_seconds",
+              "type",
+              "unit_ids"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "session_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "reset_capture"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "session_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "ttl_seconds": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "resume_enrollment"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "ttl_seconds",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "baseline_area": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/AreaId"
+                  }
+                ],
+                "nullable": true
+              },
+              "capture_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "epc": {
+                "$ref": "#/components/schemas/Epc"
+              },
+              "session_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "select_candidate"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "capture_version",
+              "epc",
+              "session_id",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "capture_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "session_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "skip"
+                ],
+                "type": "string"
+              },
+              "unit_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "capture_version",
+              "session_id",
+              "type",
+              "unit_id"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "session_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "abort_enrollment"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Reader adapter acknowledges inventory configuration, never RF tag writes.",
+            "properties": {
+              "session_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/BorrowState"
+              },
+              "type": {
+                "enum": [
+                  "acknowledge_borrow"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id",
+              "state",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": [
+                  "tick"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/TrackingExport"
+              },
+              "type": {
+                "enum": [
+                  "import"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TrackingConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "areas": {
+            "items": {
+              "$ref": "#/components/schemas/AreaConfig"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/components/schemas/PortConfig"
+            },
+            "type": "array"
+          },
+          "readers": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderConfig"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "thresholds": {
+            "$ref": "#/components/schemas/Thresholds"
+          }
+        },
+        "required": [
+          "areas",
+          "enabled",
+          "ports",
+          "readers",
+          "schema_version",
+          "thresholds"
+        ],
+        "type": "object"
+      },
+      "TrackingCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "at_cleaners": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "being_worn": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "capacity_limited_items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "certified_ready": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clean_ready": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "exceptions": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "in_wash": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "needs_laundry": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quantity_unknown_items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "queued_dry_cleaning": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retired": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tagged_units": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_units": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unallocated_units": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unknown": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worn_ready": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "archived",
+          "at_cleaners",
+          "being_worn",
+          "capacity_limited_items",
+          "certified_ready",
+          "clean_ready",
+          "exceptions",
+          "in_wash",
+          "needs_laundry",
+          "quantity_unknown_items",
+          "queued_dry_cleaning",
+          "retired",
+          "tagged_units",
+          "total_units",
+          "unallocated_units",
+          "unknown",
+          "worn_ready"
+        ],
+        "type": "object"
+      },
+      "TrackingDiagnostics": {
+        "additionalProperties": false,
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionDiagnostic"
+            },
+            "type": "array"
+          },
+          "faults": {
+            "items": {
+              "$ref": "#/components/schemas/FaultDiagnostic"
+            },
+            "type": "array"
+          },
+          "recent_reads": {
+            "items": {
+              "$ref": "#/components/schemas/RecentRead"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "decisions",
+          "faults",
+          "recent_reads"
+        ],
+        "type": "object"
+      },
+      "TrackingException": {
+        "enum": [
+          "needs_baseline",
+          "quantity_unknown",
+          "needs_reconciliation",
+          "ambiguous_reads",
+          "insufficient_evidence",
+          "paused",
+          "archived",
+          "enrollment_recovery"
+        ],
+        "type": "string"
+      },
+      "TrackingExport": {
+        "additionalProperties": false,
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/TagBinding"
+            },
+            "type": "array"
+          },
+          "config": {
+            "$ref": "#/components/schemas/TrackingConfig"
+          },
+          "configuration_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "configurations": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigurationVersion"
+            },
+            "type": "array"
+          },
+          "data_source": {
+            "$ref": "#/components/schemas/DataSource"
+          },
+          "exported_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryEvent"
+            },
+            "type": "array"
+          },
+          "inventory": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryUnits"
+            },
+            "type": "array"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationRecord"
+            },
+            "type": "array"
+          },
+          "reader_controls": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderControlOperation"
+            },
+            "type": "array"
+          },
+          "reader_operations": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderOperation"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/EnrollmentSession"
+            },
+            "type": "array"
+          },
+          "tracking_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/StoredUnit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "bindings",
+          "config",
+          "configuration_version",
+          "configurations",
+          "data_source",
+          "exported_at",
+          "history",
+          "inventory",
+          "operations",
+          "reader_controls",
+          "reader_operations",
+          "schema_version",
+          "sessions",
+          "tracking_revision",
+          "units"
+        ],
+        "type": "object"
+      },
+      "TrackingHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "absence_coverage_healthy": {
+            "type": "boolean"
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/components/schemas/PortHealth"
+            },
+            "type": "array"
+          },
+          "recent_unknown_tag_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "required_ports": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "restart_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "warming_up": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "absence_coverage_healthy",
+          "ports",
+          "recent_unknown_tag_count",
+          "required_ports",
+          "restart_at",
+          "warming_up"
+        ],
+        "type": "object"
+      },
+      "TrackingProjection": {
+        "description": "A small HA projection, not the enrollment workspace or a second state engine.",
+        "properties": {
+          "certified_ready_unit_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "config": {
+            "$ref": "#/components/schemas/TrackingConfig"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/TrackingCounts"
+          },
+          "health": {
+            "$ref": "#/components/schemas/TrackingHealth"
+          },
+          "next_page": {
+            "nullable": true,
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tracking_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectedUnit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "certified_ready_unit_ids",
+          "config",
+          "counts",
+          "health",
+          "schema_version",
+          "tracking_revision",
+          "units"
+        ],
+        "type": "object"
+      },
+      "TrackingSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "certified_ready_unit_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "config": {
+            "$ref": "#/components/schemas/TrackingConfig"
+          },
+          "configuration_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/TrackingCounts"
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/TrackingDiagnostics"
+          },
+          "health": {
+            "$ref": "#/components/schemas/TrackingHealth"
+          },
+          "inventory": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryUnits"
+            },
+            "type": "array"
+          },
+          "reader_controls": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderControlOperation"
+            },
+            "type": "array"
+          },
+          "reader_operations": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderOperation"
+            },
+            "type": "array"
+          },
+          "reader_readbacks": {
+            "items": {
+              "$ref": "#/components/schemas/ReaderReadback"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/EnrollmentSession"
+            },
+            "type": "array"
+          },
+          "tracking_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/PhysicalUnit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "certified_ready_unit_ids",
+          "config",
+          "configuration_version",
+          "counts",
+          "diagnostics",
+          "health",
+          "inventory",
+          "reader_controls",
+          "reader_operations",
+          "reader_readbacks",
+          "schema_version",
+          "sessions",
+          "tracking_revision",
+          "units"
+        ],
+        "type": "object"
+      },
+      "UnitStatus": {
+        "enum": [
+          "unknown",
+          "clean_ready",
+          "worn_ready",
+          "needs_laundry",
+          "queued_dry_cleaning",
+          "being_worn",
+          "in_wash",
+          "at_cleaners"
+        ],
+        "type": "string"
+      },
       "UploadClaimAction": {
         "enum": [
           "begin",
@@ -1121,7 +3855,7 @@
   "info": {
     "description": "Inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.1.13"
+    "version": "0.2.0"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -1274,6 +4008,24 @@
     "/style.css": {
       "get": {
         "operationId": "style",
+        "responses": {
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/tracking.js": {
+      "get": {
+        "operationId": "tracking_script",
         "responses": {
           "default": {
             "content": {
@@ -1704,6 +4456,13 @@
         "parameters": [
           {
             "in": "query",
+            "name": "area",
+            "schema": {
+              "$ref": "#/components/schemas/AreaId"
+            }
+          },
+          {
+            "in": "query",
             "name": "brand",
             "schema": {
               "nullable": true,
@@ -1745,12 +4504,28 @@
             }
           },
           {
+            "description": "Match at least one physical unit with this readiness, not ownership.",
+            "in": "query",
+            "name": "ready_to_wear",
+            "schema": {
+              "nullable": true,
+              "type": "boolean"
+            }
+          },
+          {
             "description": "`shop:<id>` or `purchase:<value>`; omit for all sources.",
             "in": "query",
             "name": "source",
             "schema": {
               "nullable": true,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "$ref": "#/components/schemas/UnitStatus"
             }
           }
         ],
@@ -1971,6 +4746,376 @@
           "today"
         ]
       }
+    },
+    "/v1/tracking": {
+      "get": {
+        "operationId": "tracking_snapshot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackingSnapshot"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              },
+              "etag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Physical-unit state is separate from authoritative garment metadata.",
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
+    "/v1/tracking/commands": {
+      "post": {
+        "operationId": "tracking_command",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrackingCommand"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResult"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              },
+              "etag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Every administrative tracking operation uses its own revision and replay key.",
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
+    "/v1/tracking/export": {
+      "get": {
+        "operationId": "tracking_export",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackingExport"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Private versioned operational export. Catalog metadata is not copied here.",
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
+    "/v1/tracking/history": {
+      "get": {
+        "operationId": "tracking_history",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "before",
+            "schema": {
+              "format": "int64",
+              "nullable": true,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "uint16",
+              "minimum": 0,
+              "nullable": true,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryPage"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Audit history includes bindings; routine HA entities do not expose EPCs.",
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
+    "/v1/tracking/observations": {
+      "post": {
+        "description": "Receipt time is supplied by the server, never trusted from an HTTP caller.",
+        "operationId": "tracking_observations",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObservationBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResult"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              },
+              "etag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Reader sessions and sequences deduplicate bounded normalized evidence.",
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
+    "/v1/tracking/projection": {
+      "get": {
+        "operationId": "tracking_projection",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "uint16",
+              "minimum": 0,
+              "nullable": true,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_token",
+            "schema": {
+              "nullable": true,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackingProjection"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              },
+              "etag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
+    "/v1/tracking/units/{id}/history": {
+      "get": {
+        "operationId": "tracking_unit_history",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "schema": {
+              "format": "int64",
+              "nullable": true,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "uint16",
+              "minimum": 0,
+              "nullable": true,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryPage"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "tags": [
+          "tracking"
+        ]
+      }
     }
   },
   "tags": [
@@ -1982,6 +5127,9 @@
     },
     {
       "name": "today"
+    },
+    {
+      "name": "tracking"
     },
     {
       "name": "web"

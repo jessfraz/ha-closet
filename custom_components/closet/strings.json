@@ -67,6 +67,69 @@
       },
       "archived": {
         "name": "Archived items"
+      },
+      "tracking_certified_ready": {
+        "name": "Ready to wear"
+      },
+      "tracking_total_units": {
+        "name": "Tracked pieces"
+      },
+      "tracking_tagged_units": {
+        "name": "Tagged pieces"
+      },
+      "tracking_clean_ready": {
+        "name": "Clean / ready"
+      },
+      "tracking_worn_ready": {
+        "name": "Worn / ready to rewear"
+      },
+      "tracking_needs_laundry": {
+        "name": "Needs laundry"
+      },
+      "tracking_queued_dry_cleaning": {
+        "name": "Queued dry cleaning"
+      },
+      "tracking_being_worn": {
+        "name": "Being worn"
+      },
+      "tracking_in_wash": {
+        "name": "In wash"
+      },
+      "tracking_at_cleaners": {
+        "name": "At cleaners"
+      },
+      "tracking_unknown": {
+        "name": "Unknown status"
+      },
+      "tracking_exceptions": {
+        "name": "Tracking exceptions"
+      },
+      "tracking_retired": {
+        "name": "Retired tracking pieces"
+      },
+      "tracking_archived": {
+        "name": "Archived tracking pieces"
+      },
+      "tracking_health": {
+        "name": "Tracking coverage",
+        "state": {
+          "disabled": "Disabled",
+          "warming_up": "Warming up",
+          "healthy": "Healthy",
+          "needs_attention": "Needs attention"
+        }
+      },
+      "unit_status": {
+        "state": {
+          "unknown": "Unknown",
+          "clean_ready": "Clean / ready",
+          "worn_ready": "Worn / ready to rewear",
+          "needs_laundry": "Needs laundry",
+          "queued_dry_cleaning": "Queued for dry cleaning",
+          "being_worn": "Being worn",
+          "in_wash": "In the wash",
+          "at_cleaners": "At the cleaners"
+        }
       }
     }
   },

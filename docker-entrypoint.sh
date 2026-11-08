@@ -6,6 +6,11 @@ if [ "$(id -u)" -eq 0 ]; then
     if [ -f /data/options.json ]; then
         chown closet:closet /data/options.json
     fi
+    for reader_file in /data/reader-secrets.json /data/reader-ca.crt; do
+        if [ -f "$reader_file" ] && [ ! -L "$reader_file" ]; then
+            chown closet:closet "$reader_file"
+        fi
+    done
     exec gosu closet "$0" "$@"
 fi
 

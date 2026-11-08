@@ -57,6 +57,22 @@ width and three quarters of the height. The same viewport appears on cards
 and in the gallery. The original URL, source link and image pixels stay intact.
 Omit `crop` to show the full image.
 
+## Garment tracking
+
+Open Tracking to configure readers, enroll existing garments from their photos,
+or prepare an installation queue. Tracking starts disabled. Passive UHF tags
+need a UHF reader; a phone or tablet is only the pairing interface.
+
+The app infers one status from confirmed closet, rewear, hamper or dry-cleaning
+holder evidence. Readiness does not change which items remain in the inventory.
+Reader health is separate from garment state. No LLM makes tracking decisions.
+See [RFID setup and recovery](../docs/rfid.md) before commissioning hardware.
+
+Reader credentials can be supplied in the owner-only
+`/data/reader-secrets.json` reference map. A private reader CA belongs in
+`/data/reader-ca.crt`; normal certificate verification stays enabled.
+Neither file belongs in a public repository. Restart after changing either file.
+
 ## Today
 
 Today calls the configured HA AI Task only on request. GETs and page visits do
@@ -73,7 +89,9 @@ key to reconcile it before deliberately starting a new attempt.
 ## Backups
 
 The app uses a cold backup. Native Home Assistant backups include its data:
-SQLite catalog projection, sync/generation retry state and pairing credentials.
+SQLite catalog projection, sync/generation retry state, tracking unit identities,
+active/retired tags, configuration, movement history and pairing credentials.
+Private reader credentials and trust files in `/data` are backed up too.
 Keep the catalog, registries and local source photos in your private storage
 as well. Catalog files alone do not restore pairing or runtime state.
 

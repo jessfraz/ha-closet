@@ -1,5 +1,7 @@
 "use strict";
 
+import { TrackingController } from "./tracking.js";
+
 // The token belongs to this tab only. The JSON file, not this UI, owns the catalog.
 const byId = (id) => document.getElementById(id);
 let token = null;
@@ -20,8 +22,8 @@ let lastToday = null;
 let pendingGeneration = null;
 const items = new Map();
 const sourceLabels = new Map();
-const filterFields = [["q", "search"], ["brand", "brand"], ["category", "category"], ["source", "source"]];
-let appliedFilters = { q: "", brand: "", category: "", source: "" };
+const filterFields = [["q", "search"], ["brand", "brand"], ["category", "category"], ["source", "source"], ["ready_to_wear", "ready"], ["status", "tracking-status"], ["area", "tracking-area"]];
+let appliedFilters = Object.fromEntries(filterFields.map(([key]) => [key, ""]));
 let selectedItemId = null;
 let detailAbort = null;
 let detailRevision = 0;
@@ -184,7 +186,8 @@ async function request(path, options = {}) {
     catch { throw new APIError(response.status, "invalid_response"); }
   }
   if (!response.ok) {
-    throw new APIError(response.status, object(data) && typeof data.code === "string" ? data.code : "request_failed");
+    const code = object(data) && typeof data.error_code === "string" ? data.error_code : object(data) && typeof data.code === "string" ? data.code : "request_failed";
+    throw new APIError(response.status, code);
   }
   return data;
 }
@@ -193,6 +196,10 @@ function errorMessage(error) {
   if (error instanceof APIError) {
     if (error.status === 401) return "The connection is no longer authorized. Reload Closet to reconnect.";
     if (error.status === 403) return "This action needs owner or Home Assistant administrator access.";
+    if (error.code === "tracking_revision_conflict") return "Tracking changed elsewhere. Review the refreshed state and make the change again.";
+    if (error.code === "reader_capabilities_unavailable") return "Connect this reader and read its supported settings before requesting power or dwell changes.";
+    if (error.code === "reader_cleanup_required") return "Disable the reader and wait for its settings to be restored before removing it or importing tracking data.";
+    if (error.code === "simulation_isolation") return "Simulator evidence cannot be used for live tracking.";
     if (error.code === "page_invalidated") return "The inventory changed while paging. Refresh to start from the current catalog.";
     if (error.status === 409) return "Another request is in progress or the inventory changed. Read the current state before trying again.";
     if (error.status === 503) return "Closet or one of its configured services is unavailable.";
@@ -272,7 +279,7 @@ function sourceLabel(item) {
 
 function filterFromBadge(field, value, label) {
   selectView("inventory");
-  for (const id of ["search", "brand", "category", "source"]) byId(id).value = "";
+  for (const [, id] of filterFields) byId(id).value = "";
   const select = byId(field);
   if (![...select.options].some((option) => option.value === value)) select.add(new Option(label, value));
   select.value = value;
@@ -287,6 +294,7 @@ function sourceTone(source) {
 
 function itemCard(item, compact = false) {
   const card = element("article", compact ? "item-piece" : "item-card");
+  card.dataset.catalogId = item.id;
   const badge = (field, value, label, accessibleLabel) => {
     const button = element("button", `item-badge ${field}-badge`, label);
     button.type = "button";
@@ -311,6 +319,8 @@ function itemCard(item, compact = false) {
   card.append(button);
   if (!compact && metadata.length) card.append(element("span", "item-meta", metadata.join(" · ")));
   if (object(reference) && reference.notes) card.append(element("span", "image-note", reference.notes));
+  const trackingBadge = tracking.badge(item);
+  if (trackingBadge) card.append(trackingBadge);
   const source = sourceOf(item);
   const label = sourceLabel(item);
   if (source !== null && label !== null) {
@@ -573,6 +583,7 @@ function renderDetail(item) {
     for (const note of item.notes) notes.append(element("p", "", note));
     copy.append(notes);
   }
+  copy.append(tracking.detailSection(item));
   layout.append(imagePanel, copy);
   byId("detail-content").replaceChildren(layout);
 }
@@ -750,6 +761,7 @@ async function connect() {
   byId("app-version").textContent = data.version;
   byId("service-status").textContent = "Connected";
   applyLocation(navigationURL(), { refresh: true });
+  void tracking.refresh();
 }
 
 function selectView(next) {
@@ -757,15 +769,33 @@ function selectView(next) {
   stopAutoPaging();
   view = next;
   if (view !== "inventory" && listAutomatic) listAbort?.abort();
-  byId("inventory").hidden = view !== "inventory";
-  byId("today").hidden = view !== "today";
-  byId("inventory-tab").setAttribute("aria-pressed", String(view === "inventory"));
-  byId("today-tab").setAttribute("aria-pressed", String(view === "today"));
+  for (const name of ["inventory", "today", "tags", "tracking-settings"]) {
+    byId(name).hidden = view !== name;
+    byId(`${name}-tab`).setAttribute("aria-pressed", String(view === name));
+  }
+  tracking.setView(view);
   clearTimeout(pollTimer);
   notice();
   if (view === "today") { pollDeadline = 0; void loadToday(); }
-  else observeNextPage();
+  else if (view === "inventory") observeNextPage();
 }
+
+let knownTrackingRevision = null;
+const tracking = new TrackingController({
+  request, element, photo, getItem, openItem: openDetail, errorMessage, role: () => system?.role,
+  changed: () => {
+    const revision = tracking.snapshot?.tracking_revision;
+    const changed = knownTrackingRevision !== null && revision !== knownTrackingRevision;
+    knownTrackingRevision = revision ?? null;
+    if (changed && view === "inventory" && ["ready_to_wear", "status", "area"].some((key) => appliedFilters[key])) void loadInventory();
+    for (const card of document.querySelectorAll("[data-catalog-id]")) {
+      card.querySelector(":scope > .tracking-pill")?.remove();
+      const item = items.get(card.dataset.catalogId);
+      const badge = item && tracking.badge(item);
+      if (badge) card.insertBefore(badge, card.querySelector(".item-badges"));
+    }
+  },
+});
 
 byId("login").addEventListener("submit", async (event) => {
   event.preventDefault(); token = byId("token").value;
@@ -775,16 +805,19 @@ byId("login").addEventListener("submit", async (event) => {
 byId("refresh").addEventListener("click", async () => {
   items.clear();
   if (view === "today") { pollDeadline = 0; await loadToday(); }
-  else await loadInventory();
+  else if (view === "inventory") await loadInventory();
+  else { tracking.catalogFacets = null; tracking.workspaceKey = null; await tracking.refresh(); }
   if (selectedItemId) void loadDetail(selectedItemId);
 });
 byId("filters").addEventListener("submit", (event) => { event.preventDefault(); applyFilters(); });
 byId("brand").addEventListener("change", applyFilters);
 byId("category").addEventListener("change", applyFilters);
 byId("source").addEventListener("change", applyFilters);
+for (const id of ["ready", "tracking-status", "tracking-area"]) byId(id).addEventListener("change", applyFilters);
 byId("load-more").addEventListener("click", () => void loadInventory(true));
 byId("inventory-tab").addEventListener("click", () => selectView("inventory"));
 byId("today-tab").addEventListener("click", () => selectView("today"));
+for (const name of ["tags", "tracking-settings"]) byId(`${name}-tab`).addEventListener("click", () => selectView(name));
 byId("close-detail").addEventListener("click", closeDetail);
 byId("detail").addEventListener("cancel", (event) => { event.preventDefault(); closeDetail(); });
 byId("generate").addEventListener("submit", generate);
@@ -792,11 +825,13 @@ byId("generate").addEventListener("change", () => { todayDraft = true; byId("tod
 document.addEventListener("visibilitychange", () => {
   clearTimeout(pollTimer);
   stopAutoPaging();
+  if (document.hidden) tracking.suspend();
+  else if (system) void tracking.refresh();
   if (document.hidden && listAutomatic) listAbort?.abort();
   if (!document.hidden && view === "today" && system) void loadToday();
   if (!document.hidden && view === "inventory") observeNextPage();
 });
-window.addEventListener("pagehide", () => { clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); detailAbort?.abort(); detailRevision += 1; stopNavigation(); });
-window.addEventListener("pageshow", () => { startNavigation(); if (system) applyLocation(navigationURL(), { refresh: true }); observeNextPage(); });
+window.addEventListener("pagehide", () => { tracking.suspend(); clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); detailAbort?.abort(); detailRevision += 1; stopNavigation(); });
+window.addEventListener("pageshow", () => { startNavigation(); if (system) void tracking.refresh(); if (system) applyLocation(navigationURL(), { refresh: true }); observeNextPage(); });
 startNavigation();
 connect().catch((error) => { if (error instanceof APIError && error.status === 401) byId("login").hidden = false; else notice(errorMessage(error)); });

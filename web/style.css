@@ -35,7 +35,7 @@ p { margin: 0; }
 .app-version { font-family: var(--mono); font-size: 11px; margin-left: 6px; }
 .muted { color: var(--muted); font-size: 13px; line-height: 1.65; }
 .eyebrow { color: var(--muted); font: 11px/1.6 var(--mono); margin: 0 0 6px; }
-.view-switch { display: flex; gap: 6px; margin: 0 0 28px; }
+.view-switch { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 28px; }
 .view-switch button { color: var(--muted); background: transparent; border-color: transparent; }
 .view-switch button[aria-pressed="true"] { background: var(--paper); color: var(--ink); border-color: var(--line); }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
@@ -125,6 +125,50 @@ dd { margin: 0; }
 .photo-thumbnail[aria-pressed="true"] { border: 2px solid var(--ink); padding: 2px; }
 .photo-thumbnail .photo { border-radius: 3px; }
 .photo-thumbnail .photo-placeholder { font: 9px/1.3 var(--mono); padding: 3px; }
+.tracking-health { padding: 11px 14px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; line-height: 1.6; margin: 0 0 18px; }
+.tracking-health[data-warning="true"] { color: var(--warning); background: var(--warning-soft); border-color: transparent; }
+.tracking-pill { display: inline-block; align-self: flex-start; max-width: 100%; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; font: 11px/1.4 var(--mono); color: var(--muted); margin-top: 7px; }
+.tracking-pill[data-ready="true"] { color: #35532c; background: #deefd9; border-color: #b9d5b0; }
+.tracking-pill[data-stale="true"] { color: var(--warning); background: var(--warning-soft); border-color: transparent; }
+.tracking-detail { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 20px; }
+.tracking-unit { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.tracking-unit:last-child { border-bottom: 0; }
+.tracking-unit-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tracking-unit-heading .tracking-pill { margin: 0; }
+.tracking-unit .muted { margin-top: 8px; }
+.tracking-actions, .tag-modes, .enroll-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.tag-modes { margin: 22px 0; }
+.tag-modes button[aria-pressed="true"] { background: var(--paper); border-color: var(--ink); }
+.tracking-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+.tracking-form .wide { grid-column: 1 / -1; }
+.tracking-form input, .tracking-form select, .tracking-form textarea { width: 100%; max-width: none; }
+textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px; color: var(--ink); background: var(--paper); font: inherit; min-height: 80px; resize: vertical; }
+.tracking-history { padding-left: 20px; margin: 12px 0 0; font-size: 12px; line-height: 1.65; }
+.tracking-history li { margin-top: 10px; }
+.tracking-history time { color: var(--muted); display: block; font: 11px/1.6 var(--mono); }
+.enroll-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+.enroll-photo { min-width: 0; }
+.enroll-copy { min-width: 0; }
+.enroll-copy h2 { margin-top: 5px; }
+.enroll-copy > .muted { margin-top: 10px; }
+.enroll-actions button { min-height: 48px; }
+.capture-panel { background: var(--paper); border: 1px solid var(--line); padding: 18px; border-radius: 8px; margin-top: 20px; }
+.capture-panel h3 { font-size: 15px; }
+.capture-candidates { list-style: none; padding: 0; margin: 12px 0 0; }
+.capture-candidates li { padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.6; }
+.capture-candidates .muted { display: block; }
+.capture-state { margin-top: 12px; font-size: 13px; line-height: 1.65; }
+.tag-progress { display: flex; gap: 12px; flex-wrap: wrap; }
+.tag-queue { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 20px; margin-top: 22px; }
+.tag-queue-card { min-width: 0; }
+.tag-queue-card .photo { margin-bottom: 8px; }
+.tag-queue-card button { width: 100%; text-align: left; }
+.reader-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 20px 0; }
+.reader-card { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 18px; background: var(--paper); }
+.reader-card h3 { margin-bottom: 10px; }
+.reader-card dl { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.reader-health { margin-top: 12px; font-size: 12px; line-height: 1.65; }
+.settings-group { border-top: 1px solid var(--line); padding-top: 22px; margin-top: 24px; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #131415; --paper: #1b1c1e; --ink: #e6e6e4; --muted: #9c9fa3; --line: #2f3134; --soft: #242528; --accent: #e6e6e4; --on-accent: #131415; --warning: #f6d48e; --warning-soft: #46391e; --focus: #7fa6ee; }
   .brand-light { display: none; }
@@ -135,6 +179,7 @@ dd { margin: 0; }
   .source-tone-3 { background: #22374f; color: #bad7f6; border-color: #40658d; }
   .source-tone-4 { background: #492b34; color: #f3c0ce; border-color: #80505f; }
   .source-tone-5 { background: #1d3e38; color: #ace1d7; border-color: #3a7368; }
+  .tracking-pill[data-ready="true"] { color: #c8dfbe; background: #283a24; border-color: #4a6940; }
 }
 @media (max-width: 760px) {
   .item-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
@@ -152,9 +197,21 @@ dd { margin: 0; }
   .page-heading { flex-wrap: wrap; }
   .suggestion { padding: 16px; }
   .detail-layout { grid-template-columns: minmax(0,1fr); }
+  .enroll-layout { grid-template-columns: minmax(0,1fr); gap: 22px; }
+  .enroll-photo { max-width: 420px; width: 100%; margin-inline: auto; }
+  .tracking-form { grid-template-columns: minmax(0,1fr); }
   dialog { padding: 20px; }
 }
 @media (max-width: 360px) {
   .item-grid { grid-template-columns: minmax(0,1fr); }
   .pieces { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
+
+.sound-option { display: flex; flex-direction: row; align-items: center; gap: .5rem; }
+.sound-option input, .tracking-config-card input[type="checkbox"], .tracking-settings-form input[type="checkbox"] { width: auto; }
+.tracking-settings-form > label { margin-bottom: 1rem; }
+.tracking-config-card { min-width: 0; display: grid; gap: .65rem; padding: 1rem; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 1rem; }
+.tracking-config-card input { max-width: 100%; }
+.tracking-settings-form > details { margin: 1rem 0; }
+
+.tag-queue-card .tracking-form { grid-template-columns: minmax(0,1fr); }

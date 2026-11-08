@@ -1,5 +1,5 @@
 name: Closet
-version: "0.1.13"
+version: "0.2.0"
 slug: closet
 description: A wardrobe inventory with an optional outfit lottery
 url: https://github.com/jessfraz/ha-closet
@@ -10,6 +10,7 @@ image: ghcr.io/jessfraz/ha-closet
 startup: application
 boot: auto
 backup: cold
+timeout: 120
 init: false
 ingress: true
 ingress_port: 8099

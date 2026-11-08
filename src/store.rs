@@ -89,9 +89,24 @@ impl StoreError {
 }
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+impl From<crate::tracking::models::TrackingError> for StoreError {
+    fn from(error: crate::tracking::models::TrackingError) -> Self {
+        use crate::tracking::models::TrackingError;
+        match error {
+            TrackingError::Invalid { code, .. } => Self::Invalid(code),
+            TrackingError::Conflict(code) => Self::Conflict(code),
+            TrackingError::Revision => Self::Conflict("tracking_revision_conflict"),
+            TrackingError::NotFound => Self::NotFound,
+            TrackingError::Database(error) => Self::Database(error),
+            TrackingError::Serialization(error) => Self::Serialization(error),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Store {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
+    pub(crate) tracking: std::sync::Arc<tokio::sync::Mutex<crate::tracking::engine::Engine>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -108,6 +123,8 @@ pub struct Reservation {
 #[derive(Serialize, Deserialize)]
 struct Cursor {
     revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tracking_revision: Option<i64>,
     filters: ItemFilters,
     id: String,
 }
@@ -342,10 +359,19 @@ impl Store {
             .connect_with(options)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            tracking: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tracking::engine::Engine::default(),
+            )),
+        };
         store.remove_ownership_confirmation().await?;
         store.remove_purchase_condition().await?;
         store.interrupt_running().await?;
+        store
+            .tracking_startup(Utc::now())
+            .await
+            .map_err(StoreError::from)?;
         Ok(store)
     }
 
@@ -633,10 +659,20 @@ impl Store {
         }
         let mut tx = self.pool.begin().await?;
         let revision = state(&mut tx).await?.0;
-        if cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.revision != revision)
-        {
+        let tracking_revision = if filters.uses_tracking() {
+            Some(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT revision FROM tracking_state WHERE singleton=1",
+                )
+                .fetch_one(&mut *tx)
+                .await?,
+            )
+        } else {
+            None
+        };
+        if cursor.as_ref().is_some_and(|cursor| {
+            cursor.revision != revision || cursor.tracking_revision != tracking_revision
+        }) {
             return Err(StoreError::Conflict("page_invalidated"));
         }
         // A revision-bound ID still owns the same sort position. Resolve it in
@@ -669,6 +705,7 @@ impl Store {
                 .map(|row| -> Result<String> {
                     encode_cursor(&Cursor {
                         revision,
+                        tracking_revision,
                         filters: filters.clone(),
                         id: row.try_get("id")?,
                     })
@@ -719,6 +756,7 @@ impl Store {
                 sources,
             },
             catalog_revision: revision,
+            tracking_revision,
         })
     }
 
@@ -739,6 +777,32 @@ impl Store {
         actor: &str,
         key: Option<&str>,
         fence: Option<&FenceToken>,
+    ) -> Result<SyncReport> {
+        self.sync_fenced_at(request, expected, actor, key, fence, Utc::now())
+            .await
+    }
+
+    /// Replay and tests supply time without opening or modifying a live store.
+    pub async fn sync_at(
+        &self,
+        request: SyncRequest,
+        expected: Option<i64>,
+        actor: &str,
+        key: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<SyncReport> {
+        self.sync_fenced_at(request, expected, actor, key, None, now)
+            .await
+    }
+
+    async fn sync_fenced_at(
+        &self,
+        request: SyncRequest,
+        expected: Option<i64>,
+        actor: &str,
+        key: Option<&str>,
+        fence: Option<&FenceToken>,
+        now: DateTime<Utc>,
     ) -> Result<SyncReport> {
         let catalog = validate_catalog(request.items)?;
         if catalog.items().is_empty() && !request.allow_empty && !request.dry_run {
@@ -840,6 +904,12 @@ impl Store {
                 .bind(&report.source_hash)
                 .execute(&mut *tx)
                 .await?;
+            // RFID identities survive metadata edits, archive and restoration.
+            // Reconcile against this same committed snapshot, never a second
+            // catalog copy or an unlocked follow-up transaction.
+            crate::tracking::store::reconcile_catalog(&mut tx, now)
+                .await
+                .map_err(StoreError::from)?;
         }
         sqlx::query("INSERT INTO operations (scope, actor, key, request_hash, response) VALUES ('sync', ?, ?, ?, ?)")
             .bind(actor).bind(key).bind(input_hash).bind(serde_json::to_string(&report)?).execute(&mut *tx).await?;
@@ -913,7 +983,15 @@ impl Store {
         let outcome = match result {
             Ok(result) => {
                 let signatures = referenced_signatures(&basis.items, &result)?;
-                if signatures_current(&mut tx, &signatures).await? {
+                let availability = crate::tracking::store::availability(&mut tx)
+                    .await
+                    .map_err(StoreError::from)?;
+                if !signatures
+                    .keys()
+                    .all(|id| availability.eligible_catalog_ids.binary_search(id).is_ok())
+                {
+                    Err("referenced_items_unavailable")
+                } else if signatures_current(&mut tx, &signatures).await? {
                     sqlx::query("INSERT INTO today_results (local_date,timezone,config_hash,body,signatures) VALUES (?,?,?,?,?) ON CONFLICT(local_date) DO UPDATE SET timezone=excluded.timezone, config_hash=excluded.config_hash, body=excluded.body, signatures=excluded.signatures")
                         .bind(&basis.date).bind(&basis.timezone).bind(&basis.config_hash).bind(serde_json::to_string(&result)?)
                         .bind(serde_json::to_string(&signatures)?).execute(&mut *tx).await?;
@@ -969,6 +1047,17 @@ impl Store {
             }
             if !signatures_current(&mut tx, &signatures).await? {
                 result.stale_reasons.push("referenced_items_changed".into());
+            }
+            let availability = crate::tracking::store::availability(&mut tx)
+                .await
+                .map_err(StoreError::from)?;
+            if !signatures
+                .keys()
+                .all(|id| availability.eligible_catalog_ids.binary_search(id).is_ok())
+            {
+                result
+                    .stale_reasons
+                    .push("referenced_items_unavailable".into());
             }
             result.stale_reasons.sort();
             result.stale_reasons.dedup();
@@ -1351,6 +1440,29 @@ fn add_filters(query: &mut QueryBuilder<Sqlite>, filters: &ItemFilters) {
             .push(SOURCE_SQL)
             .push(")=")
             .push_bind(source.to_string());
+    }
+    if filters.ready_to_wear == Some(false) {
+        // Negative readiness describes the whole catalog record: no active
+        // copy is ready, even if another filter selects an unavailable copy.
+        query.push(" AND NOT EXISTS (");
+        query.push("SELECT 1 FROM tracking_units AS u WHERE u.catalog_id=items.id AND u.retired=0 AND u.archived=0 AND u.baseline_at IS NOT NULL AND u.status IN ('clean_ready','worn_ready'))");
+    }
+    if filters.ready_to_wear == Some(true) || filters.status.is_some() || filters.area.is_some() {
+        query.push(" AND EXISTS (SELECT 1 FROM tracking_units AS u WHERE u.catalog_id=items.id AND u.retired=0 AND u.archived=0");
+        if filters.ready_to_wear == Some(true) {
+            query.push(
+                " AND u.baseline_at IS NOT NULL AND u.status IN ('clean_ready','worn_ready')",
+            );
+        }
+        if let Some(status) = filters.status {
+            query.push(" AND u.status=").push_bind(status.as_str());
+        }
+        if let Some(area) = &filters.area {
+            query
+                .push(" AND u.current_area=")
+                .push_bind(area.to_string());
+        }
+        query.push(")");
     }
 }
 fn source_facets() -> QueryBuilder<Sqlite> {
@@ -1788,12 +1900,23 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        // As with the fence, allow the current producer to author a real old
+        // snapshot. Remove these temporary tables before exercising migration.
+        sqlx::raw_sql(include_str!("../migrations/0005_tracking.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
         // A fresh 0.1.6 store consumed the ownership marker before use.
         sqlx::query("DROP TABLE ownership_removal_pending")
             .execute(&pool)
             .await
             .unwrap();
-        let store = Store { pool };
+        let store = Store {
+            pool,
+            tracking: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tracking::engine::Engine::default(),
+            )),
+        };
         let mut items: Vec<_> = (0..3).map(example).collect();
         items[0].category = "clothing.dress".into();
         let old: Vec<_> = items
@@ -1904,6 +2027,19 @@ mod tests {
             .execute(&store.pool)
             .await
             .unwrap();
+        for query in [
+            "DROP TABLE tracking_bindings",
+            "DROP TABLE tracking_history",
+            "DROP TABLE tracking_sessions",
+            "DROP TABLE tracking_units",
+            "DROP TABLE tracking_inventory",
+            "DROP TABLE tracking_reader_operations",
+            "DROP TABLE tracking_reader_controls",
+            "DROP TABLE tracking_configurations",
+            "DROP TABLE tracking_state",
+        ] {
+            sqlx::query(query).execute(&store.pool).await.unwrap();
+        }
         store
     }
 
@@ -2659,6 +2795,43 @@ mod tests {
                 "purchase source",
                 ItemFilters {
                     source: Some(Source::Purchase("self_bought".into())),
+                    ..Default::default()
+                },
+            ),
+            (
+                "ready units",
+                ItemFilters {
+                    ready_to_wear: Some(true),
+                    ..Default::default()
+                },
+            ),
+            (
+                "not certified ready",
+                ItemFilters {
+                    ready_to_wear: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                "unit status",
+                ItemFilters {
+                    status: Some(crate::tracking::models::UnitStatus::InWash),
+                    ..Default::default()
+                },
+            ),
+            (
+                "physical area",
+                ItemFilters {
+                    area: Some("example-closet".parse().unwrap()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "combined tracking",
+                ItemFilters {
+                    ready_to_wear: Some(true),
+                    status: Some(crate::tracking::models::UnitStatus::CleanReady),
+                    area: Some("example-closet".parse().unwrap()),
                     ..Default::default()
                 },
             ),

@@ -8,7 +8,7 @@
     <title>Closet</title>
     <link rel="icon" href="brand.svg" type="image/svg+xml">
     <link rel="stylesheet" href="style.css">
-    <script src="app.js" defer></script>
+    <script src="app.js" type="module"></script>
   </head>
   <body>
     <header class="app-header">
@@ -28,9 +28,12 @@
         <nav class="view-switch" aria-label="Closet views">
           <button id="inventory-tab" type="button" aria-pressed="true">Inventory</button>
           <button id="today-tab" type="button" aria-pressed="false">Today</button>
+          <button id="tags-tab" type="button" aria-pressed="false">Tags</button>
+          <button id="tracking-settings-tab" type="button" aria-pressed="false">Tracking settings</button>
         </nav>
         <section id="inventory" aria-labelledby="inventory-heading">
           <div class="page-heading"><div><p class="eyebrow">YOUR CATALOG</p><h1 id="inventory-heading">Inventory</h1></div><p id="inventory-count" class="muted" role="status" aria-live="polite"></p></div>
+          <div id="tracking-health" class="tracking-health" role="status" hidden></div>
           <div class="catalog-note"><details><summary>Update the catalog</summary><p class="muted">Edit the source JSON, validate it, then preview and apply a sync with the CLI. This screen never edits the source file.</p><pre><code>ha-closet inventory validate --input wardrobe.json
 ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details></div>
           <form id="filters" class="filters" role="search">
@@ -38,12 +41,32 @@ ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details><
             <div class="field"><label for="brand">Brand</label><select id="brand"><option value="">All brands</option></select></div>
             <div class="field"><label for="category">Category</label><select id="category"><option value="">All categories</option></select></div>
             <div class="field"><label for="source">Source</label><select id="source"><option value="">All sources</option></select></div>
+            <div class="field" data-tracking-filter hidden><label for="ready">Readiness</label><select id="ready"><option value="">Any readiness</option><option value="true">Ready to wear</option></select></div>
+            <div class="field" data-tracking-filter hidden><label for="tracking-status">Status</label><select id="tracking-status"><option value="">All statuses</option></select></div>
+            <div class="field" data-tracking-filter hidden><label for="tracking-area">Area</label><select id="tracking-area"><option value="">All areas</option></select></div>
             <button type="submit" class="quiet">Search</button>
           </form>
           <div id="inventory-empty" class="empty" hidden><h2>No items yet</h2><p class="muted">Validate and sync a JSON catalog to fill the closet.</p></div>
           <div id="item-grid" class="item-grid"></div>
           <button id="load-more" type="button" class="quiet" hidden>Load more</button>
           <div id="page-sentinel" aria-hidden="true" hidden></div>
+        </section>
+        <section id="tags" aria-labelledby="tags-heading" hidden>
+          <div class="page-heading"><div><p class="eyebrow">ONE PIECE AT A TIME</p><h1 id="tags-heading">Tags</h1></div><p id="tag-progress" class="muted" role="status" aria-live="polite"></p></div>
+          <p class="muted">Match each physical piece to a tag. A scan never changes your catalog.</p>
+          <div id="tag-notice" class="notice" role="status" aria-live="polite" hidden></div>
+          <nav class="tag-modes" aria-label="Tag tasks">
+            <button id="enroll-mode" class="quiet" type="button" aria-pressed="true">Enroll</button>
+            <button id="installation-mode" class="quiet" type="button" aria-pressed="false">Installation queue</button>
+            <button id="lookup-mode" class="quiet" type="button" aria-pressed="false">Look up a tag</button>
+          </nav>
+          <div id="tag-workspace"></div>
+        </section>
+        <section id="tracking-settings" aria-labelledby="tracking-settings-heading" hidden>
+          <div class="page-heading"><div><p class="eyebrow">READERS &amp; COVERAGE</p><h1 id="tracking-settings-heading">Tracking settings</h1></div></div>
+          <p class="muted">A working connection is not the same as a piece being ready to wear. Check reader coverage before trusting an automatic status.</p>
+          <div id="tracking-settings-notice" class="notice" role="status" aria-live="polite" hidden></div>
+          <div id="tracking-settings-content"></div>
         </section>
         <section id="today" aria-labelledby="today-heading" hidden>
           <div class="page-heading"><div><p id="today-date" class="eyebrow"></p><h1 id="today-heading">Today</h1></div><span class="experiment-label">OPTIONAL EXPERIMENT</span></div>

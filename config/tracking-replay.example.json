@@ -1,0 +1,588 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "catalog": [
+    {
+      "id": "example-tee",
+      "brand": "Studio Example",
+      "name": "Cotton jersey tee",
+      "category": "clothing.top",
+      "color": "Ivory",
+      "size": "S",
+      "quantity": 1,
+      "material": "Cotton jersey",
+      "sku": null,
+      "purchase_source": null,
+      "images": [],
+      "notes": [
+        "Fictional demonstration item."
+      ],
+      "shop": {
+        "id": "demo-atelier",
+        "label": "Demo atelier",
+        "season": null,
+        "years": []
+      }
+    },
+    {
+      "id": "example-denim",
+      "brand": "Studio Example",
+      "name": "Straight-leg denim",
+      "category": "clothing.jeans",
+      "color": "Indigo",
+      "size": "27",
+      "quantity": 1,
+      "material": "Cotton denim",
+      "sku": null,
+      "purchase_source": null,
+      "images": [],
+      "notes": [
+        "Fictional demonstration item."
+      ],
+      "shop": {
+        "id": "demo-atelier",
+        "label": "Demo atelier",
+        "season": null,
+        "years": []
+      }
+    },
+    {
+      "id": "example-flats",
+      "brand": "Studio Example",
+      "name": "Leather slingbacks",
+      "category": "footwear.slingbacks",
+      "color": "Black",
+      "size": "38",
+      "quantity": 1,
+      "material": "Leather",
+      "sku": null,
+      "purchase_source": "self_bought",
+      "images": [],
+      "notes": [
+        "Fictional demonstration item."
+      ]
+    },
+    {
+      "id": "example-knit",
+      "brand": "Studio Example",
+      "name": "Fine-knit crewneck",
+      "category": "clothing.knitwear",
+      "color": "Navy",
+      "size": "S",
+      "quantity": 1,
+      "material": "Cashmere",
+      "sku": null,
+      "purchase_source": "self_bought",
+      "images": [],
+      "notes": [
+        "Fictional demonstration item."
+      ]
+    }
+  ],
+  "config": {
+    "schema_version": 1,
+    "enabled": true,
+    "areas": [
+      {
+        "id": "example-closet",
+        "label": "Closet",
+        "kind": "closet",
+        "enabled": true,
+        "thresholds": {}
+      },
+      {
+        "id": "example-rewear",
+        "label": "Rewear rack",
+        "kind": "rewear",
+        "enabled": true,
+        "thresholds": {}
+      },
+      {
+        "id": "example-hamper",
+        "label": "Laundry hamper",
+        "kind": "hamper",
+        "enabled": true,
+        "thresholds": {}
+      },
+      {
+        "id": "example-dry-bag",
+        "label": "Dry-cleaning holder",
+        "kind": "dry_cleaning_bag",
+        "enabled": true,
+        "thresholds": {}
+      }
+    ],
+    "readers": [
+      {
+        "id": "example-reader",
+        "label": "Example area reader",
+        "enabled": true,
+        "connection": {
+          "type": "simulator"
+        }
+      },
+      {
+        "id": "example-enrollment-reader",
+        "label": "Example enrollment reader",
+        "enabled": true,
+        "connection": {
+          "type": "simulator"
+        }
+      }
+    ],
+    "ports": [
+      {
+        "id": "example-closet-port",
+        "reader_id": "example-reader",
+        "antenna": 1,
+        "area_id": "example-closet",
+        "role": "monitor",
+        "enabled": true,
+        "required_for_absence": true,
+        "commissioned": true,
+        "transmit_power_cdbm": null,
+        "dwell_ms": null
+      },
+      {
+        "id": "example-rewear-port",
+        "reader_id": "example-reader",
+        "antenna": 2,
+        "area_id": "example-rewear",
+        "role": "monitor",
+        "enabled": true,
+        "required_for_absence": true,
+        "commissioned": true,
+        "transmit_power_cdbm": null,
+        "dwell_ms": null
+      },
+      {
+        "id": "example-hamper-port",
+        "reader_id": "example-reader",
+        "antenna": 3,
+        "area_id": "example-hamper",
+        "role": "monitor",
+        "enabled": true,
+        "required_for_absence": true,
+        "commissioned": true,
+        "transmit_power_cdbm": null,
+        "dwell_ms": null
+      },
+      {
+        "id": "example-dry-bag-port",
+        "reader_id": "example-reader",
+        "antenna": 4,
+        "area_id": "example-dry-bag",
+        "role": "monitor",
+        "enabled": true,
+        "required_for_absence": true,
+        "commissioned": true,
+        "transmit_power_cdbm": null,
+        "dwell_ms": null
+      },
+      {
+        "id": "example-enroll",
+        "reader_id": "example-enrollment-reader",
+        "antenna": 1,
+        "area_id": null,
+        "role": "enrollment",
+        "enabled": true,
+        "required_for_absence": false,
+        "commissioned": true,
+        "transmit_power_cdbm": null,
+        "dwell_ms": null
+      }
+    ],
+    "thresholds": {
+      "positive_dwell_ms": 1000,
+      "positive_min_reads": 3,
+      "movement_hysteresis_ms": 1000,
+      "absence_ms": 1000,
+      "warmup_ms": 1000,
+      "coverage_max_gap_ms": 2000,
+      "candidate_fresh_ms": 5000,
+      "reader_event_max_age_ms": 60000
+    }
+  },
+  "steps": [
+    {
+      "type": "capture",
+      "at": "2026-01-01T00:00:00.000Z",
+      "name": "first",
+      "unit": {
+        "catalog_id": "example-tee",
+        "ordinal": 1
+      },
+      "port": "example-enroll",
+      "purpose": "bind",
+      "borrow": false
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:00.100Z",
+      "batch": {
+        "reader_id": "example-enrollment-reader",
+        "purpose": "enrollment",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000002",
+        "sequence": 0,
+        "observed_at": "2026-01-01T00:00:00.100Z",
+        "connected": true,
+        "coverage": [],
+        "observations": [],
+        "readback": null
+      },
+      "capture": "first"
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:00.200Z",
+      "batch": {
+        "reader_id": "example-enrollment-reader",
+        "purpose": "enrollment",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000002",
+        "sequence": 1,
+        "observed_at": "2026-01-01T00:00:00.200Z",
+        "connected": true,
+        "coverage": [],
+        "observations": [
+          {
+            "epc": "00AA00112233445566778899",
+            "port_id": "example-enroll",
+            "first_seen_at": "2026-01-01T00:00:00.200Z",
+            "last_seen_at": "2026-01-01T00:00:00.200Z",
+            "read_count": 3,
+            "tid": null,
+            "peak_rssi_cdbm": null,
+            "event_ref": null
+          }
+        ],
+        "readback": null
+      },
+      "capture": "first"
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:01.300Z",
+      "batch": {
+        "reader_id": "example-enrollment-reader",
+        "purpose": "enrollment",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000002",
+        "sequence": 2,
+        "observed_at": "2026-01-01T00:00:01.300Z",
+        "connected": true,
+        "coverage": [],
+        "observations": [
+          {
+            "epc": "00AA00112233445566778899",
+            "port_id": "example-enroll",
+            "first_seen_at": "2026-01-01T00:00:01.300Z",
+            "last_seen_at": "2026-01-01T00:00:01.300Z",
+            "read_count": 3,
+            "tid": null,
+            "peak_rssi_cdbm": null,
+            "event_ref": null
+          }
+        ],
+        "readback": null
+      },
+      "capture": "first"
+    },
+    {
+      "type": "confirm",
+      "at": "2026-01-01T00:00:01.400Z",
+      "capture": "first",
+      "epc": "00AA00112233445566778899",
+      "baseline_area": null
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:01.500Z",
+      "batch": {
+        "reader_id": "example-reader",
+        "purpose": "inventory",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000001",
+        "sequence": 0,
+        "observed_at": "2026-01-01T00:00:01.500Z",
+        "connected": true,
+        "coverage": [
+          {
+            "port_id": "example-closet-port",
+            "started_at": "2026-01-01T00:00:01.500Z",
+            "ended_at": "2026-01-01T00:00:01.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-rewear-port",
+            "started_at": "2026-01-01T00:00:01.500Z",
+            "ended_at": "2026-01-01T00:00:01.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-hamper-port",
+            "started_at": "2026-01-01T00:00:01.500Z",
+            "ended_at": "2026-01-01T00:00:01.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-dry-bag-port",
+            "started_at": "2026-01-01T00:00:01.500Z",
+            "ended_at": "2026-01-01T00:00:01.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          }
+        ],
+        "observations": [],
+        "readback": null
+      },
+      "capture": null
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:01.600Z",
+      "batch": {
+        "reader_id": "example-reader",
+        "purpose": "inventory",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000001",
+        "sequence": 1,
+        "observed_at": "2026-01-01T00:00:01.600Z",
+        "connected": true,
+        "coverage": [
+          {
+            "port_id": "example-closet-port",
+            "started_at": "2026-01-01T00:00:01.600Z",
+            "ended_at": "2026-01-01T00:00:01.600Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-rewear-port",
+            "started_at": "2026-01-01T00:00:01.600Z",
+            "ended_at": "2026-01-01T00:00:01.600Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-hamper-port",
+            "started_at": "2026-01-01T00:00:01.600Z",
+            "ended_at": "2026-01-01T00:00:01.600Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-dry-bag-port",
+            "started_at": "2026-01-01T00:00:01.600Z",
+            "ended_at": "2026-01-01T00:00:01.600Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          }
+        ],
+        "observations": [
+          {
+            "epc": "00AA00112233445566778899",
+            "port_id": "example-closet-port",
+            "first_seen_at": "2026-01-01T00:00:01.600Z",
+            "last_seen_at": "2026-01-01T00:00:01.600Z",
+            "read_count": 3,
+            "tid": null,
+            "peak_rssi_cdbm": null,
+            "event_ref": null
+          }
+        ],
+        "readback": null
+      },
+      "capture": null
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:02.700Z",
+      "batch": {
+        "reader_id": "example-reader",
+        "purpose": "inventory",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000001",
+        "sequence": 2,
+        "observed_at": "2026-01-01T00:00:02.700Z",
+        "connected": true,
+        "coverage": [
+          {
+            "port_id": "example-closet-port",
+            "started_at": "2026-01-01T00:00:02.700Z",
+            "ended_at": "2026-01-01T00:00:02.700Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-rewear-port",
+            "started_at": "2026-01-01T00:00:02.700Z",
+            "ended_at": "2026-01-01T00:00:02.700Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-hamper-port",
+            "started_at": "2026-01-01T00:00:02.700Z",
+            "ended_at": "2026-01-01T00:00:02.700Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-dry-bag-port",
+            "started_at": "2026-01-01T00:00:02.700Z",
+            "ended_at": "2026-01-01T00:00:02.700Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          }
+        ],
+        "observations": [
+          {
+            "epc": "00AA00112233445566778899",
+            "port_id": "example-closet-port",
+            "first_seen_at": "2026-01-01T00:00:02.700Z",
+            "last_seen_at": "2026-01-01T00:00:02.700Z",
+            "read_count": 3,
+            "tid": null,
+            "peak_rssi_cdbm": null,
+            "event_ref": null
+          }
+        ],
+        "readback": null
+      },
+      "capture": null
+    },
+    {
+      "type": "tick",
+      "at": "2026-01-01T00:00:02.800Z"
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:03.500Z",
+      "batch": {
+        "reader_id": "example-reader",
+        "purpose": "inventory",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000001",
+        "sequence": 3,
+        "observed_at": "2026-01-01T00:00:03.500Z",
+        "connected": true,
+        "coverage": [
+          {
+            "port_id": "example-closet-port",
+            "started_at": "2026-01-01T00:00:03.500Z",
+            "ended_at": "2026-01-01T00:00:03.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-rewear-port",
+            "started_at": "2026-01-01T00:00:03.500Z",
+            "ended_at": "2026-01-01T00:00:03.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-hamper-port",
+            "started_at": "2026-01-01T00:00:03.500Z",
+            "ended_at": "2026-01-01T00:00:03.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-dry-bag-port",
+            "started_at": "2026-01-01T00:00:03.500Z",
+            "ended_at": "2026-01-01T00:00:03.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          }
+        ],
+        "observations": [],
+        "readback": null
+      },
+      "capture": null
+    },
+    {
+      "type": "observe",
+      "at": "2026-01-01T00:00:04.500Z",
+      "batch": {
+        "reader_id": "example-reader",
+        "purpose": "inventory",
+        "data_source": "simulation",
+        "capture_session": null,
+        "session": "00000000-0000-7000-8000-000000000001",
+        "sequence": 4,
+        "observed_at": "2026-01-01T00:00:04.500Z",
+        "connected": true,
+        "coverage": [
+          {
+            "port_id": "example-closet-port",
+            "started_at": "2026-01-01T00:00:04.500Z",
+            "ended_at": "2026-01-01T00:00:04.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-rewear-port",
+            "started_at": "2026-01-01T00:00:04.500Z",
+            "ended_at": "2026-01-01T00:00:04.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-hamper-port",
+            "started_at": "2026-01-01T00:00:04.500Z",
+            "ended_at": "2026-01-01T00:00:04.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          },
+          {
+            "port_id": "example-dry-bag-port",
+            "started_at": "2026-01-01T00:00:04.500Z",
+            "ended_at": "2026-01-01T00:00:04.500Z",
+            "proof": {
+              "type": "verified_inventory"
+            }
+          }
+        ],
+        "observations": [],
+        "readback": null
+      },
+      "capture": null
+    },
+    {
+      "type": "tick",
+      "at": "2026-01-01T00:00:04.600Z"
+    }
+  ]
+}

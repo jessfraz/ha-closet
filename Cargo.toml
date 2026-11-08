@@ -1,6 +1,6 @@
 [package]
 name = "closet"
-version = "0.1.13"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "A wardrobe inventory for Home Assistant"
@@ -41,7 +41,7 @@ slog = "2"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 subtle = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 toml = "1"
 url = "2"

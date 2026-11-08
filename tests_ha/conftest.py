@@ -19,6 +19,9 @@ from homeassistant.util.json import JsonObjectType
 from pytest_aiohttp.plugin import AiohttpServer
 from pytest_homeassistant_custom_component.common import MockUser
 
+from .reader_fixture import FictionalReader
+from .reader_fixture import fictional_reader as fictional_reader
+
 OWNER_TOKEN = "test-closet-owner-credential-at-least-32-characters"
 INTEGRATION_TOKEN = "test-closet-integration-credential-at-least-32-characters"
 
@@ -215,6 +218,7 @@ class RustBackend:
     origin: str
     owner_token: str = field(default=OWNER_TOKEN, repr=False)
     integration_token: str = field(default=INTEGRATION_TOKEN, repr=False)
+    reader: FictionalReader | None = field(default=None, repr=False)
 
     async def sync(
         self, records: list[JsonObjectType], key: str = "fixture-sync"
@@ -248,6 +252,7 @@ async def rust_backend(
     socket_enabled: None,
     request: pytest.FixtureRequest,
     ha_protocol: HAProtocol,
+    fictional_reader: FictionalReader,
 ) -> AsyncIterator[RustBackend]:
     """Start and stop the binary, never a reimplementation of its domain logic."""
     # Reserve after socket_enabled has loaded, not in a sibling port fixture
@@ -270,6 +275,7 @@ async def rust_backend(
         CLOSET_DATABASE=str(tmp_path / "catalog.sqlite3"),
         CLOSET_BIND=f"127.0.0.1:{unused_tcp_port}",
         CLOSET_TIMEZONE="UTC",
+        CLOSET_READER_CA_FILE=str(fictional_reader.ca_file),
     )
     if getattr(request, "param", False):
         environment.update(
@@ -284,7 +290,9 @@ async def rust_backend(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    backend = RustBackend(f"http://127.0.0.1:{unused_tcp_port}")
+    backend = RustBackend(
+        f"http://127.0.0.1:{unused_tcp_port}", reader=fictional_reader
+    )
     try:
         async with asyncio.timeout(15), ClientSession() as client:
             while True:

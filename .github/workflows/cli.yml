@@ -57,6 +57,8 @@ jobs:
           "target/$TARGET/release/ha-closet" --version
           "target/$TARGET/release/ha-closet" inventory validate --input config/catalog.example.json
           "target/$TARGET/release/ha-closet" inventory validate --input config/wardrobe.example/wardrobe.toml
+          "target/$TARGET/release/ha-closet" tracking config validate --input config/tracking.example.json
+          "target/$TARGET/release/ha-closet" tracking replay --input config/tracking-replay.example.json
       - name: Package
         env:
           TARGET: ${{ matrix.target }}

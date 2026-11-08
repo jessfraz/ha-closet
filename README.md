@@ -64,6 +64,47 @@ Install the CLI from the [release](https://github.com/jessfraz/ha-closet/release
 or with Nix. It has JSON output, optional table output, and native or
 Home Assistant connections. [CLI reference](docs/cli.md).
 
+## Garment tags
+
+Pair an RFID tag with a garment's existing photo once. After the reading
+areas are set up, put clothes where they normally go. No daily scanning or
+checking things off in the app.
+
+```text
+Clean clothes in the closet
+            |
+       Take them out
+            v
+        Being worn
+            |
+            +--> Rewear rack ------> Ready to wear again
+            +--> Laundry hamper ---> Needs laundry
+            +--> Dry-cleaning bag --> Queued for dry cleaning
+```
+
+When clothes leave the hamper, or the dry-cleaning bag is taken away, Closet
+counts them as being cleaned. Putting them back in the closet makes them ready
+again.
+
+```text
+Leaves the hamper --> In the wash --------+
+                                          |
+Bag taken away -----> At the cleaners ----+
+                                          |
+                                 Back in the closet
+                                          |
+                                          v
+                                    Clean / ready
+```
+
+The readers confirm movement over time, not from one missed read. If a reader
+stops working, the app keeps the last status. Everything stays in the inventory;
+**Ready to wear** shows the pieces in the closet or on the rewear rack.
+
+Enrollment works on a phone or tablet, but the UHF reader detects the tags, not
+the phone. Clothes that cannot comfortably take a tag can stay untagged.
+Tracking starts disabled. [Setup, enrollment and recovery](docs/rfid.md).
+
 ## Today
 
 The inventory, validation, and sync are deterministic. Today is an optional

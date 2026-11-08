@@ -75,6 +75,7 @@ async def test_flow_counts_diagnostics_and_unload(
         "item_count",
         "archived_count",
         "today_configured",
+        "tracking",
     }
     rendered = json.dumps(diagnostics)
     assert "example-tee" not in rendered

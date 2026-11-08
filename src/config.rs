@@ -32,6 +32,12 @@ pub struct Config {
     pub ha_origin: String,
     #[arg(long, env = "CLOSET_HA_TOKEN", hide_env_values = true)]
     pub ha_token: Option<String>,
+    /// Owner-only JSON map of reader credential references to secret values.
+    #[arg(long, env = "CLOSET_READER_SECRETS_FILE")]
+    pub reader_secrets_file: Option<PathBuf>,
+    /// PEM certificate authority for locally issued reader HTTPS certificates.
+    #[arg(long, env = "CLOSET_READER_CA_FILE")]
+    pub reader_ca_file: Option<PathBuf>,
     #[arg(long)]
     pub options: Option<PathBuf>,
     /// Write the generated OpenAPI document and exit without starting a server.
@@ -70,6 +76,18 @@ impl Config {
                 Credentials::load_or_create(&path.with_file_name("credentials.json"))?;
             config.api_token = Some(credentials.owner);
             config.integration_token = Some(credentials.integration);
+            if config.reader_secrets_file.is_none() {
+                let path = path.with_file_name("reader-secrets.json");
+                if path.try_exists().context("check reader credentials")? {
+                    config.reader_secrets_file = Some(path);
+                }
+            }
+            if config.reader_ca_file.is_none() {
+                let path = path.with_file_name("reader-ca.crt");
+                if path.try_exists().context("check reader CA")? {
+                    config.reader_ca_file = Some(path);
+                }
+            }
         }
         if config.ha_token.is_none() {
             config.ha_token = std::env::var("SUPERVISOR_TOKEN")
