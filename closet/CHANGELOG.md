@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Match phone header spacing and stacked footers across the apps.
+
 ## 0.1.1
 
 - Click brand and source badges to browse matching inventory.
