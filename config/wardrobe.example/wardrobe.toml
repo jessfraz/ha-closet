@@ -1,0 +1,38 @@
+schema = 1
+
+[[styles]]
+id = "example_tee"
+brand = "north_studio"
+name = "Crew tee"
+category = "clothing.top.tshirt"
+
+[[variants]]
+id = "example_navy_tee"
+style = "example_tee"
+color = { families = ["navy"], maker_shade = "Ink", api_v1_display = "families" }
+
+[[variants.materials]]
+part = "main"
+construction = "jersey"
+composition = { kind = "listed", parts = [{ kind = "fiber", fiber = "cotton" }] }
+
+[[variants.images]]
+kind = "remote"
+url = "https://images.example.invalid/crew-tee.png"
+reference = { kind = "official_product_reference", confidence = "high" }
+
+[[inventory]]
+id = "example-purchase-a"
+variant = "example_navy_tee"
+size = { primary = { profile = "north_native", value = { kind = "numeric", label = "00" } } }
+source = { kind = "fitting", fitting = "example_spring" }
+quantity = 1
+price = { amount = 50.0, currency = "USD", basis = "receipt_line_price", quantity_basis = "unit" }
+
+[[inventory]]
+id = "example-purchase-b"
+variant = "example_navy_tee"
+size = { primary = { profile = "north_native", value = { kind = "numeric", label = "0" } } }
+source = { kind = "self_bought" }
+quantity = 1
+price = { amount = 50.0, currency = "USD", basis = "receipt_line_price", quantity_basis = "unit" }

@@ -241,6 +241,78 @@ fn catalog_membership_needs_no_confirmation_field() {
     assert_eq!(catalog.report().count, 1);
 }
 
+#[tokio::test]
+async fn required_quantities_reject_whole_snapshots_and_preserve_separate_purchases() {
+    let app = App::new().await;
+    let initial = catalog();
+    app.store
+        .sync(
+            sync(initial.clone(), false),
+            Some(0),
+            "owner",
+            Some("initial"),
+        )
+        .await
+        .unwrap();
+    let before = app.store.counts().await.unwrap();
+    let endpoint = format!("{}/v1/inventory/sync", app.origin);
+    for (index, quantity) in [None, None, Some(0)].into_iter().enumerate() {
+        let mut changed = initial[..2].to_vec();
+        changed[0].name = "An edit that must not persist".into();
+        changed[1].quantity = quantity;
+        let mut body = serde_json::to_string(&sync(changed, false)).unwrap();
+        if index == 1 {
+            body = body.replacen("\"quantity\":null,", "", 1);
+        }
+        let response = app
+            .client
+            .post(&endpoint)
+            .bearer_auth(OWNER)
+            .header("if-match", "\"1\"")
+            .header("idempotency-key", format!("quantity-correction-{index}"))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.json::<HttpFailure>().await.unwrap().error_code,
+            "invalid_catalog"
+        );
+        assert_eq!(app.store.counts().await.unwrap(), before);
+        for item in &initial {
+            assert_eq!(app.store.item(&item.id).await.unwrap().catalog, *item);
+        }
+    }
+    let fitting = piece("example-fitting-purchase", "Crew tee", "clothing.top");
+    let mut direct = fitting.clone();
+    direct.id = "example-direct-purchase".into();
+    direct.shop = None;
+    direct.purchase_source = Some("self_bought".into());
+    let purchases = vec![fitting, direct];
+    let response = app
+        .client
+        .post(&endpoint)
+        .bearer_auth(OWNER)
+        .header("if-match", "\"1\"")
+        .header("idempotency-key", "quantity-correction-0")
+        .json(&sync(purchases.clone(), false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = response.json::<SyncReport>().await.unwrap();
+    assert_eq!(report.created, 2);
+    assert_eq!(report.archived, 3);
+    for purchase in &purchases {
+        let saved = app.store.item(&purchase.id).await.unwrap();
+        assert_eq!(saved.catalog, *purchase);
+        assert_eq!(saved.catalog.quantity, Some(1));
+    }
+    app.close().await;
+}
+
 #[derive(serde::Deserialize)]
 struct RemovedItemField {
     current_ownership_confirmed: Option<bool>,

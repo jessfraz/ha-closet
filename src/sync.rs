@@ -8,11 +8,12 @@ use crate::{
         referenced_image_id,
     },
     ha_images::{HaImages, UploadOutcome},
-    images::{ImageSha, LocalImages, NativeImageId},
+    images::{ImageSha, ImageValidationReport, LocalImage, LocalImages, NativeImageId},
     models::{
         CatalogItem, Item, ItemsPage, SyncReport, SyncRequest, System, TodayResponse,
-        ValidatedCatalog, validate_catalog,
+        ValidatedCatalog, ValidationReport, validate_catalog,
     },
+    source::CompiledCatalog,
 };
 use reqwest::Method;
 use serde::Serialize;
@@ -39,7 +40,8 @@ pub struct ImageSummary {
     pub uploaded: usize,
     pub would_upload: usize,
     pub pruned: usize,
-    pub would_prune: usize,
+    /// Unknown until every source asset has a real deployment URL.
+    pub would_prune: Option<usize>,
 }
 #[derive(Debug, Serialize)]
 pub struct SyncOutput {
@@ -143,9 +145,15 @@ impl LocalOwner {
     }
 }
 pub struct SourceSnapshot {
-    pub catalog: ValidatedCatalog,
-    pub images: Option<LocalImages>,
-    input: Option<(PathBuf, ImageSha)>,
+    catalog: CatalogSource,
+}
+enum CatalogSource {
+    Json {
+        catalog: ValidatedCatalog,
+        images: Option<LocalImages>,
+        input: Option<(PathBuf, ImageSha)>,
+    },
+    Toml(CompiledCatalog),
 }
 impl SourceSnapshot {
     pub fn new(
@@ -154,28 +162,109 @@ impl SourceSnapshot {
         input: Option<(&Path, &[u8])>,
     ) -> Self {
         Self {
-            catalog,
-            images,
-            input: input.map(|(path, bytes)| (path.to_owned(), ImageSha::digest(bytes))),
+            catalog: CatalogSource::Json {
+                catalog,
+                images,
+                input: input.map(|(path, bytes)| (path.to_owned(), ImageSha::digest(bytes))),
+            },
+        }
+    }
+    pub fn from_toml(path: &Path) -> Result<Self> {
+        Ok(Self {
+            catalog: CatalogSource::Toml(CompiledCatalog::load(path)?),
+        })
+    }
+    pub fn report(&self) -> ValidationReport {
+        match &self.catalog {
+            CatalogSource::Json { catalog, .. } => catalog.report().clone(),
+            CatalogSource::Toml(catalog) => ValidationReport {
+                valid: true,
+                count: catalog.item_count(),
+                source_hash: catalog.source_hash().to_owned(),
+            },
+        }
+    }
+    pub fn image_report(&self) -> Option<ImageValidationReport> {
+        self.assets().map(|assets| ImageValidationReport {
+            images: assets.len(),
+            bytes: assets.iter().map(|asset| asset.size).sum(),
+        })
+    }
+    fn assets(&self) -> Option<&[LocalImage]> {
+        match &self.catalog {
+            CatalogSource::Json { images, .. } => {
+                images.as_ref().map(|images| images.assets.as_slice())
+            }
+            CatalogSource::Toml(catalog) => {
+                (!catalog.assets().is_empty()).then_some(catalog.assets())
+            }
+        }
+    }
+    fn native_origin(&self) -> Option<&url::Url> {
+        match &self.catalog {
+            CatalogSource::Json { images, .. } => images
+                .as_ref()
+                .and_then(|images| images.native_origin.as_ref()),
+            CatalogSource::Toml(_) => None,
+        }
+    }
+    /// JSON already contains deployment URLs. TOML cannot produce a flat API
+    /// catalog until every asset has a real, verified native URL.
+    fn materialize(
+        &self,
+        origin: &url::Url,
+        resolved: &BTreeMap<ImageSha, NativeImageId>,
+    ) -> Result<ValidatedCatalog> {
+        match &self.catalog {
+            CatalogSource::Json {
+                catalog, images, ..
+            } => match images {
+                Some(images) => {
+                    validate_catalog(images.materialize(catalog.items(), origin, resolved)?)
+                        .map_err(Failure::catalog)
+                }
+                None => Ok(catalog.clone()),
+            },
+            CatalogSource::Toml(catalog) => {
+                let urls = resolved
+                    .iter()
+                    .map(|(sha, id)| {
+                        origin
+                            .join(&format!("/api/image/serve/{id}/original"))
+                            .map(|url| (sha.clone(), url))
+                            .map_err(|_| Failure::local("image_origin_mismatch"))
+                    })
+                    .collect::<Result<BTreeMap<_, _>>>()?;
+                catalog.materialize(&urls).map_err(Failure::from)
+            }
         }
     }
     fn unchanged(&self) -> Result<()> {
-        if let Some((path, sha)) = &self.input {
-            let mut bytes = Vec::new();
-            File::open(path)
-                .and_then(|file| {
-                    file.take(crate::models::MAX_CATALOG_BYTES as u64 + 1)
-                        .read_to_end(&mut bytes)
-                })
-                .map_err(|_| Failure::local("input_read_failed"))?;
-            if &ImageSha::digest(&bytes) != sha {
-                return Err(Failure::local("catalog_source_changed"));
+        match &self.catalog {
+            CatalogSource::Toml(catalog) => catalog.verify_unchanged().map_err(Failure::from),
+            CatalogSource::Json {
+                catalog,
+                images,
+                input,
+            } => {
+                if let Some((path, sha)) = input {
+                    let mut bytes = Vec::new();
+                    File::open(path)
+                        .and_then(|file| {
+                            file.take(crate::models::MAX_CATALOG_BYTES as u64 + 1)
+                                .read_to_end(&mut bytes)
+                        })
+                        .map_err(|_| Failure::local("input_read_failed"))?;
+                    if &ImageSha::digest(&bytes) != sha {
+                        return Err(Failure::local("catalog_source_changed"));
+                    }
+                }
+                if let Some(images) = images {
+                    images.verify_sources(catalog.items())?;
+                }
+                Ok(())
             }
         }
-        if let Some(images) = &self.images {
-            images.verify_sources(self.catalog.items())?;
-        }
-        Ok(())
     }
 }
 async fn preview(
@@ -431,11 +520,11 @@ async fn resolve_assets(
     native: &HaImages<'_>,
     token: &FenceToken,
     state: &FenceStatus,
-    local: &LocalImages,
+    assets: &[LocalImage],
     summary: &mut ImageSummary,
 ) -> Result<BTreeMap<ImageSha, NativeImageId>> {
     let mut resolved = BTreeMap::new();
-    for asset in &local.assets {
+    for asset in assets {
         acquire(api, token, state.catalog_revision).await?;
         if let Some(id) = native.matching(asset, &native.list().await?).await? {
             claim(api, token, &asset.sha256, UploadClaimAction::Verified).await?;
@@ -501,20 +590,41 @@ async fn managed(
     source: &SourceSnapshot,
     options: &SyncOptions,
 ) -> Result<Output<SyncOutput>> {
+    if let CatalogSource::Toml(catalog) = &source.catalog {
+        catalog.validate_projection_size(&api.origin)?;
+    }
     let native = HaImages::new(api)?;
-    let original = preview(api, source.catalog.items(), options.allow_empty).await?;
+    let original = match &source.catalog {
+        CatalogSource::Json { catalog, .. } => {
+            let output = preview(api, catalog.items(), options.allow_empty).await?;
+            Output {
+                status: output.status,
+                etag: output.etag,
+                data: output.data.catalog_revision,
+            }
+        }
+        CatalogSource::Toml(catalog) => {
+            if catalog.item_count() == 0 && !options.allow_empty && !options.dry_run {
+                return Err(Failure::local("empty_catalog_requires_allow_empty"));
+            }
+            let output = response::<System>(api.request(Method::GET, "/system")?).await?;
+            Output {
+                status: output.status,
+                etag: output.etag,
+                data: output.data.catalog_revision,
+            }
+        }
+    };
     let mut summary = ImageSummary {
-        local: source
-            .images
-            .as_ref()
-            .map_or(0, |images| images.assets.len()),
+        local: source.assets().map_or(0, <[LocalImage]>::len),
+        would_prune: Some(0),
         ..Default::default()
     };
     if options.dry_run {
         let mut resolved = BTreeMap::new();
-        if let Some(images) = &source.images {
+        if let Some(assets) = source.assets() {
             let records = native.list().await?;
-            for asset in &images.assets {
+            for asset in assets {
                 match native.matching(asset, &records).await? {
                     Some(id) => {
                         resolved.insert(asset.sha256.clone(), id);
@@ -524,53 +634,56 @@ async fn managed(
             }
         }
         let output = if summary.would_upload > 0 {
+            summary.would_prune = None;
             None
         } else {
-            let items = match &source.images {
-                Some(images) => {
-                    images.materialize(source.catalog.items(), &api.origin, &resolved)?
-                }
-                None => source.catalog.items().to_vec(),
-            };
-            let output = preview(api, &items, options.allow_empty).await?;
-            summary.would_prune = candidates(&native, &live_references(api, &items).await?)
-                .await?
-                .len();
+            let catalog = source.materialize(&api.origin, &resolved)?;
+            let output = preview(api, catalog.items(), options.allow_empty).await?;
+            summary.would_prune = Some(
+                candidates(&native, &live_references(api, catalog.items()).await?)
+                    .await?
+                    .len(),
+            );
             Some(output)
         };
         source.unchanged()?;
         return Ok(Output {
-            status: original.status,
-            etag: original.etag,
+            status: output
+                .as_ref()
+                .and_then(|output| output.status)
+                .or(original.status),
+            etag: output
+                .as_ref()
+                .and_then(|output| output.etag.clone())
+                .or(original.etag),
             data: SyncOutput {
                 resolved_source_hash: output.as_ref().map(|out| out.data.source_hash.clone()),
                 inventory: output.map(|out| out.data),
-                input_source_hash: source.catalog.report().source_hash.clone(),
+                input_source_hash: source.report().source_hash,
                 verified: false,
                 images: Some(summary),
             },
         });
     }
     let owner = LocalOwner::open(api, options.state_directory.as_deref())?;
-    let state = acquire(api, &owner.token, original.data.catalog_revision).await?;
+    let state = acquire(api, &owner.token, original.data).await?;
     let result = async {
+        source.unchanged()?;
         summary.pruned += delete_pending(api, &native, &owner.token, state.clone()).await?;
-        let resolved = match &source.images {
-            Some(images) => {
-                resolve_assets(api, &native, &owner.token, &state, images, &mut summary).await?
+        let resolved = match source.assets() {
+            Some(assets) => {
+                resolve_assets(api, &native, &owner.token, &state, assets, &mut summary).await?
             }
             None => BTreeMap::new(),
         };
-        let items = match &source.images {
-            Some(images) => images.materialize(source.catalog.items(), &api.origin, &resolved)?,
-            None => source.catalog.items().to_vec(),
-        };
-        validate_catalog(items.clone()).map_err(Failure::catalog)?;
+        let catalog = source.materialize(&api.origin, &resolved)?;
+        let items = catalog.items();
         source.unchanged()?;
-        let preview = preview(api, &items, options.allow_empty).await?;
+        let preview = preview(api, items, options.allow_empty).await?;
         acquire(api, &owner.token, preview.data.catalog_revision).await?;
-        let output = apply_inventory(api, &items, options, &preview, Some(&owner.token)).await?;
-        let references = readback(api, &items, &output.data, options.allow_empty).await?;
+        source.unchanged()?;
+        let output = apply_inventory(api, items, options, &preview, Some(&owner.token)).await?;
+        let references = readback(api, items, &output.data, options.allow_empty).await?;
         source.unchanged()?;
         let status = acquire(api, &owner.token, output.data.catalog_revision).await?;
         let records = native.list().await?;
@@ -588,6 +701,7 @@ async fn managed(
             claim(api, &owner.token, &sha, UploadClaimAction::Verified).await?;
         }
         let images = candidates(&native, &references).await?;
+        source.unchanged()?;
         let state = response::<FenceStatus>(
             api.request(Method::POST, "/inventory/fence/prepare")?
                 .json(&FencePrepare {
@@ -598,12 +712,13 @@ async fn managed(
         )
         .await?
         .data;
+        source.unchanged()?;
         summary.pruned += delete_pending(api, &native, &owner.token, state).await?;
         Ok(Output {
             status: output.status,
             etag: output.etag,
             data: SyncOutput {
-                input_source_hash: source.catalog.report().source_hash.clone(),
+                input_source_hash: source.report().source_hash,
                 resolved_source_hash: Some(output.data.source_hash.clone()),
                 inventory: Some(output.data),
                 verified: true,
@@ -626,45 +741,40 @@ pub async fn inventory_sync(
     source: &SourceSnapshot,
     options: &SyncOptions,
 ) -> Result<Output<SyncOutput>> {
-    if source.images.is_some() && api.transport != Transport::HomeAssistant {
+    if source.assets().is_some() && api.transport != Transport::HomeAssistant {
         return Err(Failure::local("image_transport_required"));
     }
-    if source.images.is_some() && api.origin.scheme() != "https" {
+    if source.assets().is_some() && api.origin.scheme() != "https" {
         return Err(Failure::local("image_https_required"));
     }
     if source
-        .images
-        .as_ref()
-        .and_then(|images| images.native_origin.as_ref())
+        .native_origin()
         .is_some_and(|origin| origin != &api.origin)
     {
         return Err(Failure::local("image_origin_mismatch"));
     }
     let operation = async {
+        source.unchanged()?;
         if api.transport == Transport::HomeAssistant {
             return managed(api, source, options).await;
         }
-        let preview = preview(api, source.catalog.items(), options.allow_empty).await?;
+        let catalog = source.materialize(&api.origin, &BTreeMap::new())?;
+        let preview = preview(api, catalog.items(), options.allow_empty).await?;
         let output = if options.dry_run {
             preview
         } else {
             source.unchanged()?;
-            apply_inventory(api, source.catalog.items(), options, &preview, None).await?
+            apply_inventory(api, catalog.items(), options, &preview, None).await?
         };
         if !options.dry_run {
-            readback(
-                api,
-                source.catalog.items(),
-                &output.data,
-                options.allow_empty,
-            )
-            .await?;
+            readback(api, catalog.items(), &output.data, options.allow_empty).await?;
         }
+        source.unchanged()?;
         Ok(Output {
             status: output.status,
             etag: output.etag,
             data: SyncOutput {
-                input_source_hash: source.catalog.report().source_hash.clone(),
+                input_source_hash: source.report().source_hash,
                 resolved_source_hash: Some(output.data.source_hash.clone()),
                 inventory: Some(output.data),
                 verified: !options.dry_run,

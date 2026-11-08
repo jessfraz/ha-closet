@@ -1,0 +1,4 @@
+schema = 1
+
+[categories."clothing.top.tshirt"]
+label = "T-shirts"

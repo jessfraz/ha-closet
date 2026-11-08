@@ -166,6 +166,26 @@ impl From<crate::images::ImageError> for Failure {
     }
 }
 
+impl From<crate::source::SourceError> for Failure {
+    fn from(error: crate::source::SourceError) -> Self {
+        Self {
+            status: None,
+            error_code: error.code,
+            errors: Some(
+                error
+                    .errors
+                    .into_iter()
+                    .map(|error| FieldError {
+                        index: None,
+                        field: error.field,
+                        code: error.code.to_owned(),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
 pub async fn response<T: DeserializeOwned>(request: RequestBuilder) -> Result<Output<T>> {
     let mut response = request
         .send()

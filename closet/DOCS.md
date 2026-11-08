@@ -27,13 +27,13 @@ explicit choice, not a silent fallback.
 
 ## Inventory
 
-The JSON file is the source of truth for item metadata and image references.
-There is no separate Add/Edit workflow in the app. Change the source file,
-validate it, preview the diff and sync the reviewed snapshot.
+Edit item metadata and image references in a private TOML catalog. There is no
+separate Add/Edit workflow in the app. Validate the source, preview the diff
+and sync the reviewed snapshot. Existing JSON catalogs also work.
 Every item in the catalog is owned.
 
-IDs are stable purchase identities, not descriptions or SKUs. Unknown details
-stay null. Sync updates the projection in one transaction, archives absent IDs,
+IDs are stable purchase identities, not descriptions or SKUs. Omit unknown
+details in TOML. Sync updates the projection in one transaction, archives absent IDs,
 and reactivates IDs restored to the file. An empty snapshot requires an explicit
 allow-empty option. Invalid input, a stale revision or a conflicting retry key
 does not replace the catalog.
@@ -44,9 +44,9 @@ their inventory, saved outfits and retry records. A historical sync key whose
 original snapshot is no longer recoverable stays reserved and rejects
 mismatched retries. Preview the current file with a new key for a new sync.
 
-Product photos remain public HTTPS references, not an offline image archive.
-Broken photos show a placeholder. Product photos should match the item’s
-style and color.
+Photos can be supplier HTTPS references or private SHA-addressed PNGs synced
+with the catalog. Broken photos show a placeholder. Use images that match the
+item's style and color. See the [CLI reference](../docs/cli.md) for photo sync.
 
 An image can carry an optional display-only crop:
 `"crop": {"x": 2500, "y": 1250, "width": 5000, "height": 7500}`.
@@ -74,8 +74,8 @@ key to reconcile it before deliberately starting a new attempt.
 
 The app uses a cold backup. Native Home Assistant backups include its data:
 SQLite catalog projection, sync/generation retry state and pairing credentials.
-Keep the authoritative JSON separately in your private storage as well. A JSON
-copy alone does not restore pairing or runtime state.
+Keep the catalog, registries and local source photos in your private storage
+as well. Catalog files alone do not restore pairing or runtime state.
 
 ## Troubleshooting
 

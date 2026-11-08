@@ -6,7 +6,7 @@
     "category": "clothing.top",
     "color": null,
     "size": null,
-    "quantity": null,
+    "quantity": 1,
     "material": null,
     "sku": null,
     "purchase_source": "self_bought",

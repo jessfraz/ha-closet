@@ -56,6 +56,7 @@ jobs:
         run: |
           "target/$TARGET/release/ha-closet" --version
           "target/$TARGET/release/ha-closet" inventory validate --input config/catalog.example.json
+          "target/$TARGET/release/ha-closet" inventory validate --input config/wardrobe.example/wardrobe.toml
       - name: Package
         env:
           TARGET: ${{ matrix.target }}

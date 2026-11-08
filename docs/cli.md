@@ -5,23 +5,28 @@ The CLI uses the same Rust types and validator as the service.
 
 ## Validate and sync
 
-The source file is a JSON array. See [the fictional example](../config/catalog.example.json).
+A `.toml` input loads sibling `brands.toml`, `categories.toml` and
+`fittings.toml` files. See the [catalog format](catalog.md) and
+[fictional example](../config/wardrobe.example/wardrobe.toml). Existing JSON
+arrays are also supported.
 
 ```sh
-ha-closet inventory validate --input wardrobe.json
-ha-closet inventory sync --input wardrobe.json --dry-run
+ha-closet inventory validate --input wardrobe.toml
+ha-closet inventory sync --input wardrobe.toml --dry-run
 ```
 
 Validation is offline. It does not resolve a server URL, read a credential,
 connect to Home Assistant, or write anything. This is the command to run in CI.
-Every item needs a shop or purchase source; missing sources fail validation.
+Every item needs a shop or purchase source and an explicit positive quantity.
+TOML also requires brand, name, category, color, size, materials, photos and price.
+Missing values fail validation; quantities are never defaulted.
 Invalid input exits nonzero with safe field locations and error codes, without
 printing item names or input values.
 
 Sync sends the complete catalog, not a patch:
 
 ```sh
-ha-closet inventory sync --input wardrobe.json
+ha-closet inventory sync --input wardrobe.toml
 ```
 
 The command previews the source, applies it with that exact revision and a
@@ -33,13 +38,18 @@ a failed write through. For caller-owned retry control, pass both
 A sync creates or updates records by stable ID, archives absent records, and
 restores records that reappear. It never permanently deletes inventory records.
 An empty catalog needs `--allow-empty`. Use `--input -`, or omit `--input`, for
-stdin. Catalog input is limited to 1 MiB; paths are never URLs.
+JSON stdin. JSON input and each TOML source file are limited to 1 MiB; paths
+are never URLs. TOML needs a file path so its registries can be resolved.
 
 ### Local photos
 
-With an HTTPS Home Assistant connection, sync also handles native photos. Place this
-manifest beside the catalog as `wardrobe-images.json`, with SHA-named PNGs in
-`wardrobe-images/`:
+With an HTTPS Home Assistant connection, sync also handles native photos. TOML
+references local assets directly by SHA in ordered image galleries, with PNGs
+in the sibling `wardrobe-images/` directory. It does not need an image manifest
+or store deployment URLs. Local paths are fixed for TOML inputs.
+
+JSON catalogs keep their existing `wardrobe-images.json` manifest, with SHA-named
+PNGs in `wardrobe-images/`:
 
 ```json
 {
@@ -97,8 +107,12 @@ an uncertain write. No database transaction is held during a network call.
 `--dry-run` performs only reads and preview requests. If native copies exist,
 it reports the resolved source hash, inventory diff and cleanup count. Missing
 copies report `would_upload` and defer the inventory diff: their random native
-IDs do not exist yet. Apply and dry-run never pretend the canonical source
-hash is the resolved deployment hash.
+IDs do not exist yet. The cleanup count is also null until those images can
+be resolved. Apply and dry-run never pretend the canonical source
+hash is the resolved deployment hash. For TOML, offline `source_hash` and sync
+`input_source_hash` describe the canonical authoring snapshot;
+`resolved_source_hash` describes the fully materialized HTTP catalog. All
+registries and asset files are checked again before catalog commit and cleanup.
 
 ## Connect
 

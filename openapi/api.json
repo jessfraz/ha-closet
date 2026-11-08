@@ -72,6 +72,7 @@
             "type": "string"
           },
           "quantity": {
+            "description": "Historical snapshots can omit this; every new catalog write requires it.",
             "format": "uint32",
             "minimum": 0,
             "nullable": true,
@@ -514,6 +515,7 @@
             "type": "string"
           },
           "quantity": {
+            "description": "Historical snapshots can omit this; every new catalog write requires it.",
             "format": "uint32",
             "minimum": 0,
             "nullable": true,
@@ -798,7 +800,87 @@
           },
           "items": {
             "items": {
-              "$ref": "#/components/schemas/CatalogItem"
+              "additionalProperties": false,
+              "properties": {
+                "brand": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "color": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "images": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImageReference"
+                  },
+                  "type": "array"
+                },
+                "material": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "notes": {
+                  "default": [],
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "price": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Price"
+                    }
+                  ],
+                  "default": null,
+                  "nullable": true
+                },
+                "purchase_source": {
+                  "description": "Catalog imports require either a purchase source or a shop.",
+                  "nullable": true,
+                  "type": "string"
+                },
+                "quantity": {
+                  "format": "uint32",
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "shop": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Shop"
+                    }
+                  ],
+                  "default": null,
+                  "nullable": true
+                },
+                "size": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "sku": {
+                  "nullable": true,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "category",
+                "id",
+                "images",
+                "name",
+                "quantity"
+              ],
+              "type": "object"
             },
             "type": "array"
           }
@@ -1037,9 +1119,9 @@
     }
   },
   "info": {
-    "description": "JSON-authoritative inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
+    "description": "Inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.1.10"
+    "version": "0.1.11"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -1496,9 +1578,87 @@
             "application/json": {
               "schema": {
                 "items": {
-                  "$ref": "#/components/schemas/CatalogItem"
+                  "additionalProperties": false,
+                  "properties": {
+                    "brand": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "category": {
+                      "type": "string"
+                    },
+                    "color": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "images": {
+                      "items": {
+                        "$ref": "#/components/schemas/ImageReference"
+                      },
+                      "type": "array"
+                    },
+                    "material": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "notes": {
+                      "default": [],
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "price": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Price"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "purchase_source": {
+                      "description": "Catalog imports require either a purchase source or a shop.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "quantity": {
+                      "format": "uint32",
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "shop": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Shop"
+                        }
+                      ],
+                      "nullable": true
+                    },
+                    "size": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "sku": {
+                      "nullable": true,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "category",
+                    "id",
+                    "images",
+                    "name",
+                    "quantity"
+                  ],
+                  "type": "object"
                 },
-                "title": "Array_of_CatalogItem",
+                "title": "catalog_items_schema",
                 "type": "array"
               }
             }

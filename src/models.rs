@@ -19,6 +19,7 @@ pub struct CatalogItem {
     pub category: String,
     pub color: Option<String>,
     pub size: Option<String>,
+    /// Historical snapshots can omit this; every new catalog write requires it.
     pub quantity: Option<u32>,
     pub material: Option<String>,
     pub sku: Option<String>,
@@ -302,6 +303,7 @@ pub fn validate_catalog(mut items: Vec<CatalogItem>) -> Result<ValidatedCatalog,
             item.shop.is_some() || item.purchase_source.is_some(),
             "source_required",
         );
+        check("quantity", item.quantity.is_some(), "quantity_required");
         check(
             "quantity",
             item.quantity != Some(0),
@@ -486,11 +488,30 @@ pub struct ItemsPage {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SyncRequest {
+    #[schemars(schema_with = "catalog_items_schema")]
     pub items: Vec<CatalogItem>,
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
     pub allow_empty: bool,
+}
+
+// Historical read snapshots remain nullable. New imports require a positive
+// count, so their schema is stricter without rewriting stored JSON.
+pub(crate) fn catalog_items_schema(
+    generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let mut item = CatalogItem::json_schema(generator).into_object();
+    let object = item.object.get_or_insert_with(Default::default);
+    object.required.insert("quantity".into());
+    object.properties.insert(
+        "quantity".into(),
+        generator.subschema_for::<std::num::NonZeroU32>(),
+    );
+    let mut array = Vec::<CatalogItem>::json_schema(generator).into_object();
+    array.array.get_or_insert_with(Default::default).items =
+        Some(schemars::schema::SingleOrVec::Single(Box::new(item.into())));
+    array.into()
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SyncReport {
@@ -633,7 +654,7 @@ mod tests {
         let catalog = parse_catalog(input).unwrap();
         assert_eq!(
             catalog.report().source_hash,
-            "b64f9c533a950bfdc864e348a386f62026b72d27f1c6fd801d2b8c2bb2868a61"
+            "67d1bb16e1a0bd615a6cfa3d2d13dda1dba5e405dbae093b2d5876ca9261a8e0"
         );
         let item = &catalog.items()[0];
         assert_eq!(

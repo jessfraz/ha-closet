@@ -1716,10 +1716,13 @@ mod tests {
 
     #[test]
     fn previous_catalog_serializer_matches_the_released_digest() {
-        let item = parse_catalog(include_bytes!("../tests/fixtures/catalog-seasons.json"))
+        let mut item = parse_catalog(include_bytes!("../tests/fixtures/catalog-seasons.json"))
             .unwrap()
             .into_items()
             .remove(0);
+        // The released snapshot had an unknown count. Read compatibility must
+        // preserve that fact, even though new writes now require quantities.
+        item.quantity = None;
         let previous = PreviousCatalogItem {
             item,
             current_ownership_confirmed: false,
@@ -1732,14 +1735,16 @@ mod tests {
         );
         let decoded: Vec<PreviousCatalogItem> = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded[0].item.id, "example-source");
+        assert_eq!(decoded[0].item.quantity, None);
     }
 
     #[test]
     fn condition_serializer_matches_the_released_digest_without_guessing_missing_values() {
-        let item = parse_catalog(include_bytes!("../tests/fixtures/catalog-seasons.json"))
+        let mut item = parse_catalog(include_bytes!("../tests/fixtures/catalog-seasons.json"))
             .unwrap()
             .into_items()
             .remove(0);
+        item.quantity = None;
         let previous = ConditionCatalogItem {
             item,
             condition_at_purchase: Some(None),

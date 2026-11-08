@@ -1,0 +1,10 @@
+schema = 1
+
+[brands.north_studio]
+name = "North Studio"
+aliases = ["NorthStudio"]
+
+[size_profiles.north_native]
+brand = "north_studio"
+system = "native"
+kind = "clothing"

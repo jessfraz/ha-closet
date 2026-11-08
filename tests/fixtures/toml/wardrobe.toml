@@ -1,0 +1,34 @@
+schema = 1
+
+[[styles]]
+id = "example_tee"
+brand = "north_studio"
+name = "Crew tee"
+category = "clothing.top.tshirt"
+
+[[variants]]
+id = "example_navy"
+style = "example_tee"
+color = { families = ["navy"], maker_shade = "Ink", api_v1_display = "families" }
+materials = [{ part = "main", construction = "jersey", composition = { kind = "listed", parts = [{ kind = "fiber", fiber = "cotton" }] } }]
+images = [{ kind = "asset", sha256 = "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", reference = { kind = "official_product_reference", confidence = "high", source_url = "https://maker.example/crew-tee" } }]
+
+[[inventory]]
+id = "example-purchase-a"
+variant = "example_navy"
+size = { primary = { profile = "north_native", value = { kind = "numeric", label = "00" } } }
+source = { kind = "self_bought" }
+quantity = 2
+price = { amount = 42.5, currency = "USD", basis = "receipt", quantity_basis = "per_item" }
+
+[[inventory]]
+id = "example-purchase-b"
+variant = "example_navy"
+size = { primary = { profile = "north_native", value = { kind = "numeric", label = "0" } } }
+source = { kind = "fitting", fitting = "example_spring" }
+quantity = 1
+price = { amount = 55.0, currency = "USD", basis = "receipt", quantity_basis = "per_item" }
+images = [
+  { kind = "remote", url = "https://images.example.invalid/context.png", reference = { kind = "retailer_product_reference", confidence = "medium", source_url = "https://retailer.example/crew-tee" } },
+  { kind = "asset", sha256 = "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", reference = { kind = "official_product_reference", confidence = "high", source_url = "https://maker.example/crew-tee/detail" }, crop = { x = 1000, y = 1000, width = 8000, height = 8000 } },
+]

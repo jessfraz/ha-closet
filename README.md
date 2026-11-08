@@ -1,10 +1,10 @@
 # Closet
 
-A wardrobe inventory for Home Assistant, backed by a JSON file.
+A wardrobe inventory for Home Assistant.
 
-The file is the source of truth. Closet validates it, syncs changes into a
-local database, and gives it a searchable photo grid. No second catalog to
-keep up to date in the app.
+Keep the catalog in TOML, with shared brands, categories and fittings. Closet
+validates it, syncs changes and gives it a searchable photo grid. There is no
+second inventory to maintain in the app.
 
 Select a brand or source badge to see its inventory. The filters can also be
 combined to narrow things down.
@@ -31,15 +31,16 @@ See the [app documentation](closet/DOCS.md) for configuration and backups.
 
 ## Keep a catalog
 
-Start with the [fictional example](config/catalog.example.json). Keep the real
-file in your own private storage, not in a fork of this public repository.
+Start with the [fictional example](config/wardrobe.example/wardrobe.toml). Keep
+the real files in your own private storage, not in a fork of this repository.
 
 ```sh
-ha-closet inventory validate --input wardrobe.json
-ha-closet inventory sync --input wardrobe.json --dry-run
+ha-closet inventory validate --input wardrobe.toml
+ha-closet inventory sync --input wardrobe.toml --dry-run
 ```
 
-Each item needs a shop or purchase source.
+Each purchase points to a fitting or is self-bought. Different purchases can
+share a style and color without losing their own sizes or quantities.
 
 Validation is offline. It needs no running service, credentials, or model.
 Sync checks the same format and applies the whole snapshot atomically. Missing
@@ -48,15 +49,16 @@ IDs are archived, not deleted. Invalid files leave the current inventory alone.
 Apply the file with one command:
 
 ```sh
-ha-closet inventory sync --input wardrobe.json
+ha-closet inventory sync --input wardrobe.toml
 ```
 
-With a Home Assistant connection, a sibling `wardrobe-images.json` manifest
-and `wardrobe-images/` PNG directory are validated and synced too. Existing
-exact copies are reused. After inventory readback, obsolete Closet-managed
-photos are removed; other Home Assistant images are left alone. The source
-files are never rewritten. See the [CLI reference](docs/cli.md) for the image
-manifest and explicit revision/retry controls.
+Local photos live in `wardrobe-images/` and are referenced by their SHA, not a
+Home Assistant URL. The same command reuses or uploads them, verifies the
+inventory and removes obsolete Closet-managed copies. Other Home Assistant
+images are left alone; source files are never rewritten.
+
+Existing JSON catalogs still work. See the [catalog format](docs/catalog.md)
+and [CLI reference](docs/cli.md) for the schema and revision/retry controls.
 
 Install the CLI from the [release](https://github.com/jessfraz/ha-closet/releases)
 or with Nix. It has JSON output, optional table output, and native or

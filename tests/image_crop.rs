@@ -29,13 +29,14 @@ fn crops_round_trip_and_absent_crops_keep_the_current_canonical_shape() {
     let encoded = serde_json::to_vec(&items).unwrap();
     assert_eq!(parse_catalog(&encoded).unwrap().items(), items);
     items[0].images[0].crop = None;
-    // Canonical catalog digest after purchase-condition removal.
+    // The explicit count belongs to the current import fixture. Omitting a
+    // crop must not add a serialized crop field or change anything else.
     assert_eq!(
         validate_catalog(items.clone())
             .unwrap()
             .report()
             .source_hash,
-        "d9b2152750f96fe983c94c90185f54516045f8728e1dc057f123bfa3d60d801b"
+        "0b9d06c69d66b7fdb9bc73e0b56a913039830f471aa6d5b9bcec9ca8701e4619"
     );
     let legacy = serde_json::to_vec(&items).unwrap();
     let decoded = parse_catalog(&legacy).unwrap();

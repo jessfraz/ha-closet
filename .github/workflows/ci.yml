@@ -31,6 +31,7 @@ jobs:
           cargo run --locked --bin closet -- --openapi /tmp/closet-openapi.json
           cmp openapi/api.json /tmp/closet-openapi.json
       - run: cargo run --locked --bin ha-closet -- inventory validate --input config/catalog.example.json
+      - run: cargo run --locked --bin ha-closet -- inventory validate --input config/wardrobe.example/wardrobe.toml
 
   home-assistant:
     name: Home Assistant

@@ -23,8 +23,8 @@ type Result<T> = std::result::Result<T, Failure>;
 #[command(
     name = "ha-closet",
     version,
-    about = "Validate a wardrobe JSON file or use the Closet API",
-    long_about = "Validate a wardrobe JSON file or use the Closet API. Validation is offline. Inventory sync resolves local images, verifies the complete inventory and prunes obsolete managed images. Other commands read one response. Redirects are never followed and uploads are never blindly retried."
+    about = "Validate a wardrobe JSON or TOML catalog or use the Closet API",
+    long_about = "Validate a wardrobe JSON or TOML catalog or use the Closet API. Validation is offline. TOML loads sibling brands.toml, categories.toml, fittings.toml and SHA-named wardrobe-images PNGs. Inventory sync resolves local images, verifies the complete inventory and prunes obsolete managed images. Other commands read one response. Redirects are never followed and uploads are never blindly retried."
 )]
 struct Cli {
     /// Required when both native and Home Assistant origins are configured.
@@ -57,7 +57,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum Inventory {
-    /// Validate the complete JSON catalog locally. No credentials or network.
+    /// Validate a complete JSON or TOML catalog locally. No credentials or network.
     Validate(Input),
     /// Resolve local images, sync the authoritative snapshot, verify it, then prune.
     Sync {
@@ -134,7 +134,7 @@ enum Format {
 
 #[derive(Args)]
 struct Input {
-    /// JSON array file, or - for stdin. Never interpreted as a URL.
+    /// JSON array or wardrobe TOML file, or - for JSON stdin. Never a URL.
     #[arg(long, default_value = "-")]
     input: PathBuf,
     /// Local version-1 image manifest. Defaults to sibling wardrobe-images.json.
@@ -146,6 +146,16 @@ struct Input {
 }
 impl Input {
     fn source(&self) -> Result<closet::sync::SourceSnapshot> {
+        if self
+            .input
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
+            if self.image_manifest.is_some() || self.images.is_some() {
+                return Err(Failure::local("toml_image_paths_fixed"));
+            }
+            return closet::sync::SourceSnapshot::from_toml(&self.input);
+        }
         let bytes = self.read()?;
         let catalog = parse_catalog(&bytes).map_err(Failure::catalog)?;
         let manifest = self.image_manifest.clone().or_else(|| {
@@ -302,9 +312,9 @@ async fn run(cli: Cli) -> Result<()> {
     if let Command::Inventory(Inventory::Validate(input)) = &cli.command {
         let source = input.source()?;
         #[derive(Serialize)]
-        struct Report<'a> {
+        struct Report {
             #[serde(flatten)]
-            catalog: &'a closet::models::ValidationReport,
+            catalog: closet::models::ValidationReport,
             #[serde(skip_serializing_if = "Option::is_none")]
             images: Option<closet::images::ImageValidationReport>,
         }
@@ -314,11 +324,8 @@ async fn run(cli: Cli) -> Result<()> {
                 status: None,
                 etag: None,
                 data: Report {
-                    catalog: source.catalog.report(),
-                    images: source
-                        .images
-                        .as_ref()
-                        .map(closet::images::LocalImages::report),
+                    catalog: source.report(),
+                    images: source.image_report(),
                 },
             },
         );

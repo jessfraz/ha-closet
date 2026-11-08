@@ -31,7 +31,7 @@ async def test_cards_read_image_brand_name_then_bottom_source(
     theme: str,
 ) -> None:
     short = catalog_item("example-short-card", name="Denim shorts")
-    short.update(brand="Example denim", size=None, color=None, quantity=None)
+    short.update(brand="Example denim", size=None, color=None)
     long = catalog_item(
         "example-long-card",
         name="Relaxed wool overshirt with contrasting buttons and a curved hem",
@@ -135,7 +135,7 @@ async def test_photo_provenance_is_not_ui_noise_but_specific_facts_survive(
     flats = catalog_item("example-flats", category="footwear")
     qualification = "Photo shows navy; the recorded garment is charcoal."
     for record in (top, jeans):
-        record.update(size=None, quantity=None)
+        record.update(size=None)
         record["images"] = [
             {
                 "url": "https://images.example.invalid/garment.svg",
@@ -172,7 +172,7 @@ async def test_photo_provenance_is_not_ui_noise_but_specific_facts_survive(
             await expect(dialog.locator("dt").filter(has_text="Size")).to_have_count(0)
             await expect(
                 dialog.locator("dt").filter(has_text="Quantity")
-            ).to_have_count(0)
+            ).to_have_count(1)
             await page.get_by_role("button", name="Close item details").click()
             await page.get_by_role("button", name="Today", exact=True).click()
             await page.get_by_label("Occasion", exact=True).select_option("everyday")

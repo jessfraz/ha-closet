@@ -204,7 +204,7 @@ async def test_optional_item_facts_are_omitted_when_absent(
     rust_backend: RustBackend,
 ) -> None:
     minimal = catalog_item("example-minimal", name="Example minimal item")
-    minimal.update(color=None, quantity=None)
+    minimal.update(color=None)
     sized = catalog_item("example-sized", name="Example sized item")
     sized.update(size="M", color="Blue", quantity=2)
     await rust_backend.sync([minimal, sized])
@@ -227,7 +227,7 @@ async def test_optional_item_facts_are_omitted_when_absent(
             await button.click()
             detail = page.get_by_role("dialog", name="Example minimal item")
             await expect(detail.locator("dt")).to_have_text(
-                ["Category", "Purchase source"]
+                ["Category", "Quantity", "Purchase source"]
             )
             await detail.get_by_role("button", name="Close item details").click()
             sized_button = page.get_by_role(
@@ -257,7 +257,7 @@ async def test_today_omits_absent_item_facts_and_metadata_notices(
         catalog_item("example-flats", category="footwear"),
     ]
     for record in records:
-        record.update(size=None, color=None, quantity=None)
+        record.update(size=None, color=None)
     await rust_backend.sync(records)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()

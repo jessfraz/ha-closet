@@ -4,6 +4,7 @@ pub mod fence;
 pub mod ha_images;
 pub mod images;
 pub mod models;
+pub mod source;
 pub mod store;
 pub mod sync;
 pub mod today;

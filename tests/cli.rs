@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const TOKEN: &str = "example-owner-credential-at-least-32-characters";
 const READER: &str = "example-reader-credential-at-least-32-characters";
+#[path = "support/toml.rs"]
+mod toml_source;
 
 fn call(args: &[&str], input: &[u8], variables: &[(&str, &str)]) -> Output {
     let mut command = Command::new(
@@ -167,6 +169,118 @@ fn removed_condition_is_rejected_before_config_or_network_for_validate_and_sync(
 }
 
 #[test]
+fn toml_validation_resolves_registries_and_asset_bytes_before_credentials() {
+    #[derive(Deserialize)]
+    struct Report {
+        #[serde(flatten)]
+        catalog: ValidationReport,
+        images: ImageCounts,
+    }
+    #[derive(Deserialize)]
+    struct ImageCounts {
+        images: usize,
+        bytes: u64,
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let input = toml_source::write(directory.path());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let report = success::<Report>(
+        call(
+            &[
+                "--token-file",
+                "/does-not-exist",
+                "inventory",
+                "validate",
+                "--input",
+                input.to_str().unwrap(),
+            ],
+            b"",
+            &[("CLOSET_API_URL", &origin)],
+        ),
+        None,
+    );
+    assert!(report.data.catalog.valid);
+    assert_eq!(report.data.catalog.count, 2);
+    assert_eq!(report.data.catalog.source_hash.len(), 64);
+    assert_eq!(report.data.images.images, 1);
+    assert_eq!(report.data.images.bytes, 68);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn toml_errors_are_offline_private_and_precede_credential_resolution() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    for fault in [
+        "registry",
+        "missing_asset",
+        "changed_asset",
+        "source",
+        "projection",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let input = toml_source::write(directory.path());
+        let asset = directory.path().join(
+            "wardrobe-images/431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460.png",
+        );
+        match fault {
+            "registry" => std::fs::write(
+                directory.path().join("brands.toml"),
+                "private-registry-sentinel = [\n",
+            )
+            .unwrap(),
+            "missing_asset" => std::fs::remove_file(&asset).unwrap(),
+            "changed_asset" => std::fs::write(&asset, b"private-asset-sentinel").unwrap(),
+            "source" => {
+                let text = std::fs::read_to_string(&input).unwrap().replace(
+                    "kind = \"self_bought\"",
+                    "kind = \"private-source-sentinel\"",
+                );
+                std::fs::write(&input, text).unwrap();
+            }
+            "projection" => {
+                let name = format!("private-projection-sentinel{}", "x".repeat(600));
+                let text = std::fs::read_to_string(&input)
+                    .unwrap()
+                    .replace("name = \"Crew tee\"", &format!("name = \"{name}\""));
+                std::fs::write(&input, text).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        for command in [vec!["validate"], vec!["sync", "--dry-run"]] {
+            let mut args = vec!["--token-file", "/does-not-exist", "inventory"];
+            args.extend(command);
+            args.extend(["--input", input.to_str().unwrap()]);
+            let output = call(&args, b"", &[("HOME_ASSISTANT_URL", &origin)]);
+            assert!(!output.status.success(), "{fault}");
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(
+                !stderr.contains("sentinel"),
+                "private source appeared in diagnostic: {fault}"
+            );
+            let diagnostic: Diagnostic = serde_json::from_str(&stderr).unwrap();
+            assert_eq!(diagnostic.status, None);
+            assert!(
+                diagnostic.errors.is_some(),
+                "source error must precede configuration: {diagnostic:?}"
+            );
+            assert_ne!(diagnostic.error_code, "credential_read_failed");
+        }
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
 fn validation_is_offline_and_uses_the_full_server_catalog_contract() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -225,6 +339,36 @@ fn validation_reports_safe_locations_without_echoing_private_values() {
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-secret"));
     failure(output, None, "invalid_catalog_json");
+}
+
+#[test]
+fn missing_quantities_fail_before_credentials_or_network() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let mut items = catalog();
+    items[0].quantity = None;
+    let null = serde_json::to_string(&items).unwrap();
+    let missing = null.replacen("\"quantity\":null,", "", 1);
+    for input in [&null, &missing] {
+        for operation in ["validate", "sync"] {
+            let output = call(
+                &["--token-file", "/does-not-exist", "inventory", operation],
+                input.as_bytes(),
+                &[("CLOSET_API_URL", &origin)],
+            );
+            let diagnostic = failure(output, None, "invalid_catalog");
+            assert!(diagnostic.errors.unwrap().iter().any(|error| {
+                error.index == Some(0)
+                    && error.field == "quantity"
+                    && error.code == "quantity_required"
+            }));
+        }
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]

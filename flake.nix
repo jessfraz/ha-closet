@@ -46,7 +46,7 @@
         __darwinAllowLocalNetworking = true;
         nativeBuildInputs = [pkgs.pkg-config];
         meta = {
-          description = "JSON wardrobe inventory client";
+          description = "Wardrobe inventory client";
           license = pkgs.lib.licenses.mit;
           mainProgram = "ha-closet";
           platforms = systems;
@@ -59,7 +59,7 @@
     apps = forAllSystems (system: let
       app = {
         type = "app";
-        meta.description = "JSON wardrobe inventory client";
+        meta.description = "Wardrobe inventory client";
         program = "${self.packages.${system}.ha-closet}/bin/ha-closet";
       };
     in {

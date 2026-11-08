@@ -30,6 +30,8 @@ use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{Message, protocol::Role},
 };
+#[path = "support/toml.rs"]
+mod toml_source;
 fn pem(label: &str, der: &[u8]) -> Vec<u8> {
     format!(
         "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
@@ -67,6 +69,12 @@ struct Protocol {
     fail_sync: AtomicBool,
     fail_delete: AtomicBool,
     hold_delete: AtomicBool,
+    hold_upload: AtomicBool,
+    upload_entered: Notify,
+    upload_release: Notify,
+    hold_readback: AtomicBool,
+    readback_entered: Notify,
+    readback_release: Notify,
     delete_entered: Notify,
     delete_release: Notify,
     connections: AtomicUsize,
@@ -93,6 +101,10 @@ async fn bridge(
 ) -> Result<Response<Body>, dropshot::HttpError> {
     let path = path.into_inner().path.join("/");
     let protocol = ctx.context();
+    if path == "items" && protocol.hold_readback.load(Ordering::SeqCst) {
+        protocol.readback_entered.notify_one();
+        protocol.readback_release.notified().await;
+    }
     if path == "inventory/sync"
         && ctx.request.method() == http::Method::POST
         && protocol.fail_sync.load(Ordering::SeqCst)
@@ -201,6 +213,11 @@ async fn upload(
             filesize: bytes.len() as u64,
         };
         state.images.insert(id, Stored { record, bytes });
+    }
+    drop(state);
+    if protocol.hold_upload.load(Ordering::SeqCst) {
+        protocol.upload_entered.notify_one();
+        protocol.upload_release.notified().await;
     }
     if protocol.lose_upload_reply.load(Ordering::SeqCst) {
         return Ok(raw(503, Vec::new(), "application/json"));
@@ -368,6 +385,12 @@ impl Fixture {
             fail_sync: AtomicBool::new(false),
             fail_delete: AtomicBool::new(false),
             hold_delete: AtomicBool::new(false),
+            hold_upload: AtomicBool::new(false),
+            upload_entered: Notify::new(),
+            upload_release: Notify::new(),
+            hold_readback: AtomicBool::new(false),
+            readback_entered: Notify::new(),
+            readback_release: Notify::new(),
             delete_entered: Notify::new(),
             delete_release: Notify::new(),
             connections: AtomicUsize::new(0),
@@ -423,9 +446,7 @@ impl Fixture {
         }
     }
     fn source(&self) -> SourceSnapshot {
-        let mut items = catalog();
-        items[0].images.truncate(1);
-        items.truncate(1);
+        let items = Self::source_items();
         let bytes = png();
         let sha = ImageSha::digest(&bytes);
         let images = self.directory.path().join("wardrobe-images");
@@ -450,6 +471,12 @@ impl Fixture {
         let catalog = closet::models::validate_catalog(items).unwrap();
         let local = LocalImages::read(&manifest, &images, catalog.items()).unwrap();
         SourceSnapshot::new(catalog, Some(local), None)
+    }
+    fn source_items() -> Vec<CatalogItem> {
+        let mut items = catalog();
+        items[0].images.truncate(1);
+        items.truncate(1);
+        items
     }
     async fn add(&self, id: u32, name: String, bytes: Vec<u8>) -> NativeImageId {
         let id = NativeImageId::try_from(format!("{id:032x}")).unwrap();
@@ -510,8 +537,11 @@ async fn one_sync_uploads_verifies_prunes_and_reuses_without_changing_sources() 
     assert_eq!(output.data.images.unwrap().uploaded, 0);
     assert_eq!(fixture.protocol.state.lock().await.posts, 0);
     assert_eq!(
-        source.catalog.items()[0].images[0].url,
-        catalog()[0].images[0].url
+        source.report().source_hash,
+        closet::models::validate_catalog(Fixture::source_items())
+            .unwrap()
+            .report()
+            .source_hash
     );
     let current = fixture.store.active_items().await.unwrap();
     assert!(current[0].images[0].url.contains(old.as_str()));
@@ -635,7 +665,7 @@ async fn writer_is_blocked_during_native_delete_without_holding_a_sql_transactio
         tokio::pin!(sync);
         tokio::select! {result=&mut sync=>panic!("unexpected early completion {result:?}"),_=fixture.protocol.delete_entered.notified()=>{}}
         let request = SyncRequest {
-            items: source.catalog.items().to_vec(),
+            items: Fixture::source_items(),
             dry_run: false,
             allow_empty: false,
         };
@@ -835,5 +865,429 @@ async fn executable_owns_inventory_readback_and_managed_cleanup_in_one_command()
     assert_eq!(state.posts, 0);
     drop(state);
     server.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn toml_resolves_new_assets_in_ordered_shared_slots_and_keeps_source_identity() {
+    let fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let before: Vec<_> = [
+        "wardrobe.toml",
+        "brands.toml",
+        "categories.toml",
+        "fittings.toml",
+        "wardrobe-images/431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460.png",
+    ]
+    .into_iter()
+    .map(|name| {
+        let path = fixture.directory.path().join(name);
+        let bytes = std::fs::read(&path).unwrap();
+        (path, bytes)
+    })
+    .collect();
+    let source = SourceSnapshot::from_toml(&input).unwrap();
+    let source_hash = source.report().source_hash;
+    let obsolete_bytes = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC").unwrap();
+    let obsolete = fixture
+        .add(
+            1,
+            ImageSha::digest(&obsolete_bytes).upload_name(),
+            obsolete_bytes,
+        )
+        .await;
+    let output = inventory_sync(&fixture.api, &source, &fixture.options())
+        .await
+        .unwrap();
+    assert!(output.data.verified);
+    assert_eq!(output.data.input_source_hash, source_hash);
+    let resolved_hash = output.data.resolved_source_hash.unwrap();
+    assert_ne!(resolved_hash, source_hash);
+    let counts = output.data.images.unwrap();
+    assert_eq!(counts.local, 1);
+    assert_eq!(counts.uploaded, 1);
+    assert_eq!(counts.pruned, 1);
+    let items = fixture.store.active_items().await.unwrap();
+    assert_eq!(items.len(), 2);
+    let first = items
+        .iter()
+        .find(|item| item.id == "example-purchase-a")
+        .unwrap();
+    let second = items
+        .iter()
+        .find(|item| item.id == "example-purchase-b")
+        .unwrap();
+    assert_eq!(first.quantity, Some(2));
+    assert_eq!(second.quantity, Some(1));
+    assert_eq!(first.brand.as_deref(), Some("North Studio"));
+    assert_eq!(first.color.as_deref(), Some("Navy"));
+    assert_eq!(first.material.as_deref(), Some("Cotton (Jersey)"));
+    assert_eq!(first.size.as_deref(), Some("00"));
+    assert_eq!(second.size.as_deref(), Some("0"));
+    assert_eq!(first.purchase_source.as_deref(), Some("self_bought"));
+    assert_eq!(second.shop.as_ref().unwrap().id, "example_spring");
+    assert_eq!(first.images.len(), 1);
+    assert_eq!(second.images.len(), 2);
+    assert_eq!(first.images[0].url, second.images[1].url);
+    assert!(first.images[0].url.starts_with(&format!(
+        "https://{}/api/image/serve/",
+        fixture.native.local_addr()
+    )));
+    assert_eq!(
+        second.images[0].url,
+        "https://images.example.invalid/context.png"
+    );
+    assert_eq!(
+        first.images[0].source_url.as_deref(),
+        Some("https://maker.example/crew-tee")
+    );
+    assert_eq!(
+        second.images[1].source_url.as_deref(),
+        Some("https://maker.example/crew-tee/detail")
+    );
+    assert_eq!(second.images[1].crop.as_ref().unwrap().width, 8000);
+    assert!(
+        !fixture
+            .protocol
+            .state
+            .lock()
+            .await
+            .images
+            .contains_key(&obsolete)
+    );
+    let mut options = fixture.options();
+    options.dry_run = true;
+    let dry_run = inventory_sync(&fixture.api, &source, &options)
+        .await
+        .unwrap();
+    assert_eq!(dry_run.etag.as_deref(), Some("\"1\""));
+    assert_eq!(
+        dry_run.data.resolved_source_hash.as_deref(),
+        Some(resolved_hash.as_str())
+    );
+    assert_eq!(dry_run.data.images.unwrap().would_prune, Some(0));
+    let replay = inventory_sync(&fixture.api, &source, &fixture.options())
+        .await
+        .unwrap();
+    assert_eq!(replay.data.input_source_hash, source_hash);
+    assert_eq!(
+        replay.data.resolved_source_hash.as_deref(),
+        Some(resolved_hash.as_str())
+    );
+    let diff = replay.data.inventory.unwrap();
+    assert_eq!(diff.created + diff.updated + diff.archived, 0);
+    assert_eq!(fixture.protocol.state.lock().await.posts, 1);
+    for (path, bytes) in before {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn toml_missing_asset_dry_run_has_no_fake_inventory_hash_or_prune_count() {
+    let fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let source = SourceSnapshot::from_toml(&input).unwrap();
+    let mut options = fixture.options();
+    options.dry_run = true;
+    let output = inventory_sync(&fixture.api, &source, &options)
+        .await
+        .unwrap();
+    assert!(!output.data.verified);
+    assert!(output.data.inventory.is_none());
+    assert!(output.data.resolved_source_hash.is_none());
+    let counts = output.data.images.unwrap();
+    assert_eq!(counts.local, 1);
+    assert_eq!(counts.would_upload, 1);
+    assert_eq!(counts.would_prune, None);
+    assert_eq!(fixture.store.counts().await.unwrap().0, 0);
+    let native = fixture.protocol.state.lock().await;
+    assert_eq!(native.posts, 0);
+    assert!(native.deletes.is_empty());
+    drop(native);
+    assert!(!fixture.directory.path().join("state").exists());
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn toml_full_readset_changes_after_upload_abort_before_commit_or_prune() {
+    for changed in [
+        "wardrobe.toml",
+        "brands.toml",
+        "categories.toml",
+        "fittings.toml",
+        "asset",
+    ] {
+        let fixture = Fixture::new().await;
+        let input = toml_source::write(fixture.directory.path());
+        let source = SourceSnapshot::from_toml(&input).unwrap();
+        fixture.protocol.hold_upload.store(true, Ordering::SeqCst);
+        {
+            let options = fixture.options();
+            let operation = inventory_sync(&fixture.api, &source, &options);
+            tokio::pin!(operation);
+            tokio::select! {
+                result = &mut operation => panic!("unexpected completion before upload barrier: {result:?}"),
+                _ = fixture.protocol.upload_entered.notified() => {}
+            }
+            let path = if changed == "asset" {
+                fixture
+                    .directory
+                    .path()
+                    .join("wardrobe-images")
+                    .join(format!("{}.png", ImageSha::digest(&png())))
+            } else {
+                fixture.directory.path().join(changed)
+            };
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes.extend_from_slice(b"\n# changed during sync\n");
+            std::fs::write(path, bytes).unwrap();
+            fixture.protocol.upload_release.notify_one();
+            let error = operation.await.unwrap_err();
+            assert_eq!(
+                error.error_code, "catalog_source_changed",
+                "{changed}: {error:?}"
+            );
+        }
+        assert_eq!(fixture.store.counts().await.unwrap().0, 0);
+        let native = fixture.protocol.state.lock().await;
+        assert_eq!(native.posts, 1);
+        assert!(native.deletes.is_empty());
+        drop(native);
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
+async fn toml_registry_change_after_commit_prevents_native_pruning() {
+    let fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let source = SourceSnapshot::from_toml(&input).unwrap();
+    let sha = ImageSha::digest(&png());
+    fixture.add(1, sha.upload_name(), png()).await;
+    let duplicate = fixture.add(2, sha.upload_name(), png()).await;
+    fixture.protocol.hold_readback.store(true, Ordering::SeqCst);
+    {
+        let options = fixture.options();
+        let operation = inventory_sync(&fixture.api, &source, &options);
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => panic!("unexpected completion before readback barrier: {result:?}"),
+            _ = fixture.protocol.readback_entered.notified() => {}
+        }
+        assert_eq!(fixture.store.counts().await.unwrap(), (1, 2, 0));
+        let path = fixture.directory.path().join("brands.toml");
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"\n# changed after commit\n");
+        std::fs::write(path, bytes).unwrap();
+        fixture.protocol.readback_release.notify_one();
+        let error = operation.await.unwrap_err();
+        assert_eq!(error.error_code, "catalog_source_changed");
+    }
+    let native = fixture.protocol.state.lock().await;
+    assert!(native.deletes.is_empty());
+    assert!(native.images.contains_key(&duplicate));
+    drop(native);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn toml_uncertain_upload_keeps_existing_durable_claim_and_never_posts_twice() {
+    let fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let source = SourceSnapshot::from_toml(&input).unwrap();
+    fixture.protocol.drop_upload.store(true, Ordering::SeqCst);
+    assert_eq!(
+        inventory_sync(&fixture.api, &source, &fixture.options())
+            .await
+            .unwrap_err()
+            .error_code,
+        "image_upload_pending"
+    );
+    let mut options = fixture.options();
+    options.state_directory = Some(fixture.directory.path().join("fresh-toml-worker"));
+    assert_eq!(
+        inventory_sync(&fixture.api, &source, &options)
+            .await
+            .unwrap_err()
+            .error_code,
+        "image_upload_pending"
+    );
+    let native = fixture.protocol.state.lock().await;
+    assert_eq!(native.posts, 1);
+    assert!(native.deletes.is_empty());
+    drop(native);
+    assert_eq!(fixture.store.counts().await.unwrap().0, 0);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn cancelled_toml_upload_reconciles_real_object_without_another_post() {
+    let fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let source = SourceSnapshot::from_toml(&input).unwrap();
+    fixture.protocol.hold_upload.store(true, Ordering::SeqCst);
+    {
+        let options = fixture.options();
+        let operation = inventory_sync(&fixture.api, &source, &options);
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => panic!("unexpected completion before upload barrier: {result:?}"),
+            _ = fixture.protocol.upload_entered.notified() => {}
+        }
+        // Dropping this real operation models the timeout/cancel select branch:
+        // the server has accepted the bytes, but the client received no reply.
+    }
+    assert_eq!(fixture.store.counts().await.unwrap().0, 0);
+    fixture.protocol.hold_upload.store(false, Ordering::SeqCst);
+    fixture.protocol.upload_release.notify_one();
+    let output = inventory_sync(&fixture.api, &source, &fixture.options())
+        .await
+        .unwrap();
+    assert!(output.data.verified);
+    assert_eq!(output.data.images.unwrap().uploaded, 0);
+    assert_eq!(fixture.protocol.state.lock().await.posts, 1);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn toml_native_url_budget_rejects_before_any_https_or_websocket_request() {
+    use closet::source::{
+        CompiledCatalog,
+        types::{InventoryEntry, SourceImage, Style, Variant},
+    };
+    #[derive(Serialize, Deserialize)]
+    struct Document {
+        schema: u8,
+        styles: Vec<Style>,
+        variants: Vec<Variant>,
+        inventory: Vec<InventoryEntry>,
+    }
+    let fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let mut source: Document = toml::from_str(&std::fs::read_to_string(&input).unwrap()).unwrap();
+    let image = source.variants[0].images[0].clone();
+    source.variants[0].images = (0..20)
+        .map(|index| {
+            let mut image = image.clone();
+            let SourceImage::Asset { reference, .. } = &mut image else {
+                panic!("asset fixture")
+            };
+            reference.notes = Some(format!("Fictional view {index}").try_into().unwrap());
+            image
+        })
+        .collect();
+    let template = source.inventory[0].clone();
+    source.inventory = (0..250)
+        .map(|index| {
+            let mut entry = template.clone();
+            entry.id = format!("fictional-purchase-{index:04}").try_into().unwrap();
+            entry.images = None;
+            entry
+        })
+        .collect();
+    std::fs::write(&input, toml::to_string_pretty(&source).unwrap()).unwrap();
+    let compiled =
+        CompiledCatalog::load(&input).expect("known facts fit before native URL overhead");
+    assert_eq!(
+        compiled
+            .validate_projection_size(
+                &format!("https://{}", fixture.native.local_addr())
+                    .parse()
+                    .unwrap()
+            )
+            .unwrap_err()
+            .code,
+        "catalog_too_large"
+    );
+    let snapshot = SourceSnapshot::from_toml(&input).unwrap();
+    let options = fixture.options();
+    // The real TLS/WSS listener is now unavailable. Any native or integration
+    // request before the size preflight would fail transport, not this contract.
+    let Fixture {
+        directory,
+        store,
+        context,
+        backend,
+        native,
+        protocol,
+        api,
+    } = fixture;
+    native.close().await.unwrap();
+    for dry_run in [false, true] {
+        let options = SyncOptions {
+            dry_run,
+            ..SyncOptions {
+                state_directory: options.state_directory.clone(),
+                ..Default::default()
+            }
+        };
+        assert_eq!(
+            inventory_sync(&api, &snapshot, &options)
+                .await
+                .unwrap_err()
+                .error_code,
+            "catalog_too_large"
+        );
+    }
+    assert_eq!(protocol.state.lock().await.posts, 0);
+    assert!(protocol.state.lock().await.deletes.is_empty());
+    assert_eq!(protocol.connections.load(Ordering::SeqCst), 0);
+    assert!(!directory.path().join("state").exists());
+    assert_eq!(store.counts().await.unwrap().0, 0);
+    backend.close().await.unwrap();
+    context.shutdown().await.unwrap();
+    store.close().await;
+}
+
+#[tokio::test]
+async fn toml_remote_only_catalog_keeps_trusted_http_home_assistant_transport() {
+    use closet::source::types::{InventoryEntry, Style, Variant};
+    #[derive(Serialize, Deserialize)]
+    struct Document {
+        schema: u8,
+        styles: Vec<Style>,
+        variants: Vec<Variant>,
+        inventory: Vec<InventoryEntry>,
+    }
+    let fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let mut source: Document = toml::from_str(&std::fs::read_to_string(&input).unwrap()).unwrap();
+    let remote = source.inventory[1].images.as_ref().unwrap()[0].clone();
+    source.variants[0].images = vec![remote];
+    for entry in &mut source.inventory {
+        entry.images = None;
+    }
+    std::fs::remove_dir_all(fixture.directory.path().join("wardrobe-images")).unwrap();
+    std::fs::write(&input, toml::to_string_pretty(&source).unwrap()).unwrap();
+    let source = SourceSnapshot::from_toml(&input).unwrap();
+    let http = dropshot::ServerBuilder::new(
+        native_api(),
+        fixture.protocol.clone(),
+        slog::Logger::root(slog::Discard, slog::o!()),
+    )
+    .start()
+    .unwrap();
+    let api = ApiClient::new(
+        format!("http://{}", http.local_addr()).parse().unwrap(),
+        TOKEN,
+        Transport::HomeAssistant,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    for dry_run in [true, false] {
+        let options = SyncOptions {
+            dry_run,
+            state_directory: Some(fixture.directory.path().join("state")),
+            ..Default::default()
+        };
+        let result = inventory_sync(&api, &source, &options).await.unwrap();
+        assert_eq!(result.data.verified, !dry_run);
+        assert_eq!(result.data.inventory.unwrap().created, 2);
+    }
+    assert_eq!(fixture.store.counts().await.unwrap(), (1, 2, 0));
+    assert_eq!(fixture.protocol.state.lock().await.posts, 0);
+    assert!(fixture.protocol.state.lock().await.deletes.is_empty());
+    http.close().await.unwrap();
     fixture.close().await;
 }

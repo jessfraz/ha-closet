@@ -1,9 +1,9 @@
 [package]
 name = "closet"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 license = "MIT"
-description = "A JSON-backed wardrobe inventory for Home Assistant"
+description = "A wardrobe inventory for Home Assistant"
 repository = "https://github.com/jessfraz/ha-closet"
 default-run = "closet"
 
@@ -24,6 +24,9 @@ clap = { version = "4", features = ["derive", "env"] }
 dropshot = "0.18"
 futures-util = { version = "0.3", features = ["sink"] }
 getrandom = "0.4"
+icu_casemap = "2.4"
+icu_normalizer = "2.4"
+icu_properties = "2.4"
 http = "1"
 percent-encoding = "2"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
@@ -40,6 +43,7 @@ subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+toml = "1"
 url = "2"
 uuid = { version = "1", features = ["serde", "v7"] }
 

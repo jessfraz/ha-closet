@@ -4,6 +4,7 @@
     "brand": "Example Label",
     "name": "Example jacket",
     "category": "clothing.outerwear",
+    "quantity": 1,
     "purchase_source": "example",
     "images": [
       {

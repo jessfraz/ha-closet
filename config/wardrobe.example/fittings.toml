@@ -1,0 +1,4 @@
+[fittings.example_spring]
+label = "Example spring fitting"
+season = "Spring/Summer"
+years = [2026]

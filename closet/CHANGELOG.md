@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.11
+
+- Author catalogs in TOML with checked brand, category and fitting references,
+  shared styles and color variants, and separate purchase records.
+- Standardize colors, sizes and materials with validated Rust types.
+- Require an explicit positive quantity on every new import.
+- Validate and sync TOML and local photos with the same CLI commands. Existing
+  JSON catalogs, inventory IDs and saved outfits remain compatible.
+
 ## 0.1.10
 
 - Sync local photos and inventory with one Rust CLI command, then remove obsolete

@@ -29,7 +29,8 @@ use crate::{
     },
     models::{
         AccessRole, CatalogItem, Generation, Item, ItemsPage, ListQuery, SyncReport, SyncRequest,
-        System, TodayRequest, TodayResponse, ValidationReport, valid_id, validate_catalog,
+        System, TodayRequest, TodayResponse, ValidationReport, catalog_items_schema, valid_id,
+        validate_catalog,
     },
     store::{GenerationBasis, Store, StoreError},
     today::TodayConfig,
@@ -312,14 +313,18 @@ async fn item_get(
     let headers = revision_headers(item.revision);
     Ok(HttpResponseHeaders::new(HttpResponseOk(item), headers))
 }
+#[derive(Deserialize, JsonSchema)]
+#[serde(transparent)]
+struct CatalogImport(#[schemars(schema_with = "catalog_items_schema")] Vec<CatalogItem>);
+
 /// Use the same validator as the offline CLI without changing any state.
 #[endpoint {method=POST,path="/v1/inventory/validate",tags=["inventory"],request_body_max_bytes=1048576}]
 async fn inventory_validate(
     request: RequestContext<Arc<Context>>,
-    body: TypedBody<Vec<CatalogItem>>,
+    body: TypedBody<CatalogImport>,
 ) -> Result<HttpResponseHeaders<HttpResponseOk<ValidationReport>, PrivateHeaders>, HttpError> {
     authenticate(&request)?;
-    let catalog = validate_catalog(body.into_inner())
+    let catalog = validate_catalog(body.into_inner().0)
         .map_err(StoreError::from)
         .map_err(store_error)?;
     Ok(private(catalog.report().clone()))
@@ -628,7 +633,7 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     Ok(api)
 }
 pub fn openapi() -> anyhow::Result<serde_json::Value> {
-    Ok(description()?.openapi("Closet API",semver::Version::parse(env!("CARGO_PKG_VERSION"))?).description("JSON-authoritative inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.").json()?)
+    Ok(description()?.openapi("Closet API",semver::Version::parse(env!("CARGO_PKG_VERSION"))?).description("Inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.").json()?)
 }
 pub fn start(bind: SocketAddr, context: Arc<Context>) -> anyhow::Result<HttpServer<Arc<Context>>> {
     start_with_logger(bind, context, slog::Logger::root(slog::Discard, slog::o!()))
