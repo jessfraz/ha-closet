@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- Display faithful image crops without changing or hosting the original photo.
+
 ## 0.1.5
 
 - Keep filters and item details in the URL, including Home Assistant ingress.

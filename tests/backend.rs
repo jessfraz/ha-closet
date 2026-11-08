@@ -3,9 +3,9 @@ use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
 use closet::{
     api,
     models::{
-        CatalogItem, FieldError, Generation, GenerationStatus, ImageConfidence, ImageReference,
-        Item, ListQuery, Occasion, Price, Shop, SyncReport, SyncRequest, TodayRequest,
-        TodayResponse, parse_catalog,
+        CatalogItem, FieldError, Generation, GenerationStatus, ImageConfidence, ImageCrop,
+        ImageReference, Item, ListQuery, Occasion, Price, Shop, SyncReport, SyncRequest,
+        TodayRequest, TodayResponse, parse_catalog,
     },
     store::{GenerationBasis, Store, StoreError},
 };
@@ -33,6 +33,7 @@ fn piece(id: &str, name: &str, category: &str) -> CatalogItem {
             kind: "product_reference".into(),
             confidence: ImageConfidence::Medium,
             notes: Some("Example reference, not an exact variant".into()),
+            crop: None,
         }],
         condition_at_purchase: Some("Example condition".into()),
         notes: vec!["An invented catalog record".into()],
@@ -467,6 +468,97 @@ async fn sync_is_atomic_revision_checked_and_replays_across_restart() {
         25.5
     );
     reopened.close().await;
+}
+
+#[tokio::test]
+async fn image_crops_survive_http_sync_read_replay_and_atomic_rejection() {
+    let app = App::new().await;
+    let mut input = catalog();
+    let crop = ImageCrop {
+        x: 2500,
+        y: 1250,
+        width: 5000,
+        height: 7500,
+    };
+    input[0].images[0].crop = Some(crop);
+    let url = format!("{}/v1/inventory/sync", app.origin);
+    let request = sync(input.clone(), false);
+    let response = app
+        .client
+        .post(&url)
+        .bearer_auth(OWNER)
+        .header("if-match", "\"0\"")
+        .header("idempotency-key", "example-crop")
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let applied = response.json::<SyncReport>().await.unwrap();
+    assert_eq!(applied.catalog_revision, 1);
+    let response = app
+        .client
+        .get(format!("{}/v1/items/example-dress", app.origin))
+        .bearer_auth(OWNER)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let item = response.json::<Item>().await.unwrap();
+    assert_eq!(item.catalog, input[0]);
+    assert_eq!(item.catalog.images[0].crop, Some(crop));
+    let response = app
+        .client
+        .post(&url)
+        .bearer_auth(OWNER)
+        .header("if-match", "\"0\"")
+        .header("idempotency-key", "example-crop")
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.json::<SyncReport>().await.unwrap(), applied);
+
+    let mut changed_crop = input.clone();
+    changed_crop[0].images[0].crop.as_mut().unwrap().x += 1;
+    let response = app
+        .client
+        .post(&url)
+        .bearer_auth(OWNER)
+        .header("if-match", "\"1\"")
+        .header("idempotency-key", "example-crop")
+        .json(&sync(changed_crop, false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let mut invalid = input.clone();
+    invalid[0].name = "Must not be saved".into();
+    invalid[1].images[0].crop = Some(ImageCrop {
+        x: 9999,
+        y: 0,
+        width: 2,
+        height: 1,
+    });
+    let response = app
+        .client
+        .post(&url)
+        .bearer_auth(OWNER)
+        .header("if-match", "\"1\"")
+        .header("idempotency-key", "example-invalid-crop")
+        .json(&sync(invalid, false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        app.store.item("example-dress").await.unwrap().catalog,
+        input[0]
+    );
+    assert_eq!(app.store.counts().await.unwrap(), (1, 3, 0));
+    app.close().await;
 }
 
 #[tokio::test]

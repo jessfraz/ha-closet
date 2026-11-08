@@ -104,6 +104,7 @@ fn catalog() -> Vec<CatalogItem> {
             kind: "product_reference".into(),
             confidence: ImageConfidence::Medium,
             notes: Some("Reference in a different color".into()),
+            crop: None,
         }],
         condition_at_purchase: Some("Pre-owned".into()),
         notes: vec!["Fictional example".into()],
@@ -394,6 +395,52 @@ async fn real_service_sync_reads_and_conditional_replay_preserve_source_fields()
     let unchanged = success::<System>(service.call(&["system"], b""), Some(200));
     assert_eq!(unchanged.data.catalog_revision, 1);
     assert_eq!(unchanged.data.item_count, 2);
+    service.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn real_cli_validates_syncs_and_reads_non_destructive_crops() {
+    let service = Service::new().await;
+    let source = include_bytes!("fixtures/catalog-crop.json");
+    let validated = closet::models::parse_catalog(source).unwrap();
+    let report = success::<ValidationReport>(call(&["inventory", "validate"], source, &[]), None);
+    assert_eq!(&report.data, validated.report());
+    let applied = success::<SyncReport>(
+        service.call(
+            &[
+                "inventory",
+                "sync",
+                "--if-match",
+                "\"0\"",
+                "--idempotency-key",
+                "example-crop-cli",
+            ],
+            source,
+        ),
+        Some(200),
+    );
+    assert_eq!(applied.data.catalog_revision, 1);
+    let item = success::<Item>(
+        service.call(&["items", "get", "example-cropped-jacket"], b""),
+        Some(200),
+    );
+    assert_eq!(&item.data.catalog, &validated.items()[0]);
+    assert!(item.data.catalog.images[0].crop.is_some());
+    let mut invalid = validated.into_items();
+    invalid[0].images[0].crop.as_mut().unwrap().height = 0;
+    let diagnostic = failure(
+        service.call(&["inventory", "sync", "--dry-run"], &bytes(&invalid)),
+        None,
+        "invalid_catalog",
+    );
+    assert!(
+        diagnostic
+            .errors
+            .unwrap()
+            .iter()
+            .any(|error| error.field == "images.crop" && error.code == "invalid_crop")
+    );
+    assert_eq!(service.store.counts().await.unwrap(), (1, 1, 0));
     service.finish().await;
 }
 

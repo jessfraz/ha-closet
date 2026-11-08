@@ -56,6 +56,33 @@ pub struct ImageReference {
     pub confidence: ImageConfidence,
     #[serde(default)]
     pub notes: Option<String>,
+    /// Optional display-only viewport; the original URL and pixels stay unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<ImageCrop>,
+}
+
+/// A rectangle in 1/10,000 of the original image width and height.
+/// The origin is the top-left; width and height must be positive, and the
+/// rectangle must fit entirely inside the original image.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ImageCrop {
+    #[schemars(range(min = 0, max = 9999))]
+    pub x: u16,
+    #[schemars(range(min = 0, max = 9999))]
+    pub y: u16,
+    #[schemars(range(min = 1, max = 10000))]
+    pub width: u16,
+    #[schemars(range(min = 1, max = 10000))]
+    pub height: u16,
+}
+impl ImageCrop {
+    fn is_valid(self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && u32::from(self.x) + u32::from(self.width) <= 10_000
+            && u32::from(self.y) + u32::from(self.height) <= 10_000
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -305,6 +332,11 @@ pub fn validate_catalog(mut items: Vec<CatalogItem>) -> Result<ValidatedCatalog,
                 "images.notes",
                 image.notes.as_deref().is_none_or(|v| valid_note(v, 4096)),
                 "invalid_notes",
+            );
+            check(
+                "images.crop",
+                image.crop.is_none_or(ImageCrop::is_valid),
+                "invalid_crop",
             );
         }
         if let Some(price) = &item.price {

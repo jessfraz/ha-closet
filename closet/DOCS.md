@@ -45,8 +45,17 @@ rejects mismatched retries. Preview the current file with a new key for a new
 sync.
 
 Product photos remain public HTTPS references, not an offline image archive.
-Broken or qualified images retain their labels and placeholders. Source
-references should match the item’s style and color.
+Broken photos show a placeholder. Product photos should match the item’s
+style and color.
+
+An image can carry an optional display-only crop:
+`"crop": {"x": 2500, "y": 1250, "width": 5000, "height": 7500}`.
+Coordinates are integers in 1/10,000 of the original width and height, measured
+from the top-left. Width and height must be positive; `x + width` and
+`y + height` cannot exceed 10000. The example selects the middle half of the
+width and three quarters of the height. The same viewport appears on cards
+and in the gallery. The original URL, source link and image pixels stay intact.
+Omit `crop` to show the full image.
 
 ## Today
 

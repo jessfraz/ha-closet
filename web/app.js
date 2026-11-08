@@ -220,6 +220,20 @@ function photo(item, index = 0) {
   image.referrerPolicy = "no-referrer";
   image.loading = "lazy";
   image.addEventListener("error", placeholder, { once: true });
+  const crop = reference.crop;
+  if (object(crop)) {
+    image.addEventListener("load", () => {
+      const units = 10000;
+      const viewport = element("div", "photo-crop");
+      viewport.style.setProperty("--crop-aspect", String(image.naturalWidth * crop.width / (image.naturalHeight * crop.height)));
+      image.style.width = `${100 * units / crop.width}%`;
+      image.style.height = `${100 * units / crop.height}%`;
+      image.style.left = `${-100 * crop.x / crop.width}%`;
+      image.style.top = `${-100 * crop.y / crop.height}%`;
+      viewport.append(image);
+      wrapper.replaceChildren(viewport);
+    }, { once: true });
+  }
   image.src = url;
   wrapper.append(image);
   return wrapper;

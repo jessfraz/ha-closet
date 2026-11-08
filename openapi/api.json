@@ -250,11 +250,57 @@
         ],
         "type": "string"
       },
+      "ImageCrop": {
+        "additionalProperties": false,
+        "description": "A rectangle in 1/10,000 of the original image width and height. The origin is the top-left; width and height must be positive, and the rectangle must fit entirely inside the original image.",
+        "properties": {
+          "height": {
+            "format": "uint16",
+            "maximum": 10000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint16",
+            "maximum": 10000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "x": {
+            "format": "uint16",
+            "maximum": 9999,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "y": {
+            "format": "uint16",
+            "maximum": 9999,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "height",
+          "width",
+          "x",
+          "y"
+        ],
+        "type": "object"
+      },
       "ImageReference": {
         "additionalProperties": false,
         "properties": {
           "confidence": {
             "$ref": "#/components/schemas/ImageConfidence"
+          },
+          "crop": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ImageCrop"
+              }
+            ],
+            "description": "Optional display-only viewport; the original URL and pixels stay unchanged.",
+            "nullable": true
           },
           "kind": {
             "type": "string"
@@ -816,7 +862,7 @@
   "info": {
     "description": "JSON-authoritative inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.1.5"
+    "version": "0.1.6"
   },
   "openapi": "3.0.3",
   "paths": {
