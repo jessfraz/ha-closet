@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.10
+
+- Sync local photos and inventory with one Rust CLI command, then remove obsolete
+  Closet-managed Home Assistant photos after verified readback.
+- Keep uncertain uploads and pending cleanup safe across retries and restarts.
+- Generate Everyday, casual Work, Evening and Bedtime groups with Today’s All
+  option in one request.
+
 ## 0.1.9
 
 - Use a white photo canvas in every view, including the dark theme.

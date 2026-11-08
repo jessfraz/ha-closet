@@ -19,7 +19,13 @@ _ROUTES = (
     (re.compile(r"system|today"), frozenset({"GET"})),
     (re.compile(r"items"), frozenset({"GET"})),
     (re.compile(rf"items/{_ITEM_ID}"), frozenset({"GET"})),
-    (re.compile(r"inventory/sync|inventory/validate"), frozenset({"POST"})),
+    (
+        re.compile(
+            r"inventory/sync|inventory/validate|inventory/fence/prepare|inventory/fence/resolve|inventory/fence/uploads"
+        ),
+        frozenset({"POST"}),
+    ),
+    (re.compile(r"inventory/fence"), frozenset({"POST", "DELETE"})),
     (re.compile(r"today/generate"), frozenset({"POST"})),
 )
 _LIST_QUERY = {
@@ -77,7 +83,12 @@ class ClosetView(HomeAssistantView):
                 )
         headers = {
             key: request.headers[key]
-            for key in ("If-Match", "If-None-Match", "Idempotency-Key")
+            for key in (
+                "If-Match",
+                "If-None-Match",
+                "Idempotency-Key",
+                "X-Closet-Sync-Fence",
+            )
             if key in request.headers
         }
         try:
@@ -97,7 +108,7 @@ class ClosetView(HomeAssistantView):
             raise web.HTTPGatewayTimeout from None
         except ClientError, ResponseTooLarge:
             raise web.HTTPBadGateway from None
-        if request.method != "GET" and response.status < 300:
+        if path in {"inventory/sync", "today/generate"} and response.status < 300:
             entry = coordinator.config_entry
             if entry is not None:
                 entry.async_create_background_task(
@@ -111,3 +122,4 @@ class ClosetView(HomeAssistantView):
 
     get = _proxy
     post = _proxy
+    delete = _proxy

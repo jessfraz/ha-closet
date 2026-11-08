@@ -1,4 +1,9 @@
 pub mod api;
+pub mod client;
+pub mod fence;
+pub mod ha_images;
+pub mod images;
 pub mod models;
 pub mod store;
+pub mod sync;
 pub mod today;

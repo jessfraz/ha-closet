@@ -310,6 +310,7 @@ async def test_today_badges_return_to_inventory_without_another_generation(
             page = await browser.new_page()
             await login(page, rust_backend)
             await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_label("Occasion", exact=True).select_option("everyday")
             await page.get_by_role("button", name="Suggest outfits", exact=True).click()
             await expect(page.locator(".pieces .item-open")).to_have_count(3)
             await (

@@ -561,8 +561,10 @@ function inputValues() {
   return { occasion: byId("occasion").value, weather_mode: byId("weather-mode").value };
 }
 
+const occasionLabels = { all: "All occasions", everyday: "Everyday", work: "Work", dinner: "Evening", bedtime: "Bedtime" };
+
 function inputLabel(inputs) {
-  const occasion = { everyday: "Everyday", work: "Work", dinner: "Dinner", bedtime: "Bedtime" }[inputs.occasion] || "Unknown occasion";
+  const occasion = occasionLabels[inputs.occasion] || "Unknown occasion";
   return `${occasion} · ${inputs.weather_mode === "ignored" ? "Weather ignored" : "Uses forecast"}`;
 }
 
@@ -629,7 +631,6 @@ async function renderToday(data, revision) {
   if (!todayDraft && !pendingGeneration) {
     const inputs = result?.inputs || generation?.inputs;
     if (object(inputs)) {
-      byId("occasion").value = inputs.occasion;
       byId("weather-mode").value = inputs.weather_mode;
     }
   }
@@ -646,18 +647,31 @@ async function renderToday(data, revision) {
   renderWeather(result);
   const cards = document.createDocumentFragment();
   if (result && Array.isArray(result.suggestions)) {
-    for (const suggestion of result.suggestions.slice(0, 3)) {
-      if (!object(suggestion) || !Array.isArray(suggestion.item_ids)) throw new APIError(200, "invalid_response");
-      const card = element("article", `suggestion${result.freshness === "stale" ? " stale" : ""}`);
-      const pieces = element("div", "pieces");
-      const records = await Promise.all([...new Set(suggestion.item_ids)].slice(0, 5).map(getItem));
-      if (revision !== todayRevision || view !== "today") return;
-      for (const item of records) pieces.append(itemCard(item, true));
-      const copy = element("div", "suggestion-copy");
-      copy.append(element("h3", "", suggestion.label || "Another combination"), element("p", "muted", suggestion.advisory_reason || ""));
-      const warnings = Array.isArray(suggestion.warnings) ? suggestion.warnings.filter((warning) => warning !== "unknown_quantity" && warning !== "qualified_image_reference") : [];
-      if (warnings.length) copy.append(element("p", "qualifier", warnings.join(" · ").replaceAll("_", " ")));
-      card.append(pieces, copy); cards.append(card);
+    const groups = result.inputs.occasion === "all"
+      ? ["everyday", "work", "dinner", "bedtime"]
+      : [result.inputs.occasion];
+    for (const occasion of groups) {
+      const suggestions = result.suggestions.filter((suggestion) => object(suggestion) && (suggestion.occasion || result.inputs.occasion) === occasion).slice(0, 3);
+      if (!suggestions.length) continue;
+      const section = element("section", "today-group");
+      const heading = element("h2", "today-group-heading", occasionLabels[occasion] || "Suggestions");
+      heading.id = `today-group-${occasion}`;
+      section.setAttribute("aria-labelledby", heading.id);
+      section.append(heading);
+      for (const suggestion of suggestions) {
+        if (!object(suggestion) || !Array.isArray(suggestion.item_ids)) throw new APIError(200, "invalid_response");
+        const card = element("article", `suggestion${result.freshness === "stale" ? " stale" : ""}`);
+        const pieces = element("div", "pieces");
+        const records = await Promise.all([...new Set(suggestion.item_ids)].slice(0, 5).map(getItem));
+        if (revision !== todayRevision || view !== "today") return;
+        for (const item of records) pieces.append(itemCard(item, true));
+        const copy = element("div", "suggestion-copy");
+        copy.append(element("h3", "", suggestion.label || "Another combination"), element("p", "muted", suggestion.advisory_reason || ""));
+        const warnings = Array.isArray(suggestion.warnings) ? suggestion.warnings.filter((warning) => warning !== "unknown_quantity" && warning !== "qualified_image_reference") : [];
+        if (warnings.length) copy.append(element("p", "qualifier", warnings.join(" · ").replaceAll("_", " ")));
+        card.append(pieces, copy); section.append(card);
+      }
+      cards.append(section);
     }
   }
   if (revision !== todayRevision || view !== "today") return;

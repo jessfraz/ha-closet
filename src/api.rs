@@ -23,6 +23,10 @@ use subtle::ConstantTimeEq;
 use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::{
+    fence::{
+        FenceAcquire, FencePrepare, FenceRelease, FenceReleased, FenceResolve, FenceStatus,
+        FenceToken, FenceUpload, UploadClaimStatus,
+    },
     models::{
         AccessRole, CatalogItem, Generation, Item, ItemsPage, ListQuery, SyncReport, SyncRequest,
         System, TodayRequest, TodayResponse, ValidationReport, valid_id, validate_catalog,
@@ -334,14 +338,97 @@ async fn inventory_sync(
     } else {
         Some(idempotency(&request)?)
     };
+    let fence = header(&request, "x-closet-sync-fence")
+        .map(|value| FenceToken::try_from(value.to_owned()))
+        .transpose()
+        .map_err(|_| fail(Status::BAD_REQUEST, "invalid_fence_token"))?;
     let report = request
         .context()
         .store
-        .sync(input, expected, &principal.actor, key)
+        .sync_fenced(input, expected, &principal.actor, key, fence.as_ref())
         .await
         .map_err(store_error)?;
     let headers = revision_headers(report.catalog_revision);
     Ok(HttpResponseHeaders::new(HttpResponseOk(report), headers))
+}
+/// Serialize authoritative writers without holding a transaction over native requests.
+#[endpoint {method=POST,path="/v1/inventory/fence",tags=["inventory"],request_body_max_bytes=2048}]
+async fn fence_acquire(
+    request: RequestContext<Arc<Context>>,
+    body: TypedBody<FenceAcquire>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<FenceStatus>, PrivateHeaders>, HttpError> {
+    let principal = administrator(&request)?;
+    Ok(private(
+        request
+            .context()
+            .store
+            .acquire_fence(body.into_inner(), &principal.actor)
+            .await
+            .map_err(store_error)?,
+    ))
+}
+/// Admit only unreferenced native IDs; persist the exact batch before deleting.
+#[endpoint {method=POST,path="/v1/inventory/fence/prepare",tags=["inventory"],request_body_max_bytes=2097152}]
+async fn fence_prepare(
+    request: RequestContext<Arc<Context>>,
+    body: TypedBody<FencePrepare>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<FenceStatus>, PrivateHeaders>, HttpError> {
+    let principal = administrator(&request)?;
+    let context = request.context();
+    Ok(private(
+        context
+            .store
+            .prepare_prune(body.into_inner(), &principal.actor, &context.date())
+            .await
+            .map_err(store_error)?,
+    ))
+}
+/// The client resolves an admitted ID only after authoritative native absence.
+#[endpoint {method=POST,path="/v1/inventory/fence/resolve",tags=["inventory"],request_body_max_bytes=2048}]
+async fn fence_resolve(
+    request: RequestContext<Arc<Context>>,
+    body: TypedBody<FenceResolve>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<FenceStatus>, PrivateHeaders>, HttpError> {
+    let principal = administrator(&request)?;
+    Ok(private(
+        request
+            .context()
+            .store
+            .resolve_pruned(body.into_inner(), &principal.actor)
+            .await
+            .map_err(store_error)?,
+    ))
+}
+/// Durable upload claims survive ephemeral CI runners and lost POST replies.
+#[endpoint {method=POST,path="/v1/inventory/fence/uploads",tags=["inventory"],request_body_max_bytes=2048}]
+async fn fence_upload(
+    request: RequestContext<Arc<Context>>,
+    body: TypedBody<FenceUpload>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<UploadClaimStatus>, PrivateHeaders>, HttpError> {
+    let principal = administrator(&request)?;
+    Ok(private(
+        request
+            .context()
+            .store
+            .upload_claim(body.into_inner(), &principal.actor)
+            .await
+            .map_err(store_error)?,
+    ))
+}
+/// A pending deletion cannot be released by a timeout or a different writer.
+#[endpoint {method=DELETE,path="/v1/inventory/fence",tags=["inventory"],request_body_max_bytes=2048}]
+async fn fence_release(
+    request: RequestContext<Arc<Context>>,
+    body: TypedBody<FenceRelease>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<FenceReleased>, PrivateHeaders>, HttpError> {
+    let principal = administrator(&request)?;
+    request
+        .context()
+        .store
+        .release_fence(&body.into_inner().token, &principal.actor)
+        .await
+        .map_err(store_error)?;
+    Ok(private(FenceReleased { released: true }))
 }
 /// Read Today's saved result and latest attempt; never calls the model.
 #[endpoint {method=GET,path="/v1/today",tags=["today"]}]
@@ -513,13 +600,18 @@ async fn schema(request: RequestContext<Arc<Context>>) -> Result<Response<Body>,
 
 pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     let mut api = ApiDescription::new();
-    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 15] = [
+    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 20] = [
         health.into(),
         system.into(),
         items_list.into(),
         item_get.into(),
         inventory_validate.into(),
         inventory_sync.into(),
+        fence_acquire.into(),
+        fence_prepare.into(),
+        fence_resolve.into(),
+        fence_release.into(),
+        fence_upload.into(),
         today_get.into(),
         today_generate.into(),
         index.into(),

@@ -535,7 +535,7 @@ macro_rules! choice {
         }
     };
 }
-choice!(Occasion, Everyday, {Everyday => "everyday", Work => "work", Dinner => "dinner", Bedtime => "bedtime"});
+choice!(Occasion, All, {All => "all", Everyday => "everyday", Work => "work", Dinner => "dinner", Bedtime => "bedtime"});
 choice!(WeatherMode, Required, {Required => "required", Ignored => "ignored"});
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -590,6 +590,8 @@ pub struct TodayResult {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Suggestion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occasion: Option<Occasion>,
     pub label: String,
     pub item_ids: Vec<String>,
     pub advisory_reason: String,

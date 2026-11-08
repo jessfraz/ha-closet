@@ -10,6 +10,10 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
 };
 
+use crate::fence::{
+    FenceAcquire, FencePrepare, FenceResolve, FenceStatus, FenceToken, FenceUpload, ManagedImage,
+    UploadClaimAction, UploadClaimStatus, referenced_image_id,
+};
 use crate::models::{
     CatalogItem, Facets, Freshness, Generation, GenerationStatus, Item, ItemFilters, ItemsPage,
     ListQuery, Source, SourceFacet, SyncReport, SyncRequest, TodayRequest, TodayResponse,
@@ -39,6 +43,15 @@ const GENERATION_SQL: &str = "SELECT body FROM generations WHERE id=?";
 // Validated filters and an item ID fit below this URL-safe base64 bound, even
 // with maximal JSON escaping. Leave room for HA's 8190-byte request line.
 const MAX_PAGE_TOKEN_BYTES: usize = 7168;
+
+const FENCE_READ_SQL: &str = "SELECT token_hash, actor, expires_at > unixepoch() AS active, pending, uploads FROM inventory_fence WHERE singleton=1";
+const FENCE_ACQUIRE_SQL: &str = "INSERT INTO inventory_fence(singleton,token_hash,actor,expires_at,pending,uploads) VALUES(1,?,?,unixepoch()+300,?,?) ON CONFLICT(singleton) DO UPDATE SET token_hash=excluded.token_hash, actor=excluded.actor, expires_at=excluded.expires_at, pending=excluded.pending, uploads=excluded.uploads";
+const FENCE_PENDING_SQL: &str =
+    "UPDATE inventory_fence SET pending=?,expires_at=unixepoch()+300 WHERE singleton=1";
+const FENCE_RELEASE_SQL: &str = "UPDATE inventory_fence SET expires_at=0 WHERE singleton=1";
+const FENCE_UPLOADS_SQL: &str =
+    "UPDATE inventory_fence SET uploads=?,expires_at=unixepoch()+300 WHERE singleton=1";
+const LIVE_IMAGE_ITEMS_SQL: &str = "SELECT body FROM items WHERE archived=0 UNION ALL SELECT body FROM items WHERE archived=1 AND id IN (SELECT ids.value FROM today_results AS result, json_each(result.body, '$.suggestions') AS suggestion, json_each(suggestion.value, '$.item_ids') AS ids WHERE result.local_date=?)";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -716,6 +729,17 @@ impl Store {
         actor: &str,
         key: Option<&str>,
     ) -> Result<SyncReport> {
+        self.sync_fenced(request, expected, actor, key, None).await
+    }
+
+    pub async fn sync_fenced(
+        &self,
+        request: SyncRequest,
+        expected: Option<i64>,
+        actor: &str,
+        key: Option<&str>,
+        fence: Option<&FenceToken>,
+    ) -> Result<SyncReport> {
         let catalog = validate_catalog(request.items)?;
         if catalog.items().is_empty() && !request.allow_empty && !request.dry_run {
             return Err(StoreError::Invalid("empty_catalog_requires_allow_empty"));
@@ -724,8 +748,13 @@ impl Store {
             catalog.items(),
             request.allow_empty,
         ))?);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = if request.dry_run {
+            self.pool.begin().await?
+        } else {
+            self.pool.begin_with("BEGIN IMMEDIATE").await?
+        };
         if !request.dry_run {
+            check_sync_fence(&mut tx, actor, fence).await?;
             let key = key.ok_or(StoreError::Invalid("idempotency_key_required"))?;
             if let Some(row) = operation(&mut tx, "sync", actor, key).await? {
                 if row.try_get::<String, _>("request_hash")? != input_hash {
@@ -970,6 +999,246 @@ impl Store {
             generation.finished_at = Some(Utc::now());
             generation.error_code = Some("interrupted".into());
             save_generation(&mut tx, &generation).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct FenceRow {
+    token_hash: String,
+    actor: String,
+    active: bool,
+    pending: String,
+    uploads: String,
+}
+impl FenceRow {
+    fn owns(&self, actor: &str, token: &FenceToken) -> bool {
+        use subtle::ConstantTimeEq;
+        self.actor == actor
+            && bool::from(
+                self.token_hash
+                    .as_bytes()
+                    .ct_eq(hash(token.as_str().as_bytes()).as_bytes()),
+            )
+    }
+    fn images(&self) -> Result<Vec<ManagedImage>> {
+        Ok(serde_json::from_str(&self.pending)?)
+    }
+    fn uploads(&self) -> Result<Vec<crate::images::ImageSha>> {
+        Ok(serde_json::from_str(&self.uploads)?)
+    }
+}
+async fn fence_row(connection: &mut SqliteConnection) -> Result<Option<FenceRow>> {
+    Ok(sqlx::query_as(FENCE_READ_SQL)
+        .fetch_optional(connection)
+        .await?)
+}
+async fn owned_fence(
+    connection: &mut SqliteConnection,
+    actor: &str,
+    token: &FenceToken,
+) -> Result<FenceRow> {
+    let row = fence_row(connection)
+        .await?
+        .ok_or(StoreError::Conflict("sync_fence_expired"))?;
+    if !row.active || !row.owns(actor, token) {
+        return Err(StoreError::Conflict("sync_fence_expired"));
+    }
+    Ok(row)
+}
+async fn check_sync_fence(
+    connection: &mut SqliteConnection,
+    actor: &str,
+    token: Option<&FenceToken>,
+) -> Result<()> {
+    let row = fence_row(connection).await?;
+    if let Some(token) = token {
+        let row = row.ok_or(StoreError::Conflict("sync_fence_expired"))?;
+        if !row.active || !row.owns(actor, token) {
+            return Err(StoreError::Conflict("sync_fence_expired"));
+        }
+        if !row.images()?.is_empty() {
+            return Err(StoreError::Conflict("cleanup_pending"));
+        }
+    } else if let Some(row) = row {
+        if !row.images()?.is_empty() {
+            return Err(StoreError::Conflict("cleanup_pending"));
+        }
+        if row.active {
+            return Err(StoreError::Conflict("sync_in_progress"));
+        }
+    }
+    Ok(())
+}
+impl Store {
+    pub async fn acquire_fence(&self, request: FenceAcquire, actor: &str) -> Result<FenceStatus> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let revision = state(&mut tx).await?.0;
+        if revision != request.expected_revision {
+            return Err(StoreError::Revision);
+        }
+        let row = fence_row(&mut tx).await?;
+        if row
+            .as_ref()
+            .is_some_and(|row| row.active && !row.owns(actor, &request.token))
+        {
+            return Err(StoreError::Conflict("sync_in_progress"));
+        }
+        // A takeover retains every already-admitted delete. Those exact IDs
+        // stay fenced across client crashes, expiration, and app restarts.
+        let pending = row
+            .as_ref()
+            .map(|row| row.images())
+            .transpose()?
+            .unwrap_or_default();
+        let uploads = row
+            .as_ref()
+            .map(|row| row.uploads())
+            .transpose()?
+            .unwrap_or_default();
+        sqlx::query(FENCE_ACQUIRE_SQL)
+            .bind(hash(request.token.as_str().as_bytes()))
+            .bind(actor)
+            .bind(serde_json::to_string(&pending)?)
+            .bind(serde_json::to_string(&uploads)?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(FenceStatus {
+            catalog_revision: revision,
+            pending,
+            uploads,
+            valid_for_seconds: 300,
+        })
+    }
+    pub async fn prepare_prune(
+        &self,
+        request: FencePrepare,
+        actor: &str,
+        date: &str,
+    ) -> Result<FenceStatus> {
+        if request.images.len() > 10_000
+            || request
+                .images
+                .iter()
+                .map(|image| &image.id)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != request.images.len()
+        {
+            return Err(StoreError::Invalid("invalid_prune_batch"));
+        }
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row = owned_fence(&mut tx, actor, &request.token).await?;
+        let revision = state(&mut tx).await?.0;
+        if revision != request.catalog_revision {
+            return Err(StoreError::Revision);
+        }
+        let pending = row.images()?;
+        if !pending.is_empty() && pending != request.images {
+            return Err(StoreError::Conflict("cleanup_pending"));
+        }
+        // One bounded proof covers the whole deletion batch, avoiding a full
+        // catalog scan for each native request. The fence blocks every catalog
+        // writer until these IDs are resolved. New Today results reference
+        // active items, so cannot introduce an excluded archived reference.
+        let rows = sqlx::query_scalar::<_, String>(LIVE_IMAGE_ITEMS_SQL)
+            .bind(date)
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut referenced = std::collections::BTreeSet::new();
+        for body in rows {
+            let item: CatalogItem = serde_json::from_str(&body)?;
+            referenced.extend(
+                item.images
+                    .iter()
+                    .filter_map(|image| referenced_image_id(&image.url)),
+            );
+        }
+        if request
+            .images
+            .iter()
+            .any(|image| referenced.contains(&image.id))
+        {
+            return Err(StoreError::Conflict("image_referenced"));
+        }
+        sqlx::query(FENCE_PENDING_SQL)
+            .bind(serde_json::to_string(&request.images)?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(FenceStatus {
+            catalog_revision: revision,
+            pending: request.images,
+            uploads: row.uploads()?,
+            valid_for_seconds: 300,
+        })
+    }
+    pub async fn resolve_pruned(&self, request: FenceResolve, actor: &str) -> Result<FenceStatus> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row = owned_fence(&mut tx, actor, &request.token).await?;
+        let mut pending = row.images()?;
+        if pending
+            .iter()
+            .any(|image| image.id == request.image.id && image.sha256 != request.image.sha256)
+        {
+            return Err(StoreError::Conflict("invalid_prune_image"));
+        }
+        pending.retain(|image| image != &request.image);
+        sqlx::query(FENCE_PENDING_SQL)
+            .bind(serde_json::to_string(&pending)?)
+            .execute(&mut *tx)
+            .await?;
+        let revision = state(&mut tx).await?.0;
+        tx.commit().await?;
+        Ok(FenceStatus {
+            catalog_revision: revision,
+            pending,
+            uploads: row.uploads()?,
+            valid_for_seconds: 300,
+        })
+    }
+    pub async fn upload_claim(
+        &self,
+        request: FenceUpload,
+        actor: &str,
+    ) -> Result<UploadClaimStatus> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row = owned_fence(&mut tx, actor, &request.token).await?;
+        let mut uploads = row.uploads()?;
+        let existing = uploads.contains(&request.sha256);
+        let claimed = matches!(request.action, UploadClaimAction::Begin) && !existing;
+        match request.action {
+            UploadClaimAction::Begin if !existing => {
+                if uploads.len() >= 10_000 {
+                    return Err(StoreError::Conflict("image_upload_pending"));
+                }
+                uploads.push(request.sha256);
+            }
+            UploadClaimAction::Begin => {}
+            UploadClaimAction::Verified | UploadClaimAction::Rejected => {
+                uploads.retain(|sha| sha != &request.sha256)
+            }
+        }
+        sqlx::query(FENCE_UPLOADS_SQL)
+            .bind(serde_json::to_string(&uploads)?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(UploadClaimStatus { claimed })
+    }
+    pub async fn release_fence(&self, token: &FenceToken, actor: &str) -> Result<()> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(row) = fence_row(&mut tx).await? {
+            if !row.owns(actor, token) {
+                return Err(StoreError::Conflict("sync_fence_expired"));
+            }
+            if !row.images()?.is_empty() {
+                return Err(StoreError::Conflict("cleanup_pending"));
+            }
+            sqlx::query(FENCE_RELEASE_SQL).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -1418,6 +1687,7 @@ mod tests {
             stale_reasons: Vec::new(),
             weather: None,
             suggestions: vec![Suggestion {
+                occasion: None,
                 label: "An example outfit".into(),
                 item_ids: active
                     .iter()
@@ -1506,6 +1776,13 @@ mod tests {
                 .collect(),
         );
         previous.run(&pool).await.unwrap();
+        // The current writer needs an empty fence table while authoring this
+        // historical fixture. Remove it below so the persisted database really
+        // has only the old migrations when the upgrade is exercised.
+        sqlx::raw_sql(include_str!("../migrations/0004_inventory_fence.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
         // A fresh 0.1.6 store consumed the ownership marker before use.
         sqlx::query("DROP TABLE ownership_removal_pending")
             .execute(&pool)
@@ -1576,6 +1853,7 @@ mod tests {
                     stale_reasons: Vec::new(),
                     weather: None,
                     suggestions: vec![Suggestion {
+                        occasion: None,
                         label: "Example outfit".into(),
                         item_ids: vec![items[0].id.clone(), items[1].id.clone()],
                         advisory_reason: "An invented combination".into(),
@@ -1617,6 +1895,10 @@ mod tests {
         };
         sqlx::query("INSERT INTO operations (scope,actor,key,request_hash,response) VALUES ('sync','example-owner','unrecoverable','unrecoverable-request-hash',?)")
             .bind(serde_json::to_string(&report).unwrap()).execute(&store.pool).await.unwrap();
+        sqlx::query("DROP TABLE inventory_fence")
+            .execute(&store.pool)
+            .await
+            .unwrap();
         store
     }
 
@@ -2118,6 +2400,7 @@ mod tests {
                 stale_reasons: Vec::new(),
                 weather: None,
                 suggestions: vec![Suggestion {
+                    occasion: None,
                     label: "A historical example".into(),
                     item_ids: vec!["example-4300".into(), "example-4301".into()],
                     advisory_reason: "A fictional saved suggestion for query planning.".into(),
@@ -2130,6 +2413,16 @@ mod tests {
                 .execute(&mut *tx).await.unwrap();
         }
         tx.commit().await.unwrap();
+        store
+            .acquire_fence(
+                crate::fence::FenceAcquire {
+                    token: crate::fence::FenceToken::new().unwrap(),
+                    expected_revision: revision,
+                },
+                "example-owner",
+            )
+            .await
+            .unwrap();
         sqlx::query("ANALYZE").execute(&store.pool).await.unwrap();
         let (generation_body, generation_basis): (String, String) =
             sqlx::query_as("SELECT body,basis FROM generations WHERE id='example-generation-10'")
@@ -2146,6 +2439,35 @@ mod tests {
             "SELECT response FROM operations WHERE scope='sync' AND actor='example-owner' AND key='all'",
         ).fetch_one(&store.pool).await.unwrap();
         for (name, mut query) in [
+            (
+                "inventory fence read",
+                sqlx::query(crate::store::FENCE_READ_SQL),
+            ),
+            (
+                "inventory fence acquire",
+                sqlx::query(crate::store::FENCE_ACQUIRE_SQL)
+                    .bind("example-token-hash")
+                    .bind("example-owner")
+                    .bind("[]")
+                    .bind("[]"),
+            ),
+            (
+                "inventory fence pending",
+                sqlx::query(crate::store::FENCE_PENDING_SQL).bind("[]"),
+            ),
+            (
+                "inventory fence uploads",
+                sqlx::query(crate::store::FENCE_UPLOADS_SQL).bind("[]"),
+            ),
+            (
+                "inventory fence release",
+                sqlx::query(crate::store::FENCE_RELEASE_SQL),
+            ),
+            (
+                "complete current live image records",
+                sqlx::query(crate::store::LIVE_IMAGE_ITEMS_SQL)
+                    .bind(Utc::now().date_naive().to_string()),
+            ),
             ("aggregate counts", sqlx::query(COUNTS_SQL)),
             ("item by ID", sqlx::query(ITEM_SQL).bind("example-4300")),
             (
@@ -2275,9 +2597,10 @@ mod tests {
             ),
         ] {
             let arguments = query.take_arguments().unwrap().unwrap();
+            let sql = query.sql();
             let mut explain = QueryBuilder::<sqlx::Sqlite>::new("EXPLAIN QUERY PLAN ");
-            explain.push(query.sql().as_str());
-            let rows = sqlx::query_with::<sqlx::Sqlite, _>(explain.into_sql(), arguments)
+            explain.push(sql.as_str());
+            let rows = sqlx::query_with::<sqlx::Sqlite, _>(explain.into_sql(), arguments.clone())
                 .fetch_all(&store.pool)
                 .await
                 .unwrap();
@@ -2286,6 +2609,16 @@ mod tests {
                 .map(|row| sqlx::Row::get(row, "detail"))
                 .collect();
             println!("{name}: {}", plans.join("; "));
+            if plans.is_empty() {
+                let mut native = QueryBuilder::<sqlx::Sqlite>::new("EXPLAIN ");
+                native.push(sql.as_str());
+                let vm = sqlx::query_with::<sqlx::Sqlite, _>(native.into_sql(), arguments)
+                    .fetch_all(&store.pool)
+                    .await
+                    .unwrap();
+                let opcodes: Vec<String> = vm.iter().map(|row| row.get("opcode")).collect();
+                println!("{name} native VM: {}", opcodes.join(","));
+            }
         }
         for (name, filters) in [
             ("first page", ItemFilters::default()),
@@ -2415,6 +2748,176 @@ mod tests {
             .map(|row| sqlx::Row::get(row, "detail"))
             .collect();
         println!("sync active/source IDs only: {}", plans.join("; "));
+        store.close().await;
+    }
+    #[tokio::test]
+    async fn fence_migration_upgrades_previous_database_and_has_a_native_sqlite_plan() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("previous-019.sqlite3");
+        let store = Store::open(&path).await.unwrap();
+        let mut source = vec![example(0), example(1)];
+        source[0].category = "clothing.dress".into();
+        store
+            .sync(
+                SyncRequest {
+                    items: source.clone(),
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(0),
+                "example-owner",
+                Some("initial"),
+            )
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let date = now.date_naive().to_string();
+        let inputs = TodayRequest {
+            occasion: Occasion::Everyday,
+            weather_mode: WeatherMode::Ignored,
+        };
+        let generation = store
+            .reserve_generation(
+                inputs.clone(),
+                GenerationBasis {
+                    date: date.clone(),
+                    timezone: "UTC".into(),
+                    config_hash: "example-config".into(),
+                    items: source.clone(),
+                },
+                "example-owner",
+                "old-today",
+            )
+            .await
+            .unwrap()
+            .generation;
+        store
+            .finish_generation(
+                &generation.id,
+                Ok(TodayResult {
+                    generation_id: generation.id.clone(),
+                    inputs,
+                    generated_at: now,
+                    expires_at: now + Duration::hours(6),
+                    freshness: Freshness::Ready,
+                    stale_reasons: Vec::new(),
+                    weather: None,
+                    suggestions: vec![Suggestion {
+                        occasion: None,
+                        label: "A saved example".into(),
+                        item_ids: source.iter().map(|item| item.id.clone()).collect(),
+                        advisory_reason: "A fictional combination".into(),
+                        warnings: Vec::new(),
+                    }],
+                }),
+            )
+            .await
+            .unwrap();
+        source.truncate(1);
+        let report = store
+            .sync(
+                SyncRequest {
+                    items: source.clone(),
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(1),
+                "example-owner",
+                Some("current"),
+            )
+            .await
+            .unwrap();
+        store.close().await;
+        let mut connection =
+            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
+                .await
+                .unwrap();
+        // The additive fence is the sole schema difference from 0.1.9. Remove
+        // that empty table/history entry only on this disposable fixture, while
+        // retaining real writer-produced inventory, retry and Today records.
+        sqlx::query("DROP TABLE inventory_fence")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version=4")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        let before: Vec<(String, String)> =
+            sqlx::query_as("SELECT scope,request_hash FROM operations ORDER BY scope,key")
+                .fetch_all(&mut connection)
+                .await
+                .unwrap();
+        let saved: String = sqlx::query_scalar("SELECT body FROM today_results")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        let mut explain = QueryBuilder::<sqlx::Sqlite>::new("EXPLAIN ");
+        explain.push(include_str!("../migrations/0004_inventory_fence.sql"));
+        let plan = sqlx::query(explain.into_sql())
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+        let opcodes: Vec<String> = plan.iter().map(|row| row.get("opcode")).collect();
+        assert!(opcodes.iter().any(|opcode| opcode == "CreateBtree"));
+        println!("fence migration native VM: {}", opcodes.join(","));
+        connection.close().await.unwrap();
+        let store = Store::open(&path).await.unwrap();
+        assert_eq!(store.counts().await.unwrap(), (2, 1, 1));
+        assert_eq!(store.active_items().await.unwrap(), source);
+        assert!(store.item("example-0001").await.unwrap().archived);
+        let replay = store
+            .sync(
+                SyncRequest {
+                    items: source,
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(0),
+                "example-owner",
+                Some("current"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay, report);
+        let after: Vec<(String, String)> =
+            sqlx::query_as("SELECT scope,request_hash FROM operations ORDER BY scope,key")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(
+            saved,
+            sqlx::query_scalar::<_, String>("SELECT body FROM today_results")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap()
+        );
+        let today = store
+            .today(&date, "UTC", "example-config", now)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(today.suggestions[0].item_ids.len(), 2);
+        assert!(
+            today
+                .stale_reasons
+                .iter()
+                .any(|reason| reason == "referenced_items_changed")
+        );
+        let token = crate::fence::FenceToken::new().unwrap();
+        store
+            .acquire_fence(
+                crate::fence::FenceAcquire {
+                    token: token.clone(),
+                    expected_revision: 2,
+                },
+                "example-owner",
+            )
+            .await
+            .unwrap();
+        store.release_fence(&token, "example-owner").await.unwrap();
         store.close().await;
     }
 }

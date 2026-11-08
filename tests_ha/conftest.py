@@ -8,11 +8,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+import probatio
 import pytest
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from homeassistant.auth.const import GROUP_ID_USER
 from homeassistant.auth.providers import AuthProvider
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import llm, selector
 from homeassistant.util.json import JsonObjectType
 from pytest_aiohttp.plugin import AiohttpServer
 from pytest_homeassistant_custom_component.common import MockUser
@@ -29,6 +31,7 @@ class HAProtocol:
     generations: int = 0
     forecasts: int = 0
     last_context: JsonObjectType | None = None
+    last_schema: JsonObjectType | None = None
 
     async def weather_state(self, request: web.Request) -> web.Response:
         return web.json_response(
@@ -66,6 +69,49 @@ class HAProtocol:
             instructions.rsplit("## Context data\n", 1)[1]
         )
         self.last_context = context
+        if context.get("occasion") == "all":
+            structure = payload.get("structure")
+            assert isinstance(structure, dict)
+            # Exercise HA's real nested selectors and provider JSON schema.
+            fields = {}
+            for name, field in structure.items():
+                assert isinstance(field, dict)
+                fields[name] = {
+                    "required": field["required"],
+                    "selector": field["selector"],
+                }
+            schema = probatio.to_openapi(
+                probatio.Schema(selector.selector({"object": {"fields": fields}})),
+                custom_serializer=llm.selector_serializer,
+                openapi_version="3.1.0",
+            )
+            self.last_schema = schema
+            data: JsonObjectType = {}
+            for group in structure:
+                if group == "bedtime":
+                    data[group] = {
+                        "one_piece_suggestions": [
+                            {
+                                "label": "Example bedtime combination",
+                                "one_piece_id": "example-nightgown",
+                                "advisory_reason": "A fictional sleepwear choice.",
+                            }
+                        ]
+                    }
+                else:
+                    data[group] = {
+                        "separates_suggestions": [
+                            {
+                                "label": f"Example {group} combination",
+                                "top_id": "example-top",
+                                "bottom_id": "example-jeans",
+                                "footwear_id": "example-flats",
+                                "extra_ids": [],
+                                "advisory_reason": "A fictional casual combination.",
+                            }
+                        ]
+                    }
+            return web.json_response({"service_response": {"data": data}})
         if context.get("occasion") == "bedtime":
             return web.json_response(
                 {

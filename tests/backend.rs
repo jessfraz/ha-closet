@@ -1041,6 +1041,7 @@ async fn today_keeps_the_last_result_and_rechecks_only_referenced_facts() {
         stale_reasons: Vec::new(),
         weather: None,
         suggestions: vec![Suggestion {
+            occasion: None,
             label: "An example outfit".into(),
             item_ids: vec!["example-dress".into(), "example-shoes".into()],
             advisory_reason: "An optional combination to consider.".into(),

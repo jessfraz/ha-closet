@@ -175,6 +175,7 @@ async def test_photo_provenance_is_not_ui_noise_but_specific_facts_survive(
             ).to_have_count(0)
             await page.get_by_role("button", name="Close item details").click()
             await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_label("Occasion", exact=True).select_option("everyday")
             await page.get_by_role("button", name="Suggest outfits", exact=True).click()
             await expect(page.locator(".pieces .item-open")).to_have_count(3)
             assert not noise.search(await page.locator("#today").aria_snapshot())

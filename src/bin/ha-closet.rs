@@ -8,19 +8,15 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use closet::client::{ApiClient, Failure, Output, Transport, response};
 use closet::models::{
-    FieldError, Freshness, Generation, GenerationStatus, Item, ItemsPage, Occasion, Source,
-    SyncReport, SyncRequest, System, TodayRequest, TodayResponse, ValidationError, WeatherMode,
-    parse_catalog, valid_id,
+    Freshness, Generation, GenerationStatus, Item, ItemsPage, Occasion, Source, System,
+    TodayRequest, TodayResponse, WeatherMode, parse_catalog, valid_id,
 };
-use reqwest::{
-    Client, Method, RequestBuilder, Url,
-    header::{AUTHORIZATION, HeaderValue},
-};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use reqwest::{Method, RequestBuilder, Url};
+use serde::{Serialize, de::DeserializeOwned};
 
 const MAX_INPUT_BYTES: u64 = closet::models::MAX_CATALOG_BYTES as u64;
-const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 type Result<T> = std::result::Result<T, Failure>;
 
 #[derive(Parser)]
@@ -28,7 +24,7 @@ type Result<T> = std::result::Result<T, Failure>;
     name = "ha-closet",
     version,
     about = "Validate a wardrobe JSON file or use the Closet API",
-    long_about = "Validate a wardrobe JSON file or use the Closet API. Validation is offline. Network commands make one request, never retry or follow redirects, and never fetch another page automatically."
+    long_about = "Validate a wardrobe JSON file or use the Closet API. Validation is offline. Inventory sync resolves local images, verifies the complete inventory and prunes obsolete managed images. Other commands read one response. Redirects are never followed and uploads are never blindly retried."
 )]
 struct Cli {
     /// Required when both native and Home Assistant origins are configured.
@@ -40,37 +36,11 @@ struct Cli {
     /// Read the selected credential from an owner-only file instead of its env.
     #[arg(long, global = true)]
     token_file: Option<PathBuf>,
-    /// Total request deadline, including the response body, in seconds.
+    /// Closet API request deadline in seconds. Complete sync is bounded to 10 minutes.
     #[arg(long, default_value = "30", value_parser = clap::value_parser!(u64).range(1..=300), global = true)]
     timeout: u64,
     #[command(subcommand)]
     command: Command,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Transport {
-    Native,
-    HomeAssistant,
-}
-impl Transport {
-    fn url_env(self) -> &'static str {
-        match self {
-            Self::Native => "CLOSET_API_URL",
-            Self::HomeAssistant => "HOME_ASSISTANT_URL",
-        }
-    }
-    fn token_env(self) -> &'static str {
-        match self {
-            Self::Native => "CLOSET_API_TOKEN",
-            Self::HomeAssistant => "HOME_ASSISTANT_TOKEN",
-        }
-    }
-    fn prefix(self) -> &'static str {
-        match self {
-            Self::Native => "/v1",
-            Self::HomeAssistant => "/api/closet/v1",
-        }
-    }
 }
 
 #[derive(Subcommand)]
@@ -89,7 +59,7 @@ enum Command {
 enum Inventory {
     /// Validate the complete JSON catalog locally. No credentials or network.
     Validate(Input),
-    /// Preview or apply one complete authoritative catalog snapshot.
+    /// Resolve local images, sync the authoritative snapshot, verify it, then prune.
     Sync {
         #[command(flatten)]
         input: Input,
@@ -99,12 +69,15 @@ enum Inventory {
         /// Permit an explicitly empty catalog to archive every existing item.
         #[arg(long)]
         allow_empty: bool,
-        /// Exact quoted catalog ETag from preview, e.g. '"0"'.
-        #[arg(long, required_unless_present = "dry_run", value_parser = parse_revision)]
+        /// Optional explicit quoted ETag, paired with --idempotency-key.
+        #[arg(long, requires = "idempotency_key", value_parser = parse_revision)]
         if_match: Option<String>,
         /// Caller-owned stable key. Reuse with the exact body after an uncertain reply.
-        #[arg(long, required_unless_present = "dry_run", value_parser = parse_key)]
+        #[arg(long, requires = "if_match", value_parser = parse_key)]
         idempotency_key: Option<String>,
+        /// Persistent owner-token directory. Defaults to the user state directory.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
     },
 }
 
@@ -144,7 +117,7 @@ enum Today {
     },
     /// Request one attempt. A 202 result means accepted, not completed.
     Generate {
-        #[arg(long, default_value = "everyday", value_parser = parse_occasion)]
+        #[arg(long, default_value = "all", value_parser = parse_occasion)]
         occasion: Occasion,
         #[arg(long, default_value = "required", value_parser = parse_weather_mode)]
         weather_mode: WeatherMode,
@@ -164,8 +137,40 @@ struct Input {
     /// JSON array file, or - for stdin. Never interpreted as a URL.
     #[arg(long, default_value = "-")]
     input: PathBuf,
+    /// Local version-1 image manifest. Defaults to sibling wardrobe-images.json.
+    #[arg(long)]
+    image_manifest: Option<PathBuf>,
+    /// SHA-named PNG directory. Defaults to the manifest path without .json.
+    #[arg(long, requires = "image_manifest")]
+    images: Option<PathBuf>,
 }
 impl Input {
+    fn source(&self) -> Result<closet::sync::SourceSnapshot> {
+        let bytes = self.read()?;
+        let catalog = parse_catalog(&bytes).map_err(Failure::catalog)?;
+        let manifest = self.image_manifest.clone().or_else(|| {
+            if self.input.as_os_str() == "-" {
+                return None;
+            }
+            let candidate = self.input.parent()?.join("wardrobe-images.json");
+            candidate.symlink_metadata().ok().map(|_| candidate)
+        });
+        let images = manifest
+            .map(|path| {
+                let directory = self
+                    .images
+                    .clone()
+                    .unwrap_or_else(|| path.with_extension(""));
+                closet::images::LocalImages::read(&path, &directory, catalog.items())
+                    .map_err(Failure::from)
+            })
+            .transpose()?;
+        Ok(closet::sync::SourceSnapshot::new(
+            catalog,
+            images,
+            (self.input.as_os_str() != "-").then_some((self.input.as_path(), bytes.as_slice())),
+        ))
+    }
     fn read(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         if self.input.as_os_str() == "-" {
@@ -213,132 +218,52 @@ fn parse_id(value: &str) -> std::result::Result<String, &'static str> {
 fn parse_occasion(value: &str) -> std::result::Result<Occasion, &'static str> {
     value
         .parse()
-        .map_err(|_| "expected everyday, work, dinner, or bedtime")
+        .map_err(|_| "expected all, everyday, work, dinner, or bedtime")
 }
 fn parse_weather_mode(value: &str) -> std::result::Result<WeatherMode, &'static str> {
     value.parse().map_err(|_| "expected required or ignored")
 }
 
-#[derive(Serialize)]
-struct Output<T> {
-    status: Option<u16>,
-    etag: Option<String>,
-    data: T,
-}
-
-#[derive(Serialize)]
-struct Failure {
-    status: Option<u16>,
-    error_code: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    errors: Option<Vec<FieldError>>,
-}
-impl Failure {
-    fn local(error_code: &'static str) -> Self {
-        Self {
-            status: None,
-            error_code,
-            errors: None,
+fn configure_api(cli: &Cli) -> Result<ApiClient> {
+    let native_url = std::env::var(Transport::Native.url_env()).ok();
+    let ha_url = std::env::var(Transport::HomeAssistant.url_env()).ok();
+    let transport = match cli.transport {
+        Some(transport) => transport,
+        None if native_url.is_some() && ha_url.is_some() => {
+            return Err(Failure::local("transport_required"));
         }
-    }
-    fn http(status: u16, error_code: &'static str) -> Self {
-        Self {
-            status: Some(status),
-            error_code,
-            errors: None,
-        }
-    }
-    fn catalog(error: ValidationError) -> Self {
-        Self {
-            status: None,
-            error_code: match error.code.as_str() {
-                "catalog_too_large" => "catalog_too_large",
-                "invalid_catalog_json" => "invalid_catalog_json",
-                _ => "invalid_catalog",
-            },
-            errors: Some(error.errors),
-        }
-    }
-}
-
-struct Api {
-    client: Client,
-    origin: Url,
-    authorization: HeaderValue,
-    transport: Transport,
-}
-impl Api {
-    fn new(cli: &Cli) -> Result<Self> {
-        let native_url = std::env::var(Transport::Native.url_env()).ok();
-        let ha_url = std::env::var(Transport::HomeAssistant.url_env()).ok();
-        let transport = match cli.transport {
-            Some(transport) => transport,
-            None if native_url.is_some() && ha_url.is_some() => {
-                return Err(Failure::local("transport_required"));
-            }
-            None if ha_url.is_some() && cli.url.is_none() => Transport::HomeAssistant,
-            None => Transport::Native,
-        };
-        let configured_url = cli
-            .url
-            .clone()
-            .or(match transport {
-                Transport::Native => native_url,
-                Transport::HomeAssistant => ha_url,
-            })
-            .ok_or_else(|| Failure::local("url_required"))?;
-        let origin = Url::parse(&configured_url).map_err(|_| Failure::local("invalid_url"))?;
-        if !matches!(origin.scheme(), "http" | "https")
-            || origin.host_str().is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-        {
-            return Err(Failure::local("invalid_url"));
-        }
-        let token = if let Some(path) = &cli.token_file {
-            read_token_file(path)?
-        } else {
-            std::env::var(transport.token_env())
-                .map_err(|_| Failure::local("credential_required"))?
-        };
-        if token.is_empty()
-            || token.len() > 4096
-            || !token.bytes().all(|byte| byte.is_ascii_graphic())
-        {
-            return Err(Failure::local("invalid_credential"));
-        }
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| Failure::local("invalid_credential"))?;
-        authorization.set_sensitive(true);
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(cli.timeout))
-            .build()
-            .map_err(|_| Failure::local("client_setup_failed"))?;
-        Ok(Self {
-            client,
-            origin,
-            authorization,
-            transport,
+        None if ha_url.is_some() && cli.url.is_none() => Transport::HomeAssistant,
+        None => Transport::Native,
+    };
+    let configured_url = cli
+        .url
+        .clone()
+        .or(match transport {
+            Transport::Native => native_url,
+            Transport::HomeAssistant => ha_url,
         })
+        .ok_or_else(|| Failure::local("url_required"))?;
+    let origin = Url::parse(&configured_url).map_err(|_| Failure::local("invalid_url"))?;
+    if !matches!(origin.scheme(), "http" | "https")
+        || origin.host_str().is_none()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.path() != "/"
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        return Err(Failure::local("invalid_url"));
     }
-
-    fn request(&self, method: Method, path: &str) -> Result<RequestBuilder> {
-        let path = format!("{}{path}", self.transport.prefix());
-        let url = self
-            .origin
-            .join(&path)
-            .map_err(|_| Failure::local("invalid_path"))?;
-        Ok(self
-            .client
-            .request(method, url)
-            .header(AUTHORIZATION, self.authorization.clone()))
+    let token = if let Some(path) = &cli.token_file {
+        read_token_file(path)?
+    } else {
+        std::env::var(transport.token_env()).map_err(|_| Failure::local("credential_required"))?
+    };
+    if token.is_empty() || token.len() > 4096 || !token.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(Failure::local("invalid_credential"));
     }
+    ApiClient::new(origin, &token, transport, Duration::from_secs(cli.timeout))
 }
 
 fn read_token_file(path: &std::path::Path) -> Result<String> {
@@ -367,82 +292,6 @@ fn write_json(writer: impl Write, value: &impl Serialize) -> Result<()> {
         .map_err(|_| Failure::local("output_failed"))
 }
 
-async fn response<T: DeserializeOwned>(request: RequestBuilder) -> Result<Output<T>> {
-    let mut response = request
-        .send()
-        .await
-        .map_err(|_| Failure::local("request_failed"))?;
-    let status = response.status().as_u16();
-    let etag = response
-        .headers()
-        .get("etag")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| Failure::http(status, "response_read_failed"))?
-    {
-        if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-            return Err(Failure::http(status, "response_too_large"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    if !(200..300).contains(&status) {
-        return Err(Failure::http(status, remote_error_code(status, &bytes)));
-    }
-    let data = serde_json::from_slice(&bytes)
-        .map_err(|_| Failure::http(status, "invalid_json_response"))?;
-    Ok(Output {
-        status: Some(status),
-        etag,
-        data,
-    })
-}
-
-fn remote_error_code(status: u16, bytes: &[u8]) -> &'static str {
-    if (300..400).contains(&status) {
-        return "redirect_refused";
-    }
-    #[derive(Deserialize)]
-    struct ApiError {
-        error_code: Option<String>,
-        code: Option<String>,
-    }
-    let code = serde_json::from_slice::<ApiError>(bytes)
-        .ok()
-        .and_then(|error| error.error_code.or(error.code));
-    // An unknown remote code or message may contain private input. Only this
-    // fixed vocabulary is safe to emit as a diagnostic.
-    match code.as_deref() {
-        Some("invalid_input") => "invalid_input",
-        Some("invalid_catalog") => "invalid_catalog",
-        Some("invalid_catalog_json") => "invalid_catalog_json",
-        Some("invalid_limit") => "invalid_limit",
-        Some("invalid_filter") => "invalid_filter",
-        Some("owner_required") => "owner_required",
-        Some("admin_required") => "admin_required",
-        Some("unauthorized") => "unauthorized",
-        Some("forbidden") => "forbidden",
-        Some("not_found") => "not_found",
-        Some("revision_conflict") => "revision_conflict",
-        Some("precondition_required") => "precondition_required",
-        Some("idempotency_conflict") => "idempotency_conflict",
-        Some("idempotency_key_required") => "idempotency_key_required",
-        Some("generation_in_progress") => "generation_in_progress",
-        Some("page_invalidated") => "page_invalidated",
-        Some("invalid_page_token") => "invalid_page_token",
-        Some("empty_catalog_requires_allow_empty") => "empty_catalog_requires_allow_empty",
-        Some("weather_unavailable") => "weather_unavailable",
-        Some("model_unavailable") => "model_unavailable",
-        Some("catalog_too_large") => "catalog_too_large",
-        Some("invalid_model_output") => "invalid_model_output",
-        Some("storage_unavailable") => "storage_unavailable",
-        _ => "http_error",
-    }
-}
-
 async fn send<T: DeserializeOwned + Serialize>(request: RequestBuilder) -> Result<()> {
     write_json(std::io::stdout().lock(), &response::<T>(request).await?)
 }
@@ -451,24 +300,36 @@ async fn run(cli: Cli) -> Result<()> {
     // This branch deliberately precedes URL/credential/transport resolution.
     // CI validation uses the server's parser without building an HTTP client.
     if let Command::Inventory(Inventory::Validate(input)) = &cli.command {
-        let catalog = parse_catalog(&input.read()?).map_err(Failure::catalog)?;
+        let source = input.source()?;
+        #[derive(Serialize)]
+        struct Report<'a> {
+            #[serde(flatten)]
+            catalog: &'a closet::models::ValidationReport,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            images: Option<closet::images::ImageValidationReport>,
+        }
         return write_json(
             std::io::stdout().lock(),
             &Output {
                 status: None,
                 etag: None,
-                data: catalog.report(),
+                data: Report {
+                    catalog: source.catalog.report(),
+                    images: source
+                        .images
+                        .as_ref()
+                        .map(closet::images::LocalImages::report),
+                },
             },
         );
     }
-
-    // Parse source files before touching the network, including a dry run.
-    let sync_catalog = if let Command::Inventory(Inventory::Sync { input, .. }) = &cli.command {
-        Some(parse_catalog(&input.read()?).map_err(Failure::catalog)?)
+    // Validate every local source before selecting credentials or a destination.
+    let sync_source = if let Command::Inventory(Inventory::Sync { input, .. }) = &cli.command {
+        Some(input.source()?)
     } else {
         None
     };
-    let api = Api::new(&cli)?;
+    let api = configure_api(&cli)?;
     match cli.command {
         Command::System => send::<System>(api.request(Method::GET, "/system")?).await,
         Command::Inventory(Inventory::Validate(_)) => Err(Failure::local("invalid_arguments")),
@@ -477,22 +338,23 @@ async fn run(cli: Cli) -> Result<()> {
             allow_empty,
             if_match,
             idempotency_key,
+            state_dir,
             ..
         }) => {
-            let catalog = sync_catalog.ok_or_else(|| Failure::local("invalid_catalog"))?;
-            let body = SyncRequest {
-                items: catalog.into_items(),
-                dry_run,
-                allow_empty,
-            };
-            let mut request = api.request(Method::POST, "/inventory/sync")?.json(&body);
-            if let Some(revision) = if_match {
-                request = request.header("If-Match", revision);
-            }
-            if let Some(key) = idempotency_key {
-                request = request.header("Idempotency-Key", key);
-            }
-            send::<SyncReport>(request).await
+            let source = sync_source.ok_or_else(|| Failure::local("invalid_catalog"))?;
+            let output = closet::sync::inventory_sync(
+                &api,
+                &source,
+                &closet::sync::SyncOptions {
+                    dry_run,
+                    allow_empty,
+                    if_match,
+                    idempotency_key,
+                    state_directory: state_dir,
+                },
+            )
+            .await?;
+            write_json(std::io::stdout().lock(), &output)
         }
         Command::Items(Items::Get { id }) => {
             send::<Item>(api.request(Method::GET, &format!("/items/{id}"))?).await

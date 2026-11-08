@@ -150,6 +150,142 @@
         ],
         "type": "object"
       },
+      "FenceAcquire": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "token": {
+            "$ref": "#/components/schemas/FenceToken"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "token"
+        ],
+        "type": "object"
+      },
+      "FencePrepare": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/ManagedImage"
+            },
+            "type": "array"
+          },
+          "token": {
+            "$ref": "#/components/schemas/FenceToken"
+          }
+        },
+        "required": [
+          "catalog_revision",
+          "images",
+          "token"
+        ],
+        "type": "object"
+      },
+      "FenceRelease": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "$ref": "#/components/schemas/FenceToken"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "type": "object"
+      },
+      "FenceReleased": {
+        "properties": {
+          "released": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "released"
+        ],
+        "type": "object"
+      },
+      "FenceResolve": {
+        "additionalProperties": false,
+        "properties": {
+          "image": {
+            "$ref": "#/components/schemas/ManagedImage"
+          },
+          "token": {
+            "$ref": "#/components/schemas/FenceToken"
+          }
+        },
+        "required": [
+          "image",
+          "token"
+        ],
+        "type": "object"
+      },
+      "FenceStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/ManagedImage"
+            },
+            "type": "array"
+          },
+          "uploads": {
+            "items": {
+              "$ref": "#/components/schemas/ImageSha"
+            },
+            "type": "array"
+          },
+          "valid_for_seconds": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "catalog_revision",
+          "pending",
+          "uploads",
+          "valid_for_seconds"
+        ],
+        "type": "object"
+      },
+      "FenceToken": {
+        "type": "string"
+      },
+      "FenceUpload": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/UploadClaimAction"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/ImageSha"
+          },
+          "token": {
+            "$ref": "#/components/schemas/FenceToken"
+          }
+        },
+        "required": [
+          "action",
+          "sha256",
+          "token"
+        ],
+        "type": "object"
+      },
       "Forecast": {
         "properties": {
           "condition": {
@@ -321,6 +457,9 @@
         ],
         "type": "object"
       },
+      "ImageSha": {
+        "type": "string"
+      },
       "Item": {
         "properties": {
           "archived": {
@@ -449,8 +588,28 @@
         ],
         "type": "object"
       },
+      "ManagedImage": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/NativeImageId"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/ImageSha"
+          }
+        },
+        "required": [
+          "id",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "NativeImageId": {
+        "type": "string"
+      },
       "Occasion": {
         "enum": [
+          "all",
           "everyday",
           "work",
           "dinner",
@@ -562,6 +721,14 @@
           },
           "label": {
             "type": "string"
+          },
+          "occasion": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Occasion"
+              }
+            ],
+            "nullable": true
           },
           "warnings": {
             "default": [],
@@ -684,7 +851,7 @@
                 "$ref": "#/components/schemas/Occasion"
               }
             ],
-            "default": "everyday"
+            "default": "all"
           },
           "weather_mode": {
             "allOf": [
@@ -779,6 +946,25 @@
         ],
         "type": "object"
       },
+      "UploadClaimAction": {
+        "enum": [
+          "begin",
+          "verified",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "UploadClaimStatus": {
+        "properties": {
+          "claimed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claimed"
+        ],
+        "type": "object"
+      },
       "ValidationReport": {
         "properties": {
           "count": {
@@ -853,7 +1039,7 @@
   "info": {
     "description": "JSON-authoritative inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.1.9"
+    "version": "0.1.10"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -1018,6 +1204,234 @@
         },
         "tags": [
           "web"
+        ]
+      }
+    },
+    "/v1/inventory/fence": {
+      "delete": {
+        "operationId": "fence_release",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FenceRelease"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FenceReleased"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "A pending deletion cannot be released by a timeout or a different writer.",
+        "tags": [
+          "inventory"
+        ]
+      },
+      "post": {
+        "operationId": "fence_acquire",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FenceAcquire"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FenceStatus"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Serialize authoritative writers without holding a transaction over native requests.",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/v1/inventory/fence/prepare": {
+      "post": {
+        "operationId": "fence_prepare",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FencePrepare"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FenceStatus"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Admit only unreferenced native IDs; persist the exact batch before deleting.",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/v1/inventory/fence/resolve": {
+      "post": {
+        "operationId": "fence_resolve",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FenceResolve"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FenceStatus"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "The client resolves an admitted ID only after authoritative native absence.",
+        "tags": [
+          "inventory"
+        ]
+      }
+    },
+    "/v1/inventory/fence/uploads": {
+      "post": {
+        "operationId": "fence_upload",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FenceUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadClaimStatus"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Durable upload claims survive ephemeral CI runners and lost POST replies.",
+        "tags": [
+          "inventory"
         ]
       }
     },

@@ -23,7 +23,10 @@ const TOKEN: &str = "example-owner-credential-at-least-32-characters";
 const READER: &str = "example-reader-credential-at-least-32-characters";
 
 fn call(args: &[&str], input: &[u8], variables: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ha-closet"));
+    let mut command = Command::new(
+        std::env::var_os("CLOSET_TEST_CLI_BINARY")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_ha-closet").into()),
+    );
     command.args(args);
     for variable in [
         "CLOSET_API_URL",
@@ -282,7 +285,11 @@ fn oversized_input_and_incomplete_write_conditions_fail_without_a_request() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    let output = call(&["inventory", "sync"], &[], &[("CLOSET_API_URL", &origin)]);
+    let output = call(
+        &["inventory", "sync", "--if-match", "\"0\""],
+        &[],
+        &[("CLOSET_API_URL", &origin)],
+    );
     assert_eq!(output.status.code(), Some(2));
     failure(output, None, "invalid_arguments");
     assert_eq!(
@@ -997,4 +1004,74 @@ fn token_files_require_private_permissions_and_do_not_echo_paths() {
             .contains("authorization: bearer example-file-token")
     );
     worker.join().unwrap();
+}
+
+#[test]
+fn sync_discovers_and_validates_local_images_before_credentials() {
+    use base64::Engine;
+    use closet::images::{ImageManifest, ImageSha, ManifestImage};
+    #[derive(Deserialize)]
+    struct Report {
+        images: ImageCounts,
+    }
+    #[derive(Deserialize)]
+    struct ImageCounts {
+        images: usize,
+        bytes: u64,
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("catalog.json");
+    let images = directory.path().join("wardrobe-images");
+    std::fs::create_dir(&images).unwrap();
+    let catalog = catalog();
+    std::fs::write(&input, bytes(&catalog)).unwrap();
+    let png=base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap();
+    let sha = ImageSha::digest(&png);
+    let image = images.join(format!("{sha}.png"));
+    std::fs::write(&image, &png).unwrap();
+    let manifest = ImageManifest {
+        version: 1,
+        images: vec![ManifestImage {
+            item_id: catalog[0].id.clone(),
+            sha256: sha,
+            image_index: Some(0),
+            native_id: None,
+            upload_name: None,
+        }],
+    };
+    std::fs::write(
+        directory.path().join("wardrobe-images.json"),
+        bytes(&manifest),
+    )
+    .unwrap();
+    let report = success::<Report>(
+        call(
+            &[
+                "--token-file",
+                "/does-not-exist",
+                "inventory",
+                "validate",
+                "--input",
+                input.to_str().unwrap(),
+            ],
+            b"",
+            &[],
+        ),
+        None,
+    );
+    assert_eq!(report.data.images.images, 1);
+    assert_eq!(report.data.images.bytes, png.len() as u64);
+    std::fs::write(image, b"changed").unwrap();
+    for command in [
+        vec!["inventory", "validate", "--input", input.to_str().unwrap()],
+        vec![
+            "inventory",
+            "sync",
+            "--dry-run",
+            "--input",
+            input.to_str().unwrap(),
+        ],
+    ] {
+        failure(call(&command, b"", &[]), None, "image_source_changed");
+    }
 }

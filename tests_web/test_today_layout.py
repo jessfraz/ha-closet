@@ -41,6 +41,7 @@ async def test_today_wrapped_source_labels_are_compact_and_follow_their_item(
             )
             await login(page, rust_backend)
             await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_label("Occasion", exact=True).select_option("everyday")
             await page.get_by_label("Weather", exact=True).select_option("ignored")
             await page.get_by_role("button", name="Suggest outfits", exact=True).click()
             await expect(page.locator(".pieces .source-badge")).to_have_count(3)

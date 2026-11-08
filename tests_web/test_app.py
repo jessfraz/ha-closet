@@ -265,6 +265,7 @@ async def test_today_omits_absent_item_facts_and_metadata_notices(
             page = await browser.new_page()
             await login(page, rust_backend)
             await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_label("Occasion", exact=True).select_option("everyday")
             await expect(
                 page.locator(".today-controls").get_by_role("combobox")
             ).to_have_count(2)
@@ -379,6 +380,7 @@ async def test_successful_today_uses_real_generated_ids_and_keeps_result_inputs(
             page = await browser.new_page()
             await login(page, rust_backend)
             await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_label("Occasion", exact=True).select_option("everyday")
             await expect(
                 page.get_by_role("heading", name="No suggestions yet")
             ).to_be_visible()
@@ -509,6 +511,7 @@ async def test_overlapping_today_reads_publish_only_the_latest_render(
             page = await browser.new_page()
             await login(page, rust_backend)
             await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_label("Occasion", exact=True).select_option("everyday")
             await page.get_by_role("button", name="Suggest outfits", exact=True).click()
             await expect(page.locator(".suggestion")).to_have_count(1)
             await page.route("**/v1/items/example-top", delayed_item)
