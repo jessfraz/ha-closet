@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Put the brand badge above the item name; keep the source at the bottom.
+- Remove the redundant reference-photo label.
+
 ## 0.1.3
 
 - Remove ownership confirmation throughout the app. Inventory membership means

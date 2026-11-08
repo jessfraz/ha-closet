@@ -104,40 +104,13 @@ function photo(item) {
   const placeholder = () => wrapper.replaceChildren(element("span", "photo-placeholder", "No photo"));
   if (!url) { placeholder(); return wrapper; }
   const image = document.createElement("img");
-  image.alt = `${item.name || "Item"} · product reference`;
+  image.alt = item.name || "Item";
   image.referrerPolicy = "no-referrer";
   image.loading = "lazy";
   image.addEventListener("error", placeholder, { once: true });
   image.src = url;
   wrapper.append(image);
   return wrapper;
-}
-
-function qualifiers(item) {
-  const values = [];
-  if (Array.isArray(item.images) && item.images.length) values.push("Reference photo");
-  return values;
-}
-
-function itemButton(item, compact = false) {
-  const button = element("button", "item-open");
-  button.type = "button";
-  button.setAttribute("aria-label", `View ${item.name}`);
-  button.append(photo(item));
-  button.append(element("span", "item-name", item.name));
-  const metadata = [item.size, item.color].filter((value) => value !== null && value !== undefined && value !== "");
-  if (!compact && metadata.length) button.append(element("span", "item-meta", metadata.join(" · ")));
-  const labels = qualifiers(item);
-  if (labels.length) button.append(element("span", "qualifier", labels.join(" · ")));
-  const reference = Array.isArray(item.images) ? item.images[0] : null;
-  if (object(reference) && reference.notes) button.append(element("span", "image-note", reference.notes));
-  const description = [item.brand];
-  if (!compact) description.push(...metadata);
-  description.push(...labels);
-  if (object(reference) && reference.notes) description.push(reference.notes);
-  button.setAttribute("aria-description", description.filter(Boolean).join(" · "));
-  button.addEventListener("click", () => openDetail(item));
-  return button;
 }
 
 function sourceOf(item) {
@@ -173,7 +146,6 @@ function sourceTone(source) {
 
 function itemCard(item, compact = false) {
   const card = element("article", compact ? "item-piece" : "item-card");
-  const badges = element("div", "item-badges");
   const badge = (field, value, label, accessibleLabel) => {
     const button = element("button", `item-badge ${field}-badge`, label);
     button.type = "button";
@@ -183,14 +155,29 @@ function itemCard(item, compact = false) {
     button.addEventListener("click", () => filterFromBadge(field, value, label));
     return button;
   };
-  if (item.brand) badges.append(badge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
+  card.append(photo(item));
+  if (item.brand) card.append(badge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
+  const button = element("button", "item-open item-name", item.name);
+  button.type = "button";
+  button.setAttribute("aria-label", `View ${item.name}`);
+  const metadata = [item.size, item.color].filter((value) => value !== null && value !== undefined && value !== "");
+  const reference = Array.isArray(item.images) ? item.images[0] : null;
+  const description = [item.brand];
+  if (!compact) description.push(...metadata);
+  if (object(reference) && reference.notes) description.push(reference.notes);
+  button.setAttribute("aria-description", description.filter(Boolean).join(" · "));
+  button.addEventListener("click", () => openDetail(item));
+  card.append(button);
+  if (!compact && metadata.length) card.append(element("span", "item-meta", metadata.join(" · ")));
+  if (object(reference) && reference.notes) card.append(element("span", "image-note", reference.notes));
   const source = sourceOf(item);
   const label = sourceLabel(item);
   if (source !== null && label !== null) {
     sourceLabels.set(source, label);
+    const badges = element("div", "item-badges");
     badges.append(badge("source", source, label, `Show all items from ${label}`));
+    card.append(badges);
   }
-  card.append(itemButton(item, compact), badges);
   return card;
 }
 
@@ -322,7 +309,7 @@ function openDetail(item) {
     if (reference.notes) imagePanel.append(element("p", "image-note", reference.notes));
     const source = safeLink(reference.source_url || reference.url);
     if (source) {
-      const link = element("a", "reference-link", "Product reference ↗");
+      const link = element("a", "reference-link", reference.source_url ? "View product ↗" : "Open photo ↗");
       link.href = source; link.target = "_blank"; link.rel = "noopener noreferrer";
       imagePanel.append(link);
     }
@@ -461,7 +448,7 @@ async function renderToday(data, revision) {
       for (const item of records) pieces.append(itemCard(item, true));
       const copy = element("div", "suggestion-copy");
       copy.append(element("h3", "", suggestion.label || "Another combination"), element("p", "muted", suggestion.advisory_reason || ""));
-      const warnings = Array.isArray(suggestion.warnings) ? suggestion.warnings.filter((warning) => warning !== "unknown_quantity") : [];
+      const warnings = Array.isArray(suggestion.warnings) ? suggestion.warnings.filter((warning) => warning !== "unknown_quantity" && warning !== "qualified_image_reference") : [];
       if (warnings.length) copy.append(element("p", "qualifier", warnings.join(" · ").replaceAll("_", " ")));
       card.append(pieces, copy); cards.append(card);
     }

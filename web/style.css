@@ -51,17 +51,23 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; line-h
 input, select { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px; color: var(--ink); background: var(--paper); min-height: 44px; max-width: 100%; font-size: 14px; }
 select { max-width: 250px; }
 .item-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px 18px; margin: 27px 0; }
-.item-card, .item-piece { min-width: 0; }
-.item-open { display: block; width: 100%; text-align: left; color: var(--ink); padding: 0; background: transparent; border: 0; border-radius: 0; font-weight: 400; }
+.item-card, .item-piece { min-width: 0; position: relative; display: flex; flex-direction: column; }
+.item-open { display: block; width: 100%; min-height: 28px; text-align: left; color: var(--ink); padding: 0; background: transparent; border: 0; border-radius: 0; font-weight: 400; }
 .item-open:hover { opacity: 1; }
-.photo { aspect-ratio: 4 / 5; display: grid; place-items: center; background: var(--soft); border-radius: 5px; overflow: hidden; width: 100%; }
+/* One details control covers the photo/name; the two filter pills stay separate. */
+.item-open::after { content: ""; position: absolute; inset: 0; border-radius: 5px; }
+.item-open:focus-visible { outline: none; }
+.item-open:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 3px; }
+.photo { aspect-ratio: 4 / 5; flex-shrink: 0; display: grid; place-items: center; background: var(--soft); border-radius: 5px; overflow: hidden; width: 100%; }
 .photo img { width: 100%; height: 100%; object-fit: contain; }
 .photo-placeholder { padding: 18px; color: var(--muted); font: 12px/1.6 var(--mono); text-align: center; }
-.item-name { display: block; font-size: 14px; line-height: 1.5; margin-top: 12px; }
-.item-badges { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin-top: 8px; }
-.item-badge { display: block; min-width: 26px; max-width: 100%; min-height: 26px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 500; line-height: 1.45; text-align: left; overflow-wrap: anywhere; }
+.item-name { display: block; font-size: 14px; line-height: 1.5; margin-top: 6px; }
+.photo + .item-name { margin-top: 12px; }
+.item-badges { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin-top: auto; padding-top: 8px; }
+.item-badge { position: relative; z-index: 1; display: block; min-width: 26px; max-width: 100%; min-height: 26px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 500; line-height: 1.45; text-align: left; overflow-wrap: anywhere; }
 .item-badge:hover { border-color: currentColor; opacity: 1; }
-.brand-badge { color: var(--ink); background: var(--paper); }
+.brand-badge { align-self: flex-start; margin-top: 12px; color: var(--ink); background: var(--paper); }
+.source-badge { min-width: 24px; min-height: 24px; padding: 2px 6px; font-size: 10.5px; }
 .source-tone-0 { background: #deefd9; color: #35532c; border-color: #b9d5b0; }
 .source-tone-1 { background: #ffedb3; color: #75531a; border-color: #e6ce87; }
 .source-tone-2 { background: #eadcff; color: #5c3c83; border-color: #cdb3ea; }
@@ -85,8 +91,6 @@ select { max-width: 250px; }
 .suggestion { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 28px; align-items: center; background: var(--paper); border: 1px solid var(--line); border-radius: 9px; padding: 22px; margin-top: 16px; }
 .pieces { display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)); gap: 10px; }
 .pieces .item-name { font-size: 12px; }
-.pieces .item-name { margin-top: 8px; }
-.pieces .item-badges { gap: 5px; margin-top: 8px; }
 .pieces .qualifier, .pieces .image-note { font-size: 12px; }
 .suggestion-copy .muted + .qualifier { margin-top: 10px; }
 .stale { border-color: var(--warning); }
@@ -135,8 +139,5 @@ dd { margin: 0; }
 }
 @media (max-width: 360px) {
   .item-grid { grid-template-columns: minmax(0,1fr); }
-  .item-card > .item-open { display: grid; grid-template-columns: 100px minmax(0,1fr); column-gap: 14px; }
-  .item-card > .item-open .photo { grid-column: 1; grid-row: 1 / span 5; }
-  .item-card > .item-open .item-name { margin-top: 0; }
   .pieces { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }

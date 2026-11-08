@@ -69,14 +69,13 @@ async def test_inventory_paging_filters_and_read_only_detail(
             ).to_be_visible()
             card = page.locator(".item-card").first
             metadata = await card.locator(".item-meta").bounding_box()
-            qualifiers = await card.locator(".qualifier").bounding_box()
-            assert metadata is not None and qualifiers is not None
-            assert qualifiers["y"] >= metadata["y"] + metadata["height"]
+            qualification = await card.locator(".image-note").bounding_box()
+            assert metadata is not None and qualification is not None
+            assert qualification["y"] >= metadata["y"] + metadata["height"]
             await expect(
                 page.get_by_role("button", name="View Example piece 051", exact=True)
             ).to_have_accessible_description(
-                "Second example label · Cool white · "
-                "Reference photo · Different-color reference."
+                "Second example label · Cool white · Different-color reference."
             )
             await page.get_by_role(
                 "button", name="View Example piece 051", exact=True
@@ -153,11 +152,21 @@ async def test_shell_and_item_controls_fit_mobile_and_dark_mode(
             ).all():
                 box = await control.bounding_box()
                 assert box is not None
-                minimum = (
-                    26
-                    if "item-badge" in (await control.get_attribute("class") or "")
-                    else 44
-                )
+                classes = (await control.get_attribute("class") or "").split()
+                minimum = 44
+                if "source-badge" in classes:
+                    minimum = 24
+                elif "item-badge" in classes:
+                    minimum = 26
+                elif "item-open" in classes:
+                    # The compact title's stretched target includes the photo.
+                    minimum = 24
+                    photo_box = (
+                        await control.locator("..").locator(".photo").bounding_box()
+                    )
+                    assert photo_box is not None
+                    assert photo_box["height"] >= 44
+                    assert photo_box["width"] >= 44
                 assert box["height"] >= minimum
                 assert box["width"] >= minimum
             await expect(page.locator("#app-version")).to_have_text(version)

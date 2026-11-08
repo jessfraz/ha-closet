@@ -1,13 +1,198 @@
 """Native scroll loading, compact source colors and visible failure recovery."""
 
 import asyncio
+import re
 
 import pytest
 from playwright.async_api import Route, async_playwright, expect
 
-from tests_ha.conftest import RustBackend, catalog_item
+from tests_ha.conftest import HAProtocol, RustBackend, catalog_item
 from tests_web.test_app import login
 from tests_web.test_sources import source_records
+
+
+async def product_photo(route: Route) -> None:
+    """A local fictional image, never a household or retailer photograph."""
+    await route.fulfill(
+        content_type="image/svg+xml",
+        body='<svg xmlns="http://www.w3.org/2000/svg" width="200" height="250">'
+        '<rect width="200" height="250" fill="#e2e5e8"/>'
+        '<path d="M60 50h80l-10 150H70z" fill="#3b4c61"/></svg>',
+    )
+
+
+@pytest.mark.parametrize(
+    ("width", "theme"),
+    [(320, "dark"), (390, "light"), (390, "dark"), (1100, "light")],
+)
+async def test_cards_read_image_brand_name_then_bottom_source(
+    rust_backend: RustBackend,
+    width: int,
+    theme: str,
+) -> None:
+    short = catalog_item("example-short-card", name="Denim shorts")
+    short.update(brand="Example denim", size=None, color=None, quantity=None)
+    long = catalog_item(
+        "example-long-card",
+        name="Relaxed wool overshirt with contrasting buttons and a curved hem",
+    )
+    long.update(brand="Example denim", size="M", color="Charcoal")
+    long["shop"] = {
+        "id": "example-atelier",
+        "label": "Example atelier with a particularly descriptive archive label",
+        "season": None,
+        "years": [],
+    }
+    for record in (short, long):
+        record["images"] = [
+            {
+                "url": "https://images.example.invalid/garment.svg",
+                "kind": "retailer_product_reference",
+                "confidence": "high",
+            }
+        ]
+    await rust_backend.sync([short, long])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(
+                viewport={"width": width, "height": 900},
+                color_scheme="dark" if theme == "dark" else "light",
+            )
+            await page.route("https://images.example.invalid/**", product_photo)
+            await login(page, rust_backend)
+            cards = page.locator(".item-card")
+            await expect(cards).to_have_count(2)
+            bottoms: list[float] = []
+            tops: list[float] = []
+            for card in await cards.all():
+                photo = await card.locator(".photo").bounding_box()
+                brand = await card.locator(".brand-badge").bounding_box()
+                name = await card.locator(".item-name").bounding_box()
+                source = await card.locator(".source-badge").bounding_box()
+                box = await card.bounding_box()
+                assert photo and brand and name and source and box
+                assert photo["y"] + photo["height"] <= brand["y"]
+                assert brand["y"] + brand["height"] <= name["y"]
+                assert name["y"] + name["height"] <= source["y"]
+                bottom = source["y"] + source["height"]
+                assert abs(bottom - (box["y"] + box["height"])) <= 1
+                bottoms.append(bottom)
+                tops.append(box["y"])
+                assert source["height"] >= 24 and brand["height"] >= 26
+                assert (
+                    await card.locator(".source-badge").evaluate(
+                        "button => getComputedStyle(button).fontSize"
+                    )
+                    == "10.5px"
+                )
+                assert (
+                    await card.locator(".brand-badge").evaluate(
+                        "button => getComputedStyle(button).fontSize"
+                    )
+                    == "11px"
+                )
+                await expect(card.locator("button")).to_have_count(3)
+                await expect(card.locator("button button, button a")).to_have_count(0)
+            if abs(tops[0] - tops[1]) <= 1:
+                assert abs(bottoms[0] - bottoms[1]) <= 1
+            assert not await page.evaluate(
+                "document.documentElement.scrollWidth > window.innerWidth"
+            )
+            card = cards.first
+            brand = card.locator(".brand-badge")
+            detail = card.locator(".item-open")
+            source = card.locator(".source-badge")
+            await brand.focus()
+            await page.keyboard.press("Tab")
+            await expect(detail).to_be_focused()
+            await page.keyboard.press("Tab")
+            await expect(source).to_be_focused()
+            await page.keyboard.press("Shift+Tab")
+            await page.keyboard.press("Enter")
+            await expect(page.get_by_role("dialog")).to_be_visible()
+            await page.get_by_role("button", name="Close item details").click()
+            await expect(detail).to_be_focused()
+            photo = await card.locator(".photo").bounding_box()
+            assert photo
+            await page.mouse.click(
+                photo["x"] + photo["width"] / 2,
+                photo["y"] + photo["height"] / 2,
+            )
+            await expect(page.get_by_role("dialog")).to_be_visible()
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("rust_backend", [True], indirect=True)
+async def test_photo_provenance_is_not_ui_noise_but_specific_facts_survive(
+    rust_backend: RustBackend,
+    ha_protocol: HAProtocol,
+) -> None:
+    top = catalog_item("example-top", name="Example cotton shirt")
+    top["color"] = "Charcoal"
+    jeans = catalog_item("example-jeans", category="clothing.jeans")
+    flats = catalog_item("example-flats", category="footwear")
+    qualification = "Photo shows navy; the recorded garment is charcoal."
+    for record in (top, jeans):
+        record.update(size=None, quantity=None)
+        record["images"] = [
+            {
+                "url": "https://images.example.invalid/garment.svg",
+                "source_url": "https://example.invalid/product",
+                "kind": "retailer_product_reference",
+                "confidence": "medium",
+                "notes": qualification if record is top else None,
+            }
+        ]
+    await rust_backend.sync([top, jeans, flats])
+    noise = re.compile(
+        r"reference photo|reference image|product reference|qualified image reference",
+        re.IGNORECASE,
+    )
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.route("https://images.example.invalid/**", product_photo)
+            await login(page, rust_backend)
+            await expect(page.locator(".item-card")).to_have_count(3)
+            assert not noise.search(await page.locator("#inventory").aria_snapshot())
+            card = page.locator(".item-card").filter(
+                has=page.get_by_role("button", name="View Example cotton shirt")
+            )
+            await expect(card.get_by_text(qualification, exact=True)).to_be_visible()
+            await expect(card.locator(".item-open")).to_have_accessible_description(
+                f"Example label · Charcoal · {qualification}"
+            )
+            await card.locator(".item-open").click()
+            dialog = page.get_by_role("dialog")
+            assert not noise.search(await dialog.aria_snapshot())
+            await expect(dialog.get_by_text(qualification, exact=True)).to_be_visible()
+            await expect(dialog.locator("dt").filter(has_text="Size")).to_have_count(0)
+            await expect(
+                dialog.locator("dt").filter(has_text="Quantity")
+            ).to_have_count(0)
+            await page.get_by_role("button", name="Close item details").click()
+            await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_role("button", name="Suggest outfits", exact=True).click()
+            await expect(page.locator(".pieces .item-open")).to_have_count(3)
+            assert not noise.search(await page.locator("#today").aria_snapshot())
+            await expect(
+                page.locator(".pieces").get_by_text(qualification, exact=True)
+            ).to_be_visible()
+            today_top = page.locator(".pieces").get_by_role(
+                "button", name="View Example cotton shirt", exact=True
+            )
+            await expect(today_top).to_have_accessible_description(
+                f"Example label · {qualification}"
+            )
+            await today_top.click()
+            assert not noise.search(await dialog.aria_snapshot())
+            await expect(dialog.get_by_text(qualification, exact=True)).to_be_visible()
+            assert ha_protocol.generations == 1
+        finally:
+            await browser.close()
 
 
 async def test_scrolling_loads_pages_without_moving_focus_or_duplicating_items(
