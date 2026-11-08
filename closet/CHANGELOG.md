@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+- Keep uncropped photos fully visible in inventory cards and galleries.
+
 ## 0.1.7
 
 - Remove purchase condition from the catalog and app. Existing databases upgrade
