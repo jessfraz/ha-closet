@@ -1,0 +1,22 @@
+[
+  {
+    "id": "example-source",
+    "brand": null,
+    "name": "Example piece",
+    "category": "clothing.top",
+    "color": null,
+    "size": null,
+    "quantity": null,
+    "material": null,
+    "sku": null,
+    "purchase_source": "self_bought",
+    "current_ownership_confirmed": false,
+    "images": [],
+    "shop": {
+      "id": "example-shop",
+      "label": "Example shop",
+      "season": "Spring/Summer",
+      "years": [2026]
+    }
+  }
+]

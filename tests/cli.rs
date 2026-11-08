@@ -351,6 +351,176 @@ async fn real_service_sync_reads_and_conditional_replay_preserve_source_fields()
     service.finish().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn real_service_source_filter_preserves_identity_encoding_and_pagination() {
+    let service = Service::new().await;
+    let mut items = catalog();
+    let mut second_shop_item = items[0].clone();
+    second_shop_item.id = "example-shirt-second".into();
+    items.push(second_shop_item);
+    let mut purchase = items[0].clone();
+    purchase.id = "example-purchase".into();
+    purchase.shop = None;
+    purchase.purchase_source = Some("Example resale + archive & label=été/?#%".into());
+    items.push(purchase);
+    let mut direct = items[0].clone();
+    direct.id = "example-direct".into();
+    direct.shop = None;
+    items.push(direct);
+    let mut unspecified = items[0].clone();
+    unspecified.id = "example-unspecified".into();
+    unspecified.shop = None;
+    unspecified.purchase_source = None;
+    items.push(unspecified);
+    success::<SyncReport>(
+        service.call(
+            &[
+                "inventory",
+                "sync",
+                "--if-match",
+                "\"0\"",
+                "--idempotency-key",
+                "example-sources",
+            ],
+            &bytes(&items),
+        ),
+        Some(200),
+    );
+
+    for (source, expected) in [
+        (
+            "purchase:Example resale + archive & label=été/?#%",
+            "example-purchase",
+        ),
+        ("purchase:direct", "example-direct"),
+        ("unspecified", "example-unspecified"),
+    ] {
+        let result = success::<ItemsPage>(
+            service.call(&["items", "list", "--source", source], b""),
+            Some(200),
+        );
+        assert_eq!(result.data.total, 1);
+        assert_eq!(result.data.scope_total, 5);
+        assert_eq!(result.data.items.len(), 1);
+        assert_eq!(result.data.items[0].catalog.id, expected);
+    }
+
+    let first = success::<ItemsPage>(
+        service.call(
+            &[
+                "items",
+                "list",
+                "--source",
+                "shop:example-shop",
+                "--limit",
+                "1",
+            ],
+            b"",
+        ),
+        Some(200),
+    );
+    assert_eq!(first.data.total, 2);
+    assert_eq!(first.data.items.len(), 1);
+    assert_eq!(first.data.items[0].catalog.id, "example-shirt");
+    let cursor = first.data.next_page.as_deref().unwrap();
+    let next = success::<ItemsPage>(
+        service.call(
+            &[
+                "items",
+                "list",
+                "--page-token",
+                cursor,
+                "--limit",
+                "1",
+                "--format",
+                "json",
+            ],
+            b"",
+        ),
+        Some(200),
+    );
+    assert_eq!(next.data.total, 2);
+    assert_eq!(next.data.items.len(), 1);
+    assert_eq!(next.data.items[0].catalog.id, "example-shirt-second");
+    let table = service.call(
+        &[
+            "items",
+            "list",
+            "--source",
+            "shop:example-shop",
+            "--format",
+            "table",
+        ],
+        b"",
+    );
+    assert!(table.status.success());
+    assert!(String::from_utf8_lossy(&table.stdout).contains("2 matching records"));
+    service.finish().await;
+}
+
+#[test]
+fn invalid_source_filters_fail_without_a_request_or_echoing_the_value() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    for source in [
+        "shop:",
+        "shop:sentinel-private\ninvalid",
+        "purchase:",
+        "unknown:sentinel-private",
+        "unspecified:sentinel-private",
+    ] {
+        let output = call(
+            &["items", "list", "--source", source],
+            b"",
+            &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-private"));
+        failure(output, None, "invalid_arguments");
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn page_tokens_reject_filters_locally_without_echoing_private_values() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    for filter in [
+        vec!["--q", "sentinel-private-search"],
+        vec!["--brand", "sentinel-private-brand"],
+        vec!["--category", "sentinel-private-category"],
+        vec!["--source", "purchase:sentinel-private-source"],
+        vec!["--confirmed-only"],
+    ] {
+        let mut args = vec![
+            "--timeout",
+            "1",
+            "items",
+            "list",
+            "--page-token",
+            "sentinel-private-cursor",
+        ];
+        args.extend(filter);
+        let output = call(
+            &args,
+            b"",
+            &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-private"));
+        failure(output, None, "invalid_arguments");
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
 #[derive(Debug)]
 struct Captured {
     headers: String,
@@ -488,6 +658,61 @@ fn transport_selection_keeps_credentials_and_ha_paths_separate() {
         None,
         "credential_required",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn source_filter_survives_home_assistant_transport_query_encoding() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(&directory.path().join("closet.sqlite3"))
+        .await
+        .unwrap();
+    let page = store.list(Default::default()).await.unwrap();
+    let (origin, requests, worker) = fixture(200, "ETag: \"0\"\r\n", bytes(&page));
+    let source = "purchase:Example resale + archive & label=été/?#%";
+    let result = success::<ItemsPage>(
+        call(
+            &[
+                "--transport",
+                "home-assistant",
+                "items",
+                "list",
+                "--source",
+                source,
+                "--confirmed-only",
+            ],
+            b"",
+            &[
+                ("HOME_ASSISTANT_URL", &origin),
+                ("HOME_ASSISTANT_TOKEN", "example-ha-token"),
+            ],
+        ),
+        Some(200),
+    );
+    assert_eq!(result.etag.as_deref(), Some("\"0\""));
+    assert_eq!(result.data.total, page.total);
+    assert_eq!(result.data.catalog_revision, page.catalog_revision);
+    let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+    let target = request.headers.lines().next().unwrap();
+    let target = target.strip_prefix("GET ").unwrap();
+    let target = target.strip_suffix(" HTTP/1.1").unwrap();
+    let url = url::Url::parse(&format!("{origin}{target}")).unwrap();
+    assert_eq!(url.path(), "/api/closet/v1/items");
+    assert!(url.fragment().is_none());
+    assert_eq!(
+        url.query_pairs().collect::<Vec<_>>(),
+        vec![
+            ("source".into(), source.into()),
+            ("confirmed_only".into(), "true".into()),
+        ]
+    );
+    assert!(
+        request
+            .headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer example-ha-token")
+    );
+    worker.join().unwrap();
+    store.close().await;
 }
 
 #[test]

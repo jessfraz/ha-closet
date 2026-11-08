@@ -9,13 +9,19 @@
     "quantity": 1,
     "material": "Cotton jersey",
     "sku": null,
-    "purchase_source": "example",
+    "purchase_source": null,
     "current_ownership_confirmed": true,
     "images": [],
     "notes": [
       "Fictional demonstration item."
     ],
-    "condition_at_purchase": "New"
+    "condition_at_purchase": "New",
+    "shop": {
+      "id": "demo-atelier",
+      "label": "Demo atelier",
+      "season": null,
+      "years": []
+    }
   },
   {
     "id": "example-denim",
@@ -27,12 +33,18 @@
     "quantity": 1,
     "material": "Cotton denim",
     "sku": null,
-    "purchase_source": "example",
+    "purchase_source": null,
     "current_ownership_confirmed": true,
     "images": [],
     "notes": [
       "Fictional demonstration item."
-    ]
+    ],
+    "shop": {
+      "id": "demo-atelier",
+      "label": "Demo atelier",
+      "season": null,
+      "years": []
+    }
   },
   {
     "id": "example-flats",
@@ -44,7 +56,7 @@
     "quantity": 1,
     "material": "Leather",
     "sku": null,
-    "purchase_source": "example",
+    "purchase_source": "self_bought",
     "current_ownership_confirmed": true,
     "images": [],
     "notes": [
@@ -61,7 +73,7 @@
     "quantity": 1,
     "material": "Cashmere",
     "sku": null,
-    "purchase_source": "example",
+    "purchase_source": "self_bought",
     "current_ownership_confirmed": false,
     "images": [],
     "notes": [

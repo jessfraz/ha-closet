@@ -34,6 +34,17 @@ pub struct CatalogItem {
     #[serde(default)]
     pub shop: Option<Shop>,
 }
+impl CatalogItem {
+    pub fn source(&self) -> Source {
+        if let Some(shop) = &self.shop {
+            Source::Shop(shop.id.clone())
+        } else if let Some(purchase) = &self.purchase_source {
+            Source::Purchase(purchase.clone())
+        } else {
+            Source::Unspecified
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -69,8 +80,101 @@ pub struct Price {
 pub struct Shop {
     pub id: String,
     pub label: String,
-    pub season: Option<String>,
+    pub season: Option<ShopSeason>,
     pub years: Vec<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub enum ShopSeason {
+    Spring,
+    Summer,
+    Fall,
+    Winter,
+    #[serde(rename = "Spring/Summer")]
+    SpringSummer,
+    #[serde(rename = "Fall/Winter")]
+    FallWinter,
+}
+
+/// A derived source key: `shop:<id>`, `purchase:<value>`, or `unspecified`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(try_from = "String", into = "String")]
+pub enum Source {
+    Shop(String),
+    Purchase(String),
+    Unspecified,
+}
+impl JsonSchema for Source {
+    fn schema_name() -> String {
+        "Source".into()
+    }
+
+    fn is_referenceable() -> bool {
+        // Dropshot requires query parameters to have an inline scalar schema.
+        false
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        String::json_schema(generator)
+    }
+}
+impl Source {
+    pub(crate) fn is_valid(&self) -> bool {
+        match self {
+            Self::Shop(id) => valid_text(id, 200),
+            Self::Purchase(value) => valid_text(value, 1024),
+            Self::Unspecified => true,
+        }
+    }
+}
+impl FromStr for Source {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let source = if value == "unspecified" {
+            Self::Unspecified
+        } else if let Some(id) = value.strip_prefix("shop:") {
+            Self::Shop(id.into())
+        } else if let Some(purchase) = value.strip_prefix("purchase:") {
+            Self::Purchase(purchase.into())
+        } else {
+            return Err("invalid_source");
+        };
+        if source.is_valid() {
+            Ok(source)
+        } else {
+            Err("invalid_source")
+        }
+    }
+}
+impl TryFrom<String> for Source {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+impl From<Source> for String {
+    fn from(value: Source) -> Self {
+        value.to_string()
+    }
+}
+impl fmt::Display for Source {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Shop(id) => write!(output, "shop:{id}"),
+            Self::Purchase(value) => write!(output, "purchase:{value}"),
+            Self::Unspecified => output.write_str("unspecified"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SourceFacet {
+    /// `shop:<id>`, `purchase:<value>`, or `unspecified`.
+    pub source: Source,
+    pub label: String,
+    pub count: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -225,11 +329,6 @@ pub fn validate_catalog(mut items: Vec<CatalogItem>) -> Result<ValidatedCatalog,
             check("shop.id", valid_text(&shop.id, 200), "invalid_text");
             check("shop.label", valid_text(&shop.label, 512), "invalid_text");
             check(
-                "shop.season",
-                shop.season.as_deref().is_none_or(|v| valid_text(v, 100)),
-                "invalid_text",
-            );
-            check(
                 "shop.years",
                 shop.years.len() <= 100
                     && shop.years.iter().all(|year| (1000..=9999).contains(year)),
@@ -317,6 +416,7 @@ pub struct ItemFilters {
     pub q: Option<String>,
     pub brand: Option<String>,
     pub category: Option<String>,
+    pub source: Option<Source>,
     pub confirmed_only: Option<bool>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -325,6 +425,8 @@ pub struct ListQuery {
     pub q: Option<String>,
     pub brand: Option<String>,
     pub category: Option<String>,
+    /// `shop:<id>`, `purchase:<value>`, or `unspecified`; omit for all sources.
+    pub source: Option<Source>,
     pub confirmed_only: Option<bool>,
     pub limit: Option<u32>,
     pub page_token: Option<String>,
@@ -335,6 +437,7 @@ impl ListQuery {
             q: self.q.clone(),
             brand: self.brand.clone(),
             category: self.category.clone(),
+            source: self.source.clone(),
             confirmed_only: self.confirmed_only,
         }
     }
@@ -343,6 +446,7 @@ impl ListQuery {
 pub struct Facets {
     pub brands: Vec<String>,
     pub categories: Vec<String>,
+    pub sources: Vec<SourceFacet>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ItemsPage {
@@ -493,4 +597,108 @@ pub struct Forecast {
     pub temperature: Option<f64>,
     pub templow: Option<f64>,
     pub precipitation_probability: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::models::{ShopSeason, Source, parse_catalog};
+
+    #[test]
+    fn typed_seasons_preserve_the_released_catalog_wire_shape_and_hash() {
+        let input = include_bytes!("../tests/fixtures/catalog-seasons.json");
+        let catalog = parse_catalog(input).unwrap();
+        // Captured with the released 0.1.0 binary, before String became ShopSeason.
+        assert_eq!(
+            catalog.report().source_hash,
+            "4f82c38e155797950e58699ad3d33a7dd0a297d0681b73be51239cdec28be9cc"
+        );
+        let item = &catalog.items()[0];
+        assert_eq!(
+            item.shop.as_ref().unwrap().season,
+            Some(ShopSeason::SpringSummer)
+        );
+        let encoded = serde_json::to_vec(catalog.items()).unwrap();
+        assert_eq!(parse_catalog(&encoded).unwrap().report(), catalog.report());
+        for (wire, season) in [
+            ("Spring", ShopSeason::Spring),
+            ("Summer", ShopSeason::Summer),
+            ("Fall", ShopSeason::Fall),
+            ("Winter", ShopSeason::Winter),
+            ("Spring/Summer", ShopSeason::SpringSummer),
+            ("Fall/Winter", ShopSeason::FallWinter),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&season).unwrap(),
+                format!("\"{wire}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<ShopSeason>(&format!("\"{wire}\"")).unwrap(),
+                season
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&Option::<ShopSeason>::None).unwrap(),
+            "null"
+        );
+        assert!(serde_json::from_str::<ShopSeason>("\"spring_summer\"").is_err());
+        let invalid = String::from_utf8(input.to_vec())
+            .unwrap()
+            .replace("Spring/Summer", "spring_summer");
+        assert_eq!(
+            parse_catalog(invalid.as_bytes()).unwrap_err().code,
+            "invalid_catalog_json"
+        );
+    }
+
+    #[test]
+    fn derived_sources_have_canonical_scalar_keys_without_changing_catalog_fields() {
+        for (key, source) in [
+            ("shop:example-shop", Source::Shop("example-shop".into())),
+            ("shop:example:shop", Source::Shop("example:shop".into())),
+            (
+                "purchase:Example gift / café",
+                Source::Purchase("Example gift / café".into()),
+            ),
+            (
+                "purchase:unspecified",
+                Source::Purchase("unspecified".into()),
+            ),
+            ("unspecified", Source::Unspecified),
+        ] {
+            assert_eq!(source.to_string(), key);
+            assert_eq!(key.parse::<Source>().unwrap(), source);
+            let encoded = serde_json::to_string(&source).unwrap();
+            assert_eq!(serde_json::from_str::<String>(&encoded).unwrap(), key);
+            assert_eq!(serde_json::from_str::<Source>(&encoded).unwrap(), source);
+        }
+        for invalid in [
+            "all",
+            "shop:",
+            "purchase:",
+            "unspecified:any",
+            "shop: ",
+            "purchase:\nexample",
+        ] {
+            assert_eq!(invalid.parse::<Source>(), Err("invalid_source"));
+        }
+        assert!(
+            format!("shop:{}", "a".repeat(201))
+                .parse::<Source>()
+                .is_err()
+        );
+        assert!(
+            format!("purchase:{}", "a".repeat(1025))
+                .parse::<Source>()
+                .is_err()
+        );
+        let mut item = parse_catalog(include_bytes!("../tests/fixtures/catalog-seasons.json"))
+            .unwrap()
+            .into_items()
+            .remove(0);
+        assert_eq!(item.source(), Source::Shop("example-shop".into()));
+        item.shop = None;
+        assert_eq!(item.source(), Source::Purchase("self_bought".into()));
+        item.purchase_source = None;
+        assert_eq!(item.source(), Source::Unspecified);
+    }
 }

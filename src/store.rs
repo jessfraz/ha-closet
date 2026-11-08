@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -11,18 +12,21 @@ use sqlx::{
 
 use crate::models::{
     CatalogItem, Facets, Freshness, Generation, GenerationStatus, Item, ItemFilters, ItemsPage,
-    ListQuery, OwnershipScope, SyncReport, SyncRequest, TodayRequest, TodayResponse, TodayResult,
-    ValidationError, digest, validate_catalog,
+    ListQuery, OwnershipScope, Source, SourceFacet, SyncReport, SyncRequest, TodayRequest,
+    TodayResponse, TodayResult, ValidationError, digest, validate_catalog,
 };
 
 const COUNTS_SQL: &str = "SELECT (SELECT COUNT(*) FROM items WHERE archived=0) AS active, (SELECT COUNT(*) FROM items WHERE archived=0 AND confirmed=1) AS confirmed, (SELECT COUNT(*) FROM items WHERE archived=1) AS archived";
 const ITEM_SQL: &str = "SELECT body, revision, archived FROM items WHERE id = ?";
+const CURSOR_POSITION_SQL: &str =
+    "SELECT sort_brand AS brand, sort_name AS name, id FROM items WHERE id=? AND archived=0";
 const ACTIVE_ITEMS_SQL: &str = "SELECT body FROM items WHERE archived = 0 ORDER BY id";
 const SCOPE_COUNT_SQL: &str = "SELECT COUNT(*) FROM items WHERE archived = 0";
 const BRANDS_SQL: &str =
     "SELECT DISTINCT brand FROM items WHERE archived = 0 AND brand IS NOT NULL ORDER BY brand";
 const CATEGORIES_SQL: &str =
     "SELECT DISTINCT category FROM items WHERE archived = 0 ORDER BY category";
+const SOURCE_SQL: &str = "CASE WHEN json_extract(body, '$.shop.id') IS NOT NULL THEN 'shop:' || json_extract(body, '$.shop.id') WHEN json_extract(body, '$.purchase_source') IS NOT NULL THEN 'purchase:' || json_extract(body, '$.purchase_source') ELSE 'unspecified' END";
 const RUNNING_EXISTS_SQL: &str = "SELECT EXISTS(SELECT 1 FROM generations WHERE status='running')";
 const CURRENT_GENERATION_SQL: &str = "SELECT body FROM generations WHERE local_date=? AND timezone=? ORDER BY started_at DESC, id DESC LIMIT 1";
 const GENERATION_BASIS_SQL: &str = "SELECT basis FROM generations WHERE id=?";
@@ -32,6 +36,9 @@ const RUNNING_GENERATIONS_SQL: &str = "SELECT body FROM generations WHERE status
 const STATE_SQL: &str = "SELECT revision, source_hash FROM catalog_state WHERE singleton=1";
 const OPERATION_SQL: &str = "SELECT request_hash, response, resource_id FROM operations WHERE scope=? AND actor=? AND key=?";
 const GENERATION_SQL: &str = "SELECT body FROM generations WHERE id=?";
+// Validated filters and an item ID fit below this URL-safe base64 bound, even
+// with maximal JSON escaping. Leave room for HA's 8190-byte request line.
+const MAX_PAGE_TOKEN_BYTES: usize = 7168;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -89,6 +96,10 @@ pub struct Reservation {
 struct Cursor {
     revision: i64,
     filters: ItemFilters,
+    id: String,
+}
+#[derive(sqlx::FromRow)]
+struct CursorPosition {
     brand: String,
     name: String,
     id: String,
@@ -208,6 +219,19 @@ impl Store {
         {
             return Err(StoreError::Conflict("page_invalidated"));
         }
+        // A revision-bound ID still owns the same sort position. Resolve it in
+        // this snapshot instead of duplicating large names/brands in the URL.
+        let position = if let Some(cursor) = &cursor {
+            Some(
+                sqlx::query_as::<_, CursorPosition>(CURSOR_POSITION_SQL)
+                    .bind(&cursor.id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or(StoreError::Invalid("invalid_page_token"))?,
+            )
+        } else {
+            None
+        };
         let scope_total = sqlx::query_scalar(SCOPE_COUNT_SQL)
             .fetch_one(&mut *tx)
             .await?;
@@ -216,7 +240,7 @@ impl Store {
             .build_query_scalar::<i64>()
             .fetch_one(&mut *tx)
             .await?;
-        let mut select = selection(&filters, cursor.as_ref(), limit);
+        let mut select = selection(&filters, position.as_ref(), limit);
         let mut rows = select.build().fetch_all(&mut *tx).await?;
         let has_more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
@@ -226,8 +250,6 @@ impl Store {
                     encode_cursor(&Cursor {
                         revision,
                         filters: filters.clone(),
-                        brand: row.try_get("sort_brand")?,
-                        name: row.try_get("sort_name")?,
                         id: row.try_get("id")?,
                     })
                 })
@@ -240,13 +262,43 @@ impl Store {
         let categories = sqlx::query_scalar(CATEGORIES_SQL)
             .fetch_all(&mut *tx)
             .await?;
+        // Facets describe the whole active projection, not just this page or
+        // its selected filters. Source remains derived from authoritative JSON.
+        let mut select_sources = source_facets();
+        let sources = select_sources
+            .build()
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|row| -> Result<SourceFacet> {
+                let source = row
+                    .try_get::<String, _>("source")?
+                    .parse::<Source>()
+                    .map_err(|_| sqlx::Error::Decode("stored source is invalid".into()))?;
+                let label = match &source {
+                    Source::Shop(_) => row.try_get("shop_label")?,
+                    Source::Purchase(value) if value == "self_bought" => "Self-bought".into(),
+                    Source::Purchase(value) => value.clone(),
+                    Source::Unspecified => "Unspecified".into(),
+                };
+                Ok(SourceFacet {
+                    source,
+                    label,
+                    count: row.try_get("count")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         tx.commit().await?;
         Ok(ItemsPage {
             items,
             next_page,
             total,
             scope_total,
-            facets: Facets { brands, categories },
+            facets: Facets {
+                brands,
+                categories,
+                sources,
+            },
             catalog_revision: revision,
         })
     }
@@ -567,9 +619,13 @@ fn decode_item(row: &SqliteRow) -> Result<Item> {
 }
 fn validate_filters(filters: &ItemFilters) -> Result<()> {
     if filters
-        .q
+        .source
         .as_ref()
-        .is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control))
+        .is_some_and(|source| !source.is_valid())
+        || filters
+            .q
+            .as_ref()
+            .is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control))
         || filters
             .brand
             .as_ref()
@@ -614,18 +670,36 @@ fn add_filters(query: &mut QueryBuilder<Sqlite>, filters: &ItemFilters) {
             .push_bind(format!("{}.%", escape_like(category)))
             .push(" ESCAPE '\\')");
     }
+    if let Some(source) = &filters.source {
+        query
+            .push(" AND (")
+            .push(SOURCE_SQL)
+            .push(")=")
+            .push_bind(source.to_string());
+    }
     if filters.confirmed_only == Some(true) {
         query.push(" AND confirmed=1");
     }
+}
+fn source_facets() -> QueryBuilder<Sqlite> {
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(SOURCE_SQL)
+        .push(" AS source, MIN(json_extract(body, '$.shop.label')) AS shop_label, COUNT(*) AS count FROM items WHERE archived=0 GROUP BY source ORDER BY source");
+    query
 }
 fn count_selection(filters: &ItemFilters) -> QueryBuilder<Sqlite> {
     let mut query = QueryBuilder::<Sqlite>::new(SCOPE_COUNT_SQL);
     add_filters(&mut query, filters);
     query
 }
-fn selection(filters: &ItemFilters, cursor: Option<&Cursor>, limit: u32) -> QueryBuilder<Sqlite> {
+fn selection(
+    filters: &ItemFilters,
+    cursor: Option<&CursorPosition>,
+    limit: u32,
+) -> QueryBuilder<Sqlite> {
     let mut select = QueryBuilder::<Sqlite>::new(
-        "SELECT id, body, revision, archived, sort_brand, sort_name FROM items WHERE archived = 0",
+        "SELECT id, body, revision, archived FROM items WHERE archived = 0",
     );
     add_filters(&mut select, filters);
     if let Some(cursor) = cursor {
@@ -660,19 +734,18 @@ fn reconciliation(items: &[CatalogItem]) -> QueryBuilder<Sqlite> {
     query
 }
 fn encode_cursor(cursor: &Cursor) -> Result<String> {
-    Ok(serde_json::to_vec(cursor)?
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    let token = URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?);
+    if token.len() > MAX_PAGE_TOKEN_BYTES {
+        return Err(StoreError::Invalid("invalid_filter"));
+    }
+    Ok(token)
 }
 fn decode_cursor(token: &str) -> Result<Cursor> {
-    if token.len() > 8192 || !token.len().is_multiple_of(2) || !token.is_ascii() {
+    if token.len() > MAX_PAGE_TOKEN_BYTES {
         return Err(StoreError::Invalid("invalid_page_token"));
     }
-    let bytes = (0..token.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&token[index..index + 2], 16))
-        .collect::<std::result::Result<Vec<_>, _>>()
+    let bytes = URL_SAFE_NO_PAD
+        .decode(token)
         .map_err(|_| StoreError::Invalid("invalid_page_token"))?;
     let cursor: Cursor =
         serde_json::from_slice(&bytes).map_err(|_| StoreError::Invalid("invalid_page_token"))?;
@@ -744,13 +817,15 @@ mod tests {
 
     use crate::{
         models::{
-            CatalogItem, Generation, GenerationStatus, ItemFilters, SyncRequest, TodayRequest,
+            CatalogItem, Generation, GenerationStatus, ItemFilters, ListQuery, Shop, ShopSeason,
+            Source, SyncRequest, TodayRequest,
         },
         store::{
             ACTIVE_ITEMS_SQL, BRANDS_SQL, CATEGORIES_SQL, COUNTS_SQL, CURRENT_GENERATION_SQL,
-            GENERATION_BASIS_SQL, GENERATION_SQL, GenerationBasis, ITEM_SQL, OPERATION_SQL,
-            RUNNING_EXISTS_SQL, RUNNING_GENERATIONS_SQL, SCOPE_COUNT_SQL, STATE_SQL, Store,
-            TODAY_RESULT_SQL, count_selection, reconciliation, selection, signature_selection,
+            CURSOR_POSITION_SQL, GENERATION_BASIS_SQL, GENERATION_SQL, GenerationBasis, ITEM_SQL,
+            OPERATION_SQL, RUNNING_EXISTS_SQL, RUNNING_GENERATIONS_SQL, SCOPE_COUNT_SQL, STATE_SQL,
+            Store, TODAY_RESULT_SQL, count_selection, reconciliation, selection,
+            signature_selection, source_facets,
         },
     };
 
@@ -769,13 +844,22 @@ mod tests {
             quantity: Some(1),
             material: None,
             sku: None,
-            purchase_source: None,
+            purchase_source: match index % 4 {
+                1 => Some("self_bought".into()),
+                2 => Some("Example gift".into()),
+                _ => None,
+            },
             current_ownership_confirmed: index.is_multiple_of(3),
             images: Vec::new(),
             condition_at_purchase: None,
             notes: Vec::new(),
             price: None,
-            shop: None,
+            shop: index.is_multiple_of(4).then(|| Shop {
+                id: format!("example-shop-{}", index % 20),
+                label: format!("Example shop {}", index % 20),
+                season: Some(ShopSeason::SpringSummer),
+                years: vec![2026],
+            }),
         }
     }
 
@@ -859,10 +943,15 @@ mod tests {
         for (name, mut query) in [
             ("aggregate counts", sqlx::query(COUNTS_SQL)),
             ("item by ID", sqlx::query(ITEM_SQL).bind("example-4300")),
+            (
+                "cursor position",
+                sqlx::query(CURSOR_POSITION_SQL).bind("example-4300"),
+            ),
             ("active candidate input", sqlx::query(ACTIVE_ITEMS_SQL)),
             ("scope count", sqlx::query(SCOPE_COUNT_SQL)),
             ("brand facets", sqlx::query(BRANDS_SQL)),
             ("category facets", sqlx::query(CATEGORIES_SQL)),
+            ("source facets", sqlx::query(source_facets().into_sql())),
             ("running existence", sqlx::query(RUNNING_EXISTS_SQL)),
             (
                 "current daily attempt",
@@ -936,6 +1025,27 @@ mod tests {
                     ..Default::default()
                 },
             ),
+            (
+                "shop source",
+                ItemFilters {
+                    source: Some(Source::Shop("example-shop-0".into())),
+                    ..Default::default()
+                },
+            ),
+            (
+                "purchase source",
+                ItemFilters {
+                    source: Some(Source::Purchase("self_bought".into())),
+                    ..Default::default()
+                },
+            ),
+            (
+                "unspecified source",
+                ItemFilters {
+                    source: Some(Source::Unspecified),
+                    ..Default::default()
+                },
+            ),
         ] {
             for (kind, mut builder) in [
                 ("page", selection(&filters, None, 50)),
@@ -956,6 +1066,34 @@ mod tests {
                 assert!(!plans.is_empty());
                 println!("{name} {kind}: {}", plans.join("; "));
             }
+        }
+        for source in [
+            Source::Shop("example-shop-0".into()),
+            Source::Purchase("self_bought".into()),
+            Source::Unspecified,
+        ] {
+            let started = std::time::Instant::now();
+            let page = store
+                .list(ListQuery {
+                    source: Some(source.clone()),
+                    limit: Some(50),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(page.scope_total, 1000);
+            assert!(
+                page.items
+                    .iter()
+                    .all(|item| item.catalog.source() == source)
+            );
+            println!(
+                "{source}: {} returned / {} matched / {} active, including global facets, {:?}",
+                page.items.len(),
+                page.total,
+                page.scope_total,
+                started.elapsed()
+            );
         }
         let signatures = BTreeMap::from([
             ("example-4300".into(), "example-hash".into()),

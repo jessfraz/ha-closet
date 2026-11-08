@@ -13,6 +13,8 @@ from .const import DOMAIN, MAX_REQUEST_BYTES
 from .coordinator import ClosetCoordinator
 
 _ITEM_ID = r"(?!\.{1,2}$)[A-Za-z0-9_.:-]{1,200}"
+# Accept bounded 7168-character cursors with room below HA's 8190-byte line.
+_MAX_QUERY_CHARS = 8000
 _ROUTES = (
     (re.compile(r"system|today"), frozenset({"GET"})),
     (re.compile(r"items"), frozenset({"GET"})),
@@ -20,7 +22,15 @@ _ROUTES = (
     (re.compile(r"inventory/sync|inventory/validate"), frozenset({"POST"})),
     (re.compile(r"today/generate"), frozenset({"POST"})),
 )
-_LIST_QUERY = {"q", "brand", "category", "confirmed_only", "limit", "page_token"}
+_LIST_QUERY = {
+    "q",
+    "brand",
+    "category",
+    "source",
+    "confirmed_only",
+    "limit",
+    "page_token",
+}
 
 
 def loaded_coordinator(hass: HomeAssistant) -> ClosetCoordinator | None:
@@ -48,7 +58,10 @@ class ClosetView(HomeAssistantView):
         if request.method not in route[1]:
             raise web.HTTPMethodNotAllowed(request.method, route[1])
         allowed_query = _LIST_QUERY if path == "items" else set()
-        if len(request.query_string) > 4096 or request.query.keys() - allowed_query:
+        if (
+            len(request.query_string) > _MAX_QUERY_CHARS
+            or request.query.keys() - allowed_query
+        ):
             raise web.HTTPBadRequest(reason="Unsupported query parameters")
         user = request["hass_user"]
         if not user.is_active or (request.method != "GET" and not user.is_admin):

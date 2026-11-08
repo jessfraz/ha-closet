@@ -15,6 +15,7 @@ let todayDraft = false;
 let lastToday = null;
 let pendingGeneration = null;
 const items = new Map();
+const sourceLabels = new Map();
 
 class APIError extends Error {
   constructor(status, code) {
@@ -121,7 +122,6 @@ function itemButton(item, compact = false) {
   button.type = "button";
   button.setAttribute("aria-label", `View ${item.name}`);
   button.append(photo(item));
-  if (item.brand) button.append(element("span", "item-brand", item.brand));
   button.append(element("span", "item-name", item.name));
   if (!compact) button.append(element("span", "item-meta", `${item.size || "Size unknown"} · ${item.color || "Color unknown"}`));
   const labels = qualifiers(item);
@@ -137,45 +137,110 @@ function itemButton(item, compact = false) {
   return button;
 }
 
+function sourceOf(item) {
+  if (object(item.shop) && typeof item.shop.id === "string") return `shop:${item.shop.id}`;
+  if (typeof item.purchase_source === "string") return `purchase:${item.purchase_source}`;
+  return "unspecified";
+}
+
+function sourceLabel(item) {
+  const source = sourceOf(item);
+  if (sourceLabels.has(source)) return sourceLabels.get(source);
+  if (object(item.shop) && item.shop.label) return item.shop.label;
+  if (item.purchase_source === "self_bought") return "Self-bought";
+  return item.purchase_source || "Unspecified";
+}
+
+function filterFromBadge(field, value, label) {
+  selectView("inventory");
+  for (const id of ["search", "brand", "category", "source"]) byId(id).value = "";
+  const select = byId(field);
+  if (![...select.options].some((option) => option.value === value)) select.add(new Option(label, value));
+  select.value = value;
+  select.focus();
+  void loadInventory();
+}
+
+function itemCard(item, compact = false) {
+  const card = element("article", compact ? "item-piece" : "item-card");
+  const badges = element("div", "item-badges");
+  const badge = (field, value, label, accessibleLabel) => {
+    const button = element("button", `item-badge ${field}-badge`, label);
+    button.type = "button";
+    button.setAttribute("aria-label", accessibleLabel);
+    button.title = accessibleLabel;
+    button.addEventListener("click", () => filterFromBadge(field, value, label));
+    return button;
+  };
+  if (item.brand) badges.append(badge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
+  const source = sourceOf(item);
+  const label = sourceLabel(item);
+  sourceLabels.set(source, label);
+  badges.append(badge("source", source, label, `Show all items from ${label}`));
+  card.append(itemButton(item, compact), badges);
+  return card;
+}
+
 function fillOptions(select, values, allLabel) {
   const selected = select.value;
   const options = [new Option(allLabel, "")];
   for (const value of values) if (typeof value === "string") options.push(new Option(value, value));
+  if (selected && !values.includes(selected)) options.push(new Option(selected, selected));
   select.replaceChildren(...options);
-  if (values.includes(selected)) select.value = selected;
+  select.value = selected;
+}
+
+function fillSources(facets) {
+  const select = byId("source");
+  const selected = select.value;
+  const options = [];
+  for (const facet of facets) {
+    if (!object(facet) || typeof facet.source !== "string" || typeof facet.label !== "string" || !Number.isInteger(facet.count) || facet.count < 0) throw new APIError(200, "invalid_response");
+    sourceLabels.set(facet.source, facet.label);
+    options.push(new Option(`${facet.label} (${facet.count})`, facet.source));
+  }
+  if (selected && !facets.some((facet) => facet.source === selected)) options.push(new Option(`${sourceLabels.get(selected) || "Unspecified"} (0)`, selected));
+  options.sort((left, right) => left.label.localeCompare(right.label));
+  select.replaceChildren(new Option("All sources", ""), ...options);
+  select.value = selected;
 }
 
 async function loadInventory(append = false) {
+  if (append && !nextPage) return;
   const moveFocus = append && document.activeElement === byId("load-more");
   listAbort?.abort();
   const controller = new AbortController();
   listAbort = controller;
   const revision = ++listRevision;
   const query = new URLSearchParams({ limit: "50" });
-  for (const [key, id] of [["q", "search"], ["brand", "brand"], ["category", "category"]]) {
-    const value = byId(id).value.trim();
-    if (value) query.set(key, value);
+  if (append) {
+    // The cursor carries the applied filters, not any unsubmitted search text.
+    query.set("page_token", nextPage);
+  } else {
+    for (const [key, id] of [["q", "search"], ["brand", "brand"], ["category", "category"], ["source", "source"]]) {
+      const value = key === "q" ? byId(id).value.trim() : byId(id).value;
+      if (value) query.set(key, value);
+    }
   }
-  if (append && nextPage) query.set("page_token", nextPage);
+  if (!append) { nextPage = null; byId("load-more").hidden = true; }
   byId("load-more").disabled = true;
   try {
     const data = await request(`v1/items?${query}`, { signal: controller.signal });
     if (revision !== listRevision) return;
-    if (!object(data) || !Array.isArray(data.items) || !object(data.facets) || !Number.isInteger(data.total)) throw new APIError(200, "invalid_response");
+    if (!object(data) || !Array.isArray(data.items) || !object(data.facets) || !Array.isArray(data.facets.sources) || !Number.isInteger(data.total)) throw new APIError(200, "invalid_response");
+    fillSources(data.facets.sources);
     if (!append) byId("item-grid").replaceChildren();
     let firstAddedButton = null;
     for (const item of data.items) {
       if (!object(item) || typeof item.id !== "string" || typeof item.name !== "string") throw new APIError(200, "invalid_response");
       items.set(item.id, item);
-      const card = element("article", "item-card");
-      const button = itemButton(item);
-      firstAddedButton ||= button;
-      card.append(button);
+      const card = itemCard(item);
+      firstAddedButton ||= card.querySelector(".item-open");
       byId("item-grid").append(card);
     }
     nextPage = typeof data.next_page === "string" ? data.next_page : null;
     byId("load-more").hidden = nextPage === null;
-    if (moveFocus && nextPage === null) firstAddedButton?.focus();
+    if (moveFocus && nextPage === null && document.activeElement === document.body) firstAddedButton?.focus();
     byId("inventory-empty").hidden = data.total !== 0;
     byId("inventory-empty").querySelector("h2").textContent = data.scope_total === 0 ? "No items yet" : "No matching items";
     byId("inventory-empty").querySelector("p").textContent = data.scope_total === 0 ? "Validate and sync a JSON catalog to fill the closet." : "Try another search or clear the filters.";
@@ -189,7 +254,10 @@ async function loadInventory(append = false) {
       notice(errorMessage(error) + previous);
     }
   } finally {
-    if (revision === listRevision) byId("load-more").disabled = false;
+    if (revision === listRevision) {
+      byId("load-more").disabled = false;
+      if (moveFocus && nextPage !== null && document.activeElement === document.body) byId("load-more").focus();
+    }
   }
 }
 
@@ -340,7 +408,7 @@ async function renderToday(data, revision) {
       const pieces = element("div", "pieces");
       const records = await Promise.all([...new Set(suggestion.item_ids)].slice(0, 5).map(getItem));
       if (revision !== todayRevision || view !== "today") return;
-      for (const item of records) pieces.append(itemButton(item, true));
+      for (const item of records) pieces.append(itemCard(item, true));
       const copy = element("div", "suggestion-copy");
       copy.append(element("h3", "", suggestion.label || "Another combination"), element("p", "muted", suggestion.advisory_reason || ""));
       if (Array.isArray(suggestion.warnings) && suggestion.warnings.length) copy.append(element("p", "qualifier", suggestion.warnings.join(" · ").replaceAll("_", " ")));
@@ -430,6 +498,7 @@ byId("refresh").addEventListener("click", async () => {
 byId("filters").addEventListener("submit", (event) => { event.preventDefault(); void loadInventory(); });
 byId("brand").addEventListener("change", () => void loadInventory());
 byId("category").addEventListener("change", () => void loadInventory());
+byId("source").addEventListener("change", () => void loadInventory());
 byId("load-more").addEventListener("click", () => void loadInventory(true));
 byId("inventory-tab").addEventListener("click", () => selectView("inventory"));
 byId("today-tab").addEventListener("click", () => selectView("today"));

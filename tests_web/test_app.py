@@ -112,7 +112,15 @@ async def test_shell_and_item_controls_fit_mobile_and_dark_mode(
     width: int,
     theme: str,
 ) -> None:
-    await rust_backend.sync([catalog_item(name="Example long-name cotton jersey tee")])
+    record = catalog_item(name="Example long-name cotton jersey tee")
+    record["brand"] = "Example extended name clothing label"
+    record["shop"] = {
+        "id": "demo-long-label",
+        "label": "Demo atelier with an exceptionally descriptive label",
+        "season": None,
+        "years": [],
+    }
+    await rust_backend.sync([record])
     async with ClientSession() as client:
         async with client.get(
             f"{rust_backend.origin}/v1/system",

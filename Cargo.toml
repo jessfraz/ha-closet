@@ -1,6 +1,6 @@
 [package]
 name = "closet"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "A JSON-backed wardrobe inventory for Home Assistant"
@@ -17,6 +17,7 @@ path = "src/bin/ha-closet.rs"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }

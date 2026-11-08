@@ -32,7 +32,8 @@ class HAProtocol:
         return web.json_response(
             {
                 "state": "sunny",
-                "attributes": {"supported_features": 2, "temperature_unit": "°C"},
+                # A daily sample is always partial, including near midnight.
+                "attributes": {"supported_features": 1, "temperature_unit": "°C"},
             }
         )
 
@@ -60,14 +61,13 @@ class HAProtocol:
             {
                 "service_response": {
                     "data": {
-                        "suggestions": [
+                        "separates_suggestions": [
                             {
                                 "label": "Example combination",
-                                "item_ids": [
-                                    "example-top",
-                                    "example-jeans",
-                                    "example-flats",
-                                ],
+                                "top_id": "example-top",
+                                "bottom_id": "example-jeans",
+                                "footwear_id": "example-flats",
+                                "extra_ids": [],
                                 "advisory_reason": "A fictional everyday combination.",
                             }
                         ]

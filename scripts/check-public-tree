@@ -121,11 +121,23 @@ def private_strings() -> tuple[bytes, ...]:
             content = value.get(field)
             if isinstance(content, str) and len(content) >= 8:
                 selected.add(content.encode())
+        shop = value.get("shop")
+        if isinstance(shop, dict):
+            for field in ("id", "label"):
+                content = shop.get(field)
+                if isinstance(content, str) and len(content) >= 8:
+                    selected.add(content.encode())
+        purchase_source = value.get("purchase_source")
+        if (
+            isinstance(purchase_source, str)
+            and purchase_source != "self_bought"
+            and len(purchase_source) >= 8
+        ):
+            selected.add(purchase_source.encode())
         images = value.get("images")
         if isinstance(images, list):
             selected.update(strings(images))
         return selected
-
 
     return tuple(sorted(strings(catalog)))
 
@@ -139,7 +151,9 @@ def fictional_catalog(data: bytes) -> bool:
     if not isinstance(catalog, list) or not catalog:
         return False
     for item in catalog:
-        if not isinstance(item, dict) or not str(item.get("id", "")).startswith("example-"):
+        if not isinstance(item, dict) or not str(item.get("id", "")).startswith(
+            "example-"
+        ):
             return False
         for image in item.get("images", []):
             for field in ("url", "source_url"):
@@ -152,8 +166,12 @@ def fictional_catalog(data: bytes) -> bool:
                     own_asset = parsed.hostname == "raw.githubusercontent.com" and (
                         parsed.path.startswith("/jessfraz/ha-closet/")
                     )
-                    if not (parsed.scheme == "https" and not parsed.username
-                            and not parsed.password and (example or own_asset)):
+                    if not (
+                        parsed.scheme == "https"
+                        and not parsed.username
+                        and not parsed.password
+                        and (example or own_asset)
+                    ):
                         return False
                 except (TypeError, ValueError):
                     return False

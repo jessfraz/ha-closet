@@ -74,14 +74,19 @@ integration's read credential alone does not authorize a sync.
 ha-closet system
 ha-closet items list --limit 50
 ha-closet items list --brand 'Example Label' --format table
+ha-closet items list --source 'shop:example-shop'
 ha-closet items get example-shirt
 ha-closet --transport home-assistant items list
 ```
 
-List filters are `--q`, `--brand`, `--category` and `--confirmed-only`. Category
-filters include their dot-delimited descendants. Each invocation fetches one
-page; pass the returned `next_page` value with `--page-token` and keep the
-filters unchanged. The CLI never drains pages or restarts an invalidated cursor.
+List filters are `--q`, `--brand`, `--category`, `--source` and `--confirmed-only`.
+Category filters include their dot-delimited descendants. Source keys are
+`shop:<id>`, `purchase:<value>`, or `unspecified`; copy an exact key from the JSON
+`facets.sources` list. A shop takes precedence over a purchase source.
+Each invocation fetches one page. Apply filters on the first request, then pass
+the returned `next_page` value with `--page-token` and no filters. The cursor
+carries the applied query; `--limit` and `--format` may change. The CLI never
+drains pages or restarts an invalidated cursor.
 
 JSON is the default, even in a terminal. Success is one newline-terminated
 envelope with HTTP `status`, exact quoted `etag` or null, and typed `data`.

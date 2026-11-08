@@ -143,11 +143,18 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceFacet"
+            },
+            "type": "array"
           }
         },
         "required": [
           "brands",
-          "categories"
+          "categories",
+          "sources"
         ],
         "type": "object"
       },
@@ -462,8 +469,12 @@
             "type": "string"
           },
           "season": {
-            "nullable": true,
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ShopSeason"
+              }
+            ],
+            "nullable": true
           },
           "years": {
             "items": {
@@ -478,6 +489,38 @@
           "id",
           "label",
           "years"
+        ],
+        "type": "object"
+      },
+      "ShopSeason": {
+        "enum": [
+          "Spring",
+          "Summer",
+          "Fall",
+          "Winter",
+          "Spring/Summer",
+          "Fall/Winter"
+        ],
+        "type": "string"
+      },
+      "SourceFacet": {
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          },
+          "source": {
+            "description": "`shop:<id>`, `purchase:<value>`, or `unspecified`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "count",
+          "label",
+          "source"
         ],
         "type": "object"
       },
@@ -799,7 +842,7 @@
   "info": {
     "description": "JSON-authoritative inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -1119,6 +1162,15 @@
           {
             "in": "query",
             "name": "q",
+            "schema": {
+              "nullable": true,
+              "type": "string"
+            }
+          },
+          {
+            "description": "`shop:<id>`, `purchase:<value>`, or `unspecified`; omit for all sources.",
+            "in": "query",
+            "name": "source",
             "schema": {
               "nullable": true,
               "type": "string"

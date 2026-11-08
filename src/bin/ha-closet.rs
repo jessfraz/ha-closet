@@ -10,8 +10,8 @@ use std::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use closet::models::{
     FieldError, Freshness, Generation, GenerationStatus, Item, ItemsPage, Occasion, OwnershipScope,
-    SyncReport, SyncRequest, System, TodayRequest, TodayResponse, ValidationError, WeatherMode,
-    parse_catalog, valid_id,
+    Source, SyncReport, SyncRequest, System, TodayRequest, TodayResponse, ValidationError,
+    WeatherMode, parse_catalog, valid_id,
 };
 use reqwest::{
     Client, Method, RequestBuilder, Url,
@@ -110,7 +110,7 @@ enum Inventory {
 
 #[derive(Subcommand)]
 enum Items {
-    /// Read exactly one page. Keep filter values when continuing its cursor.
+    /// Read exactly one page. Continue with its cursor, not filters.
     List {
         #[arg(long)]
         q: Option<String>,
@@ -118,11 +118,15 @@ enum Items {
         brand: Option<String>,
         #[arg(long)]
         category: Option<String>,
+        /// Exact source key: shop:<id>, purchase:<value>, or unspecified.
+        #[arg(long)]
+        source: Option<Source>,
         #[arg(long)]
         confirmed_only: bool,
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: Option<u32>,
-        #[arg(long)]
+        /// Continue the applied query without repeating filters.
+        #[arg(long, conflicts_with_all = ["q", "brand", "category", "source", "confirmed_only"])]
         page_token: Option<String>,
         #[arg(long, value_enum, default_value = "json")]
         format: Format,
@@ -506,6 +510,7 @@ async fn run(cli: Cli) -> Result<()> {
             q,
             brand,
             category,
+            source,
             confirmed_only,
             limit,
             page_token,
@@ -516,6 +521,7 @@ async fn run(cli: Cli) -> Result<()> {
                 ("q", q),
                 ("brand", brand),
                 ("category", category),
+                ("source", source.map(|source| source.to_string())),
                 ("page_token", page_token),
             ] {
                 if let Some(value) = value {

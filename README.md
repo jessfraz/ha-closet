@@ -6,6 +6,9 @@ The file is the source of truth. Closet validates it, syncs changes into a
 local database, and gives it a searchable photo grid. No second catalog to
 keep up to date in the app.
 
+Select a brand or source badge to see its inventory. The filters can also be
+combined to narrow things down.
+
 ![Closet inventory](docs/screenshots/inventory.png)
 
 ## Install
@@ -19,8 +22,8 @@ https://github.com/jessfraz/ha-closet
 ```
 
 Install and start the Closet app, install the integration, and restart Home
-Assistant. Confirm its discovered connection in **Settings → Devices &
-services**. Enable **Show in sidebar** to open the inventory.
+Assistant if prompted. Confirm its discovered connection in **Settings →
+Devices & services**. Enable **Show in sidebar** to open the inventory.
 
 See the [app documentation](closet/DOCS.md) for configuration and backups.
 
@@ -71,5 +74,6 @@ Rust owns the API, SQLite, and CLI. Python connects it to Home Assistant.
 `just security` checks dependencies; `just container` exercises restart and
 backup/restore with Docker. [Contributing](CONTRIBUTING.md).
 
-The example catalog is fictional. Screenshots omit purchase and sizing data.
+The example catalog is fictional. Screenshots use product-reference photos and
+made-up shop labels, without sizes, prices, or purchase history.
 [MIT](LICENSE).

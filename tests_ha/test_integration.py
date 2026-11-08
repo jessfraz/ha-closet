@@ -1,6 +1,10 @@
 """Real HA flows, scoped HTTP bridge, entities and Assist against Rust."""
 
+import asyncio
 import json
+import os
+from pathlib import Path
+from urllib.parse import urlencode
 from uuid import uuid4
 
 import probatio
@@ -140,6 +144,195 @@ async def test_proxy_reads_every_valid_leading_item_character(
         assert (await response.json())["id"] == item_id
     for invalid in [".", "..", "x" * 201, "not!an!id"]:
         assert (await client.get(f"{PREFIX}/items/{invalid}")).status == 404
+
+
+async def test_proxy_filters_sources_and_returns_global_facets(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    rust_backend: RustBackend,
+) -> None:
+    """Authenticated reads preserve source identity, precedence and paging."""
+    records = [catalog_item(f"source-example-{index}") for index in range(4)]
+    records[0].update(
+        shop={
+            "id": "demo-atelier",
+            "label": "Demo atelier",
+            "season": "Spring/Summer",
+            "years": [],
+        },
+        purchase_source="self_bought",
+    )
+    records[1]["shop"] = {
+        "id": "demo-atelier",
+        "label": "Demo atelier",
+        "season": "Fall/Winter",
+        "years": [],
+    }
+    records[2]["purchase_source"] = "self_bought"
+    await rust_backend.sync(records)
+    await connect(hass, rust_backend)
+    client = await hass_client(hass_user_token)
+    response = await client.get(
+        f"{PREFIX}/items", params={"source": "shop:demo-atelier", "limit": "1"}
+    )
+    assert response.status == 200, await response.text()
+    first = await response.json()
+    assert first["total"] == 2
+    assert first["scope_total"] == 4
+    assert {
+        facet["source"]: facet["count"] for facet in first["facets"]["sources"]
+    } == {
+        "shop:demo-atelier": 2,
+        "purchase:self_bought": 1,
+        "unspecified": 1,
+    }
+    assert first["items"][0]["shop"]["season"] == "Spring/Summer"
+    page = await client.get(
+        f"{PREFIX}/items",
+        params={
+            "source": "shop:demo-atelier",
+            "limit": "1",
+            "page_token": first["next_page"],
+        },
+    )
+    assert page.status == 200, await page.text()
+    second = await page.json()
+    assert second["items"][0]["id"] != first["items"][0]["id"]
+    assert second["items"][0]["shop"]["season"] == "Fall/Winter"
+    bought = await (
+        await client.get(f"{PREFIX}/items", params={"source": "purchase:self_bought"})
+    ).json()
+    assert [item["id"] for item in bought["items"]] == ["source-example-2"]
+    unspecified = await (
+        await client.get(f"{PREFIX}/items", params={"source": "unspecified"})
+    ).json()
+    assert [item["id"] for item in unspecified["items"]] == ["source-example-3"]
+
+
+async def test_proxy_pages_maximum_escaped_filters_with_cursor_only(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    rust_backend: RustBackend,
+) -> None:
+    """HTTP and the actual CLI page legal filters through the real HA bridge."""
+    records = [
+        catalog_item(
+            "a" * 199 + suffix, name='"' * 512, category="a" * 200, confirmed=True
+        )
+        for suffix in ("0", "1")
+    ]
+    for record in records:
+        record.update(brand='"' * 1024, purchase_source='"' * 1024)
+    await rust_backend.sync(records)
+    await connect(hass, rust_backend)
+    client = await hass_client(hass_user_token)
+    source = "purchase:" + '"' * 1024
+    for label, filters in (
+        ("source-only", {"source": source}),
+        (
+            "combined",
+            {
+                "source": source,
+                "brand": '"' * 1024,
+                "q": '"' * 256,
+                "category": "a" * 200,
+                "confirmed_only": "true",
+            },
+        ),
+    ):
+        response = await client.get(f"{PREFIX}/items", params={**filters, "limit": "1"})
+        assert response.status == 200, await response.text()
+        first = await response.json()
+        assert first["total"] == 2
+        cursor = first["next_page"]
+        continuation = {"page_token": cursor, "limit": "1"}
+        print(f"HA {label}: token={len(cursor)} query={len(urlencode(continuation))}")
+        following = await client.get(f"{PREFIX}/items", params=continuation)
+        assert following.status == 200, await following.text()
+        second = await following.json()
+        assert second["total"] == 2
+        assert first["items"][0]["id"] != second["items"][0]["id"]
+        assert second["next_page"] is None
+
+    backend_binary = await asyncio.to_thread(
+        Path(os.environ.get("CLOSET_TEST_BINARY", "target/debug/closet")).resolve
+    )
+    cli_binary = backend_binary.with_name("ha-closet")
+    assert await asyncio.to_thread(cli_binary.is_file), (
+        "Build both binaries: cargo build --bins"
+    )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("CLOSET_", "HOME_ASSISTANT_", "SUPERVISOR"))
+    }
+    environment.update(
+        HOME_ASSISTANT_URL=str(client.make_url("/")).rstrip("/"),
+        HOME_ASSISTANT_TOKEN=hass_user_token,
+    )
+
+    async def run_cli(*arguments: str) -> tuple[int, str, str]:
+        process = await asyncio.create_subprocess_exec(
+            str(cli_binary),
+            "--transport",
+            "home-assistant",
+            "--timeout",
+            "10",
+            "items",
+            "list",
+            *arguments,
+            env=environment,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            async with asyncio.timeout(15):
+                stdout, stderr = await process.communicate()
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        assert process.returncode is not None
+        return process.returncode, stdout.decode(), stderr.decode()
+
+    filters = (
+        "--source",
+        source,
+        "--brand",
+        '"' * 1024,
+        "--q",
+        '"' * 256,
+        "--category",
+        "a" * 200,
+        "--confirmed-only",
+    )
+    code, output, error = await run_cli(*filters, "--limit", "1")
+    assert code == 0, error
+    assert not error
+    cli_first = json.loads(output)
+    assert cli_first["status"] == 200
+    assert cli_first["data"]["total"] == 2
+    cursor = cli_first["data"]["next_page"]
+    # The previously documented repeated-filter pattern is rejected locally,
+    # rather than emitting a request line larger than HA can accept.
+    code, output, error = await run_cli(
+        *filters, "--page-token", cursor, "--limit", "1"
+    )
+    assert code == 2, error
+    assert not output
+    assert json.loads(error)["error_code"] == "invalid_arguments"
+    code, output, error = await run_cli(
+        "--page-token", cursor, "--limit", "1", "--format", "json"
+    )
+    assert code == 0, error
+    assert not error
+    cli_second = json.loads(output)
+    assert cli_second["status"] == 200
+    assert cli_second["data"]["total"] == 2
+    assert cli_second["data"]["next_page"] is None
+    assert cli_first["data"]["items"][0]["id"] != cli_second["data"]["items"][0]["id"]
 
 
 async def test_proxy_sync_accepts_valid_catalog_plus_request_envelope(
