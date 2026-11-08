@@ -1132,3 +1132,71 @@ async fn today_keeps_the_last_result_and_rechecks_only_referenced_facts() {
     );
     store.close().await;
 }
+
+#[tokio::test]
+async fn bedtime_is_a_typed_http_occasion_with_bound_idempotency() {
+    #[derive(serde::Serialize)]
+    struct WireRequest {
+        occasion: &'static str,
+        weather_mode: &'static str,
+    }
+    let app = App::new().await;
+    let response = app
+        .client
+        .post(format!("{}/v1/today/generate", app.origin))
+        .bearer_auth(OWNER)
+        .header("idempotency-key", "example-bedtime")
+        .json(&WireRequest {
+            occasion: "bedtime",
+            weather_mode: "ignored",
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let generation = response.json::<Generation>().await.unwrap();
+    assert_eq!(generation.inputs.occasion.to_string(), "bedtime");
+    let saved = app
+        .client
+        .get(format!("{}/v1/today", app.origin))
+        .bearer_auth(OWNER)
+        .send()
+        .await
+        .unwrap()
+        .json::<TodayResponse>()
+        .await
+        .unwrap();
+    assert_eq!(saved.generation.as_ref().unwrap().id, generation.id);
+    assert_eq!(
+        saved.generation.unwrap().inputs.occasion.to_string(),
+        "bedtime"
+    );
+    let replay = app
+        .client
+        .post(format!("{}/v1/today/generate", app.origin))
+        .bearer_auth(OWNER)
+        .header("idempotency-key", "example-bedtime")
+        .json(&WireRequest {
+            occasion: "bedtime",
+            weather_mode: "ignored",
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::ACCEPTED);
+    assert_eq!(replay.json::<Generation>().await.unwrap().id, generation.id);
+    let changed = app
+        .client
+        .post(format!("{}/v1/today/generate", app.origin))
+        .bearer_auth(OWNER)
+        .header("idempotency-key", "example-bedtime")
+        .json(&WireRequest {
+            occasion: "everyday",
+            weather_mode: "ignored",
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::CONFLICT);
+    app.close().await;
+}

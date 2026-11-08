@@ -58,12 +58,12 @@ select { max-width: 250px; }
 .item-open::after { content: ""; position: absolute; inset: 0; border-radius: 5px; }
 .item-open:focus-visible { outline: none; }
 .item-open:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 3px; }
-.photo { --photo-aspect: .8; aspect-ratio: var(--photo-aspect); flex-shrink: 0; display: grid; place-items: center; background: var(--soft); border-radius: 5px; overflow: hidden; width: 100%; }
+.photo { --photo-aspect: .8; aspect-ratio: var(--photo-aspect); flex-shrink: 0; display: grid; place-items: center; background: #fff; border-radius: 5px; overflow: hidden; width: 100%; }
 .photo img { width: 100%; height: 100%; object-fit: contain; }
 .photo > img { min-width: 0; min-height: 0; }
 .photo-crop { position: relative; overflow: hidden; width: min(100%, calc(100% * var(--crop-aspect) / var(--photo-aspect))); aspect-ratio: var(--crop-aspect); }
 .photo-crop img { position: absolute; max-width: none; }
-.photo-placeholder { padding: 18px; color: var(--muted); font: 12px/1.6 var(--mono); text-align: center; }
+.photo-placeholder { padding: 18px; color: #6a6d71; font: 12px/1.6 var(--mono); text-align: center; }
 .item-name { display: block; font-size: 14px; line-height: 1.5; margin-top: 6px; }
 .photo + .item-name { margin-top: 12px; }
 .item-badges { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin-top: auto; padding-top: 8px; }
@@ -95,6 +95,8 @@ select { max-width: 250px; }
 .pieces { display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 1fr)); gap: 10px; }
 .pieces .item-name { font-size: 12px; }
 .pieces .qualifier, .pieces .image-note { font-size: 12px; }
+.pieces .item-badges { margin-top: 0; }
+.pieces .source-badge { border-radius: 12px; overflow-wrap: break-word; }
 .suggestion-copy .muted + .qualifier { margin-top: 10px; }
 .stale { border-color: var(--warning); }
 #login { max-width: 440px; padding: 25px 0 45px; }
@@ -117,6 +119,7 @@ dd { margin: 0; }
 .gallery-counter { color: var(--muted); font: 12px/1.6 var(--mono); }
 .gallery-thumbnails { display: flex; gap: 8px; overflow-x: auto; padding: 5px; margin: 8px -5px 0; }
 .photo-thumbnail { flex: 0 0 56px; min-width: 0; padding: 3px; background: transparent; border: 1px solid var(--line); }
+.photo-thumbnail:hover { border-color: var(--ink); opacity: 1; }
 .photo-thumbnail[aria-pressed="true"] { border: 2px solid var(--ink); padding: 2px; }
 .photo-thumbnail .photo { border-radius: 3px; }
 .photo-thumbnail .photo-placeholder { font: 9px/1.3 var(--mono); padding: 3px; }

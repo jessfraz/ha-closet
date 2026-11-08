@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+
+- Use a white photo canvas in every view, including the dark theme.
+- Keep long source labels compact in Today.
+- Filter from badges without focusing the native filter dropdown.
+- Give Today the local calendar context, and add a sleepwear-only bedtime option.
+
 ## 0.1.8
 
 - Keep uncropped photos fully visible in inventory cards and galleries.

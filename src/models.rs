@@ -535,7 +535,7 @@ macro_rules! choice {
         }
     };
 }
-choice!(Occasion, Everyday, {Everyday => "everyday", Work => "work", Dinner => "dinner"});
+choice!(Occasion, Everyday, {Everyday => "everyday", Work => "work", Dinner => "dinner", Bedtime => "bedtime"});
 choice!(WeatherMode, Required, {Required => "required", Ignored => "ignored"});
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

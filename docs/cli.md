@@ -112,9 +112,15 @@ ha-closet today get --format table
 there is no hidden polling or automatic retry. Reusing the exact original key
 and inputs reads that operation rather than paying for another generation.
 
-Occasions are `everyday`, `work`, and `dinner`. Weather is `required` unless
-explicitly set to `ignored`. These settings are supplied to the server-owned
-request type; there is no arbitrary prompt or model credential in the CLI.
+Occasions are `everyday`, `work`, `dinner`, and `bedtime`. Bedtime uses sleepwear
+and does not require shoes. Weather is `required` unless explicitly set to
+`ignored`. These settings are supplied to the server-owned request type; there
+is no arbitrary prompt or model credential in the CLI.
+
+Bedtime accepts `clothing.sleepwear.nightgown` or `clothing.sleepwear.set`, or a
+`clothing.sleepwear.top` with a `clothing.sleepwear.bottom`. A
+`clothing.sleepwear.robe` is an optional layer. Daytime suggestions exclude
+sleepwear.
 
 ## Failures
 

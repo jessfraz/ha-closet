@@ -260,7 +260,6 @@ function filterFromBadge(field, value, label) {
   const select = byId(field);
   if (![...select.options].some((option) => option.value === value)) select.add(new Option(label, value));
   select.value = value;
-  select.focus();
   applyFilters();
 }
 
@@ -563,7 +562,7 @@ function inputValues() {
 }
 
 function inputLabel(inputs) {
-  const occasion = { everyday: "Everyday", work: "Work", dinner: "Dinner" }[inputs.occasion] || "Unknown occasion";
+  const occasion = { everyday: "Everyday", work: "Work", dinner: "Dinner", bedtime: "Bedtime" }[inputs.occasion] || "Unknown occasion";
   return `${occasion} · ${inputs.weather_mode === "ignored" ? "Weather ignored" : "Uses forecast"}`;
 }
 

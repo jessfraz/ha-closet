@@ -71,7 +71,7 @@ async def test_badges_filter_the_full_catalog_and_form_can_combine_sources(
             await expect(page.get_by_label("Source", exact=True)).to_have_value(
                 "shop:demo-atelier"
             )
-            await expect(page.get_by_label("Source", exact=True)).to_be_focused()
+            await expect(page.get_by_label("Source", exact=True)).not_to_be_focused()
             await expect(page.get_by_label("Brand", exact=True)).to_have_value("")
             await expect(page.get_by_label("Category", exact=True)).to_have_value("")
             await expect(page.get_by_label("Search", exact=True)).to_have_value("")
@@ -88,7 +88,7 @@ async def test_badges_filter_the_full_catalog_and_form_can_combine_sources(
             await page.get_by_role(
                 "button", name="Show all items by Label A", exact=True
             ).first.click()
-            await expect(page.get_by_label("Brand", exact=True)).to_be_focused()
+            await expect(page.get_by_label("Brand", exact=True)).not_to_be_focused()
             await expect(page.get_by_label("Source", exact=True)).to_have_value("")
             await expect(page.locator("#inventory-count")).to_have_text(
                 "53 items · 106 in inventory"
@@ -326,7 +326,7 @@ async def test_today_badges_return_to_inventory_without_another_generation(
             await expect(page.get_by_label("Source", exact=True)).to_have_value(
                 "shop:demo-atelier"
             )
-            await expect(page.get_by_label("Source", exact=True)).to_be_focused()
+            await expect(page.get_by_label("Source", exact=True)).not_to_be_focused()
             await page.get_by_role("button", name="Today", exact=True).click()
             await expect(page.locator(".pieces .item-open")).to_have_count(3)
             await (

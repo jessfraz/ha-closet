@@ -1,6 +1,7 @@
 """Run Home Assistant against the real Rust service and disposable SQLite."""
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ class HAProtocol:
     origin: str = ""
     generations: int = 0
     forecasts: int = 0
+    last_context: JsonObjectType | None = None
 
     async def weather_state(self, request: web.Request) -> web.Response:
         return web.json_response(
@@ -57,6 +59,29 @@ class HAProtocol:
 
     async def generate(self, request: web.Request) -> web.Response:
         self.generations += 1
+        payload: JsonObjectType = await request.json()
+        instructions = payload.get("instructions")
+        assert isinstance(instructions, str)
+        context: JsonObjectType = json.loads(
+            instructions.rsplit("## Context data\n", 1)[1]
+        )
+        self.last_context = context
+        if context.get("occasion") == "bedtime":
+            return web.json_response(
+                {
+                    "service_response": {
+                        "data": {
+                            "one_piece_suggestions": [
+                                {
+                                    "label": "Example bedtime combination",
+                                    "one_piece_id": "example-nightgown",
+                                    "advisory_reason": "A fictional sleepwear choice.",
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
         return web.json_response(
             {
                 "service_response": {

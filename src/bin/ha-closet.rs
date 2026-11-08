@@ -213,7 +213,7 @@ fn parse_id(value: &str) -> std::result::Result<String, &'static str> {
 fn parse_occasion(value: &str) -> std::result::Result<Occasion, &'static str> {
     value
         .parse()
-        .map_err(|_| "expected everyday, work, or dinner")
+        .map_err(|_| "expected everyday, work, dinner, or bedtime")
 }
 fn parse_weather_mode(value: &str) -> std::result::Result<WeatherMode, &'static str> {
     value.parse().map_err(|_| "expected required or ignored")

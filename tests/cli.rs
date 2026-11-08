@@ -12,7 +12,7 @@ use closet::{
     api::{self, Context},
     models::{
         AccessRole, CatalogItem, FieldError, Generation, GenerationStatus, ImageConfidence,
-        ImageReference, Item, ItemsPage, Price, Shop, SyncReport, System, TodayRequest,
+        ImageReference, Item, ItemsPage, Occasion, Price, Shop, SyncReport, System, TodayRequest,
         ValidationReport,
     },
     store::Store,
@@ -874,44 +874,52 @@ async fn source_filter_survives_home_assistant_transport_query_encoding() {
 
 #[test]
 fn generation_is_one_accepted_request_with_typed_inputs_not_a_poll_loop() {
-    let accepted = Generation {
-        id: "example-generation".into(),
-        status: GenerationStatus::Running,
-        inputs: TodayRequest::default(),
-        started_at: Utc::now(),
-        finished_at: None,
-        error_code: None,
-    };
-    let (origin, requests, worker) = fixture(202, "", bytes(&accepted));
-    let result = success::<Generation>(
-        call(
-            &[
-                "today",
-                "generate",
-                "--idempotency-key",
-                "example-generation-1",
-            ],
-            b"",
-            &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
-        ),
-        Some(202),
-    );
-    assert!(matches!(result.data.status, GenerationStatus::Running));
-    let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert!(
-        request
-            .headers
-            .starts_with("POST /v1/today/generate HTTP/1.1")
-    );
-    assert!(
-        request
-            .headers
-            .to_ascii_lowercase()
-            .contains("idempotency-key: example-generation-1")
-    );
-    let body: TodayRequest = serde_json::from_slice(&request.body).unwrap();
-    assert_eq!(body, TodayRequest::default());
-    worker.join().unwrap();
+    for occasion in [Occasion::Everyday, Occasion::Bedtime] {
+        let inputs = TodayRequest {
+            occasion,
+            ..Default::default()
+        };
+        let accepted = Generation {
+            id: "example-generation".into(),
+            status: GenerationStatus::Running,
+            inputs: inputs.clone(),
+            started_at: Utc::now(),
+            finished_at: None,
+            error_code: None,
+        };
+        let (origin, requests, worker) = fixture(202, "", bytes(&accepted));
+        let result = success::<Generation>(
+            call(
+                &[
+                    "today",
+                    "generate",
+                    "--occasion",
+                    &occasion.to_string(),
+                    "--idempotency-key",
+                    "example-generation-1",
+                ],
+                b"",
+                &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
+            ),
+            Some(202),
+        );
+        assert!(matches!(result.data.status, GenerationStatus::Running));
+        let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            request
+                .headers
+                .starts_with("POST /v1/today/generate HTTP/1.1")
+        );
+        assert!(
+            request
+                .headers
+                .to_ascii_lowercase()
+                .contains("idempotency-key: example-generation-1")
+        );
+        let body: TodayRequest = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body, inputs);
+        worker.join().unwrap();
+    }
 }
 
 #[test]
