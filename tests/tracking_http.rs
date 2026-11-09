@@ -223,7 +223,12 @@ async fn protected_runtime_api_requires_admin_own_revision_and_idempotency() {
         .status(),
         StatusCode::CONFLICT
     );
-    for path in ["/v1/tracking/export", "/v1/tracking/history"] {
+    for path in [
+        "/v1/tracking/export",
+        "/v1/tracking/history",
+        "/v1/tracking/coverage",
+        "/v1/tracking/analytics",
+    ] {
         assert_eq!(
             app.client
                 .get(format!("{}{path}", app.origin))
@@ -707,6 +712,7 @@ async fn real_cli_exports_private_complete_json_without_clobbering() {
     let bytes = std::fs::read(&path).unwrap();
     let export: TrackingExport = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(export.units.len(), 5);
+    assert!(export.coverage.is_empty());
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -717,6 +723,71 @@ async fn real_cli_exports_private_complete_json_without_clobbering() {
         std::fs::read_dir(directory.path()).unwrap().count(),
         1,
         "no abandoned temporary exports"
+    );
+    let coverage = std::process::Command::new(env!("CARGO_BIN_EXE_ha-closet"))
+        .args([
+            "--transport",
+            "native",
+            "tracking",
+            "coverage",
+            "--limit",
+            "1",
+        ])
+        .env("CLOSET_API_URL", &app.origin)
+        .env("CLOSET_API_TOKEN", OWNER)
+        .output()
+        .unwrap();
+    assert!(
+        coverage.status.success(),
+        "{}",
+        String::from_utf8_lossy(&coverage.stderr)
+    );
+    #[derive(Deserialize)]
+    struct CoverageOutput {
+        data: CoverageHistoryPage,
+    }
+    let coverage: CoverageOutput = serde_json::from_slice(&coverage.stdout).unwrap();
+    assert!(coverage.data.intervals.is_empty());
+    assert!(coverage.data.next_before.is_none());
+    let analytics = std::process::Command::new(env!("CARGO_BIN_EXE_ha-closet"))
+        .args([
+            "--transport",
+            "native",
+            "tracking",
+            "analytics",
+            "--days",
+            "30",
+            "--pick-seed",
+            "8",
+        ])
+        .env("CLOSET_API_URL", &app.origin)
+        .env("CLOSET_API_TOKEN", OWNER)
+        .output()
+        .unwrap();
+    assert!(
+        analytics.status.success(),
+        "{}",
+        String::from_utf8_lossy(&analytics.stderr)
+    );
+    #[derive(Deserialize)]
+    struct AnalyticsOutput {
+        data: closet::tracking::analytics::AnalyticsReport,
+    }
+    let analytics: AnalyticsOutput = serde_json::from_slice(&analytics.stdout).unwrap();
+    assert_eq!(analytics.data.days, 30);
+    assert_eq!(analytics.data.inferred_wears, 0);
+    assert!(analytics.data.most_worn.is_empty());
+    assert!(analytics.data.overlooked.is_empty());
+    assert!(analytics.data.pick.is_none());
+    assert_eq!(
+        app.client
+            .get(format!("{}/v1/tracking/coverage?limit=0", app.origin))
+            .bearer_auth(OWNER)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
     );
     app.close().await;
 }

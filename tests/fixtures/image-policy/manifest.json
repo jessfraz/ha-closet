@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "images": [
+    {
+      "item_id": "example-policy-alpha",
+      "sha256": "967637f0bfef3370b952826e8a31d7f95573355fb67d0fba1052e752629abb76",
+      "image_index": 0
+    },
+    {
+      "item_id": "example-policy-photo",
+      "sha256": "ea33820b0c5a45ee63a284efc1cc2a277ff7a06197fecdca409c87b2fd745329",
+      "image_index": 0
+    }
+  ]
+}

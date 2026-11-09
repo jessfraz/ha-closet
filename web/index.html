@@ -28,6 +28,7 @@
         <nav class="view-switch" aria-label="Closet views">
           <button id="inventory-tab" type="button" aria-pressed="true">Inventory</button>
           <button id="today-tab" type="button" aria-pressed="false">Today</button>
+          <button id="analytics-tab" type="button" aria-pressed="false">Analytics</button>
           <button id="tags-tab" type="button" aria-pressed="false">Tags</button>
           <button id="tracking-settings-tab" type="button" aria-pressed="false">Tracking settings</button>
         </nav>
@@ -50,6 +51,16 @@ ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details><
           <div id="item-grid" class="item-grid"></div>
           <button id="load-more" type="button" class="quiet" hidden>Load more</button>
           <div id="page-sentinel" aria-hidden="true" hidden></div>
+        </section>
+        <section id="analytics" aria-labelledby="analytics-heading" hidden>
+          <div class="page-heading"><div><p class="eyebrow">YOUR ROTATION</p><h1 id="analytics-heading">Analytics</h1></div><p id="analytics-range-label" class="muted"></p></div>
+          <p class="muted">A closer look at the pieces getting worn.</p>
+          <form id="analytics-filters" class="filters analytics-controls">
+            <div class="field"><label for="analytics-period">Date range</label><select id="analytics-period"><option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="365">Last year</option></select></div>
+            <button type="submit" class="quiet">Apply range</button>
+          </form>
+          <p id="analytics-state" class="muted" role="status" aria-live="polite"></p>
+          <div id="analytics-content"></div>
         </section>
         <section id="tags" aria-labelledby="tags-heading" hidden>
           <div class="page-heading"><div><p class="eyebrow">ONE PIECE AT A TIME</p><h1 id="tags-heading">Tags</h1></div><p id="tag-progress" class="muted" role="status" aria-live="polite"></p></div>

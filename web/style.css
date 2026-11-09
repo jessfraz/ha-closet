@@ -214,4 +214,62 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
 .tracking-config-card input { max-width: 100%; }
 .tracking-settings-form > details { margin: 1rem 0; }
 
+.analytics-controls { align-items: flex-end; margin-bottom: 12px; }
+.analytics-controls input { min-width: 0; }
+#analytics-state:not(:empty) { margin: 18px 0; }
+.analytics-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding: 24px 0; border-block: 1px solid var(--line); margin: 24px 0 30px; }
+.analytics-metric { min-width: 0; }
+.analytics-metric dt { font-size: 12px; }
+.analytics-metric dd { font-size: 34px; font-weight: 500; letter-spacing: -1px; line-height: 1.25; margin-top: 5px; font-variant-numeric: tabular-nums; }
+.analytics-metric small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: normal; line-height: 1.6; }
+.analytics-trend { margin: 0 0 34px; padding: 22px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
+.analytics-trend figcaption { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; margin-bottom: 16px; }
+.analytics-trend h2 { margin: 0; }
+.analytics-chart { display: block; width: 100%; height: 210px; overflow: visible; }
+.analytics-chart text { fill: var(--muted); font: 11px ui-sans-serif, system-ui, sans-serif; }
+.analytics-chart .chart-guide { stroke: var(--line); stroke-width: 1; }
+.analytics-chart .chart-bar { fill: var(--ink); }
+.analytics-data { margin-top: 18px; }
+.analytics-data summary { font-size: 12px; }
+.analytics-data table { width: 100%; border-collapse: collapse; margin-top: 14px; text-align: left; font-size: 12px; }
+.analytics-data th, .analytics-data td { padding: 7px 0; border-bottom: 1px solid var(--line); }
+.analytics-data td:last-child, .analytics-data th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.analytics-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 36px; }
+.analytics-section { min-width: 0; }
+.analytics-section > .muted { margin-bottom: 18px; }
+.analytics-ranked { list-style: none; margin: 0; padding: 0; }
+.analytics-ranked > li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 18px 0; border-top: 1px solid var(--line); }
+.analytics-rank { color: var(--muted); font: 11px/1.6 var(--mono); padding-top: 3px; }
+.analytics-ranked .item-piece { display: grid; grid-template-columns: 78px minmax(0, 1fr); align-content: start; column-gap: 14px; }
+.analytics-ranked .photo { grid-column: 1; grid-row: 1 / span 6; align-self: start; }
+.analytics-ranked .item-piece > :not(.photo) { grid-column: 2; }
+.analytics-ranked .brand-badge { justify-self: start; margin-top: 0; font-size: 10px; min-height: 24px; padding: 2px 7px; }
+.analytics-ranked .item-name { margin-top: 5px; font-size: 13px; }
+.analytics-ranked .item-badges { margin-top: 0; padding-top: 7px; }
+.analytics-ranked .tracking-pill { justify-self: start; }
+.analytics-item-note { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.analytics-pick { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 10px; }
+.analytics-pick > .muted { margin-top: 10px; }
+.analytics-pick-result { list-style: none; margin: 16px 0 0; padding: 0; }
+.analytics-pick-result > li { grid-template-columns: minmax(0, 1fr); }
+.analytics-pick-result .analytics-rank { display: none; }
+.analytics-method { margin: 28px 0 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.analytics-method p { font-size: 12px; color: var(--muted); }
+.analytics-empty { padding: 40px 0 52px; max-width: 530px; }
+.analytics-empty .eyebrow { margin-bottom: 14px; }
+.analytics-empty h2 { font-size: 25px; letter-spacing: -.5px; }
+.analytics-empty .quiet { margin-top: 20px; }
+@media (max-width: 760px) {
+  .analytics-lists { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+}
+@media (max-width: 620px) {
+  .analytics-summary { gap: 12px; }
+  .analytics-metric dd { font-size: 28px; }
+  .analytics-metric dt, .analytics-metric small { font-size: 11px; }
+  .analytics-trend { padding: 16px 12px; }
+  .analytics-controls > .field { flex-basis: 100%; }
+  .analytics-controls select { max-width: none; }
+  .analytics-controls button { width: 100%; }
+}
+
 .tag-queue-card .tracking-form { grid-template-columns: minmax(0,1fr); }

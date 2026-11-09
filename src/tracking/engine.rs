@@ -90,6 +90,13 @@ struct Positive {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct CoverageProgress {
+    pub interval: CoverageInterval,
+    pub latest_verified: DateTime<Utc>,
+    pub checkpoint_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Engine {
     pub(crate) revision: i64,
     pub(crate) configuration_version: i64,
@@ -100,6 +107,7 @@ pub struct Engine {
     pub(crate) reader_operations: BTreeMap<ReaderId, ReaderOperation>,
     pub(crate) reader_controls: BTreeMap<ReaderId, ReaderControlOperation>,
     pub(crate) mode: EngineMode,
+    pub(crate) coverage_progress: Option<CoverageProgress>,
     restart_at: DateTime<Utc>,
     clock: DateTime<Utc>,
     readers: BTreeMap<ReaderId, ReaderEvidence>,
@@ -135,6 +143,7 @@ impl Engine {
             reader_operations: BTreeMap::new(),
             reader_controls: BTreeMap::new(),
             mode,
+            coverage_progress: None,
             restart_at: now,
             clock: now,
             readers: BTreeMap::new(),
@@ -934,12 +943,29 @@ impl Engine {
             let ambiguous =
                 areas.len() > 1 || self.area_recent.get(&id).is_some_and(|a| a.len() > 1);
             if ambiguous {
-                self.positives.remove(&id);
-                self.decision(id, now, DecisionReason::AmbiguousEvidence, None, Vec::new());
+                let mut refs = self
+                    .positives
+                    .remove(&id)
+                    .map_or_else(Vec::new, |p| p.refs.into_iter().rev().take(1).collect());
+                // One reference per current area plus the previous candidate is
+                // bounded by the 32 configured areas and retains both sides.
+                refs.extend(
+                    areas
+                        .values()
+                        .filter_map(|observations| observations.last().map(|(_, r)| r.clone())),
+                );
+                self.decision(
+                    id,
+                    now,
+                    DecisionReason::AmbiguousEvidence,
+                    None,
+                    refs.clone(),
+                );
                 self.set_diagnostic_exception(
                     id,
                     TrackingException::AmbiguousReads,
                     now,
+                    refs,
                     &mut changes.units,
                 );
                 continue;
@@ -1078,6 +1104,7 @@ impl Engine {
         id: UnitId,
         exception: TrackingException,
         now: DateTime<Utc>,
+        evidence: Vec<ObservationRef>,
         changes: &mut Vec<UnitChange>,
     ) {
         if let Some(before) = self.units.get(&id).cloned()
@@ -1098,7 +1125,7 @@ impl Engine {
                 after,
                 kind: HistoryKind::Correction,
                 reason: DecisionReason::AmbiguousEvidence,
-                evidence: Vec::new(),
+                evidence,
                 note: None,
             });
         }

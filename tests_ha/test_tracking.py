@@ -157,6 +157,8 @@ async def test_tracking_proxy_auth_replay_and_fixed_routes(
     ).status == 403
     assert (await reader.post(f"{PREFIX}/tracking/observations", json={})).status == 403
     assert (await reader.get(f"{PREFIX}/tracking/export")).status == 403
+    assert (await reader.get(f"{PREFIX}/tracking/coverage")).status == 403
+    assert (await reader.get(f"{PREFIX}/tracking/analytics")).status == 403
     assert (
         await reader.get(f"{PREFIX}/tracking/units/{unit['id']}/history")
     ).status == 403
@@ -171,6 +173,16 @@ async def test_tracking_proxy_auth_replay_and_fixed_routes(
     history = await admin.get(f"{PREFIX}/tracking/units/{unit['id']}/history?limit=1")
     assert history.status == 200
     assert len((await history.json())["events"]) == 1
+    coverage = await admin.get(f"{PREFIX}/tracking/coverage?limit=1")
+    assert coverage.status == 200
+    assert (await coverage.json())["intervals"] == []
+    analytics = await admin.get(f"{PREFIX}/tracking/analytics?days=30&pick_seed=8")
+    assert analytics.status == 200
+    report = await analytics.json()
+    assert report["days"] == 30 and report["inferred_wears"] == 0
+    assert report["overlooked"] == [] and report["pick"] is None
+    assert (await admin.get(f"{PREFIX}/tracking/analytics?days=31")).status == 400
+    assert (await admin.get(f"{PREFIX}/tracking/coverage?epc=private")).status == 400
     assert (await admin.get(f"{PREFIX}/tracking?epc=private")).status == 400
     assert (
         await admin.get(f"{PREFIX}/tracking/units/not-a-uuid/history")

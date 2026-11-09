@@ -87,9 +87,9 @@ change the garment's care instructions or establish comfort.
 [HID datasheet](https://www.hidglobal.com/sites/default/files/documentlibrary/idt-ts-lintrak-c10xs-m730ds-en.pdf),
 [Fujitsu WT-A533G manufacturer description](https://info.archives.global.fujitsu/jp/group/frontech/en/about/resources/news/press-releases/2020/1029.html).
 
-Use the existing care label when suitable. Have the seamstress test a few real
-samples before attaching hundreds: softness, bending, rubbing, bulk, drape and
-visibility matter. Do not stitch through the chip or antenna, fold it sharply,
+Use the existing care label when suitable. Test a few real samples before
+attaching hundreds: softness, bending, rubbing, bulk, drape and visibility matter.
+Do not stitch through the chip or antenna, fold it sharply,
 or heat-seal a delicate garment without the tag maker's attachment procedure
 and the garment's permitted care conditions. A soft enclosing label or pouch
 may help, but does not guarantee comfort. Keep an explicit no-tag exception for

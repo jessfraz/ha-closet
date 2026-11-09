@@ -9,10 +9,11 @@ use std::{
 use clap::{Args, Subcommand};
 use closet::{
     client::{ApiClient, Failure, Output, response},
+    tracking::analytics::AnalyticsReport,
     tracking::models::{
-        AreaId, CommandResult, EnrollmentPurpose, Epc, HistoryPage, IngestResult, ObservationBatch,
-        PortId, SessionId, TrackingCommand, TrackingConfig, TrackingExport, TrackingSnapshot,
-        UnitId, UnitStatus,
+        AreaId, CommandResult, CoverageHistoryPage, EnrollmentPurpose, Epc, HistoryPage,
+        IngestResult, ObservationBatch, PortId, SessionId, TrackingCommand, TrackingConfig,
+        TrackingExport, TrackingSnapshot, UnitId, UnitStatus,
     },
 };
 use reqwest::Method;
@@ -44,6 +45,20 @@ pub enum Command {
         before: Option<i64>,
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=200))]
         limit: u16,
+    },
+    /// Read verified observation intervals; gaps are not evidence of neglect.
+    Coverage {
+        #[arg(long)]
+        before: Option<i64>,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=200))]
+        limit: u16,
+    },
+    /// Read observed wear, trends and eligible overlooked pieces.
+    Analytics {
+        #[arg(long, default_value_t = 90, value_parser = clap::value_parser!(u16).range(30..=365))]
+        days: u16,
+        #[arg(long, default_value_t = 0)]
+        pick_seed: u64,
     },
     /// Write a new owner-only export file. Never overwrites an existing path.
     Export {
@@ -98,11 +113,13 @@ pub enum Command {
         #[command(flatten)]
         mutation: Mutation,
     },
-    /// Retire a failed or mistaken binding while retaining unit identity/history.
+    /// Remove a tag; mark a mistaken pairing to correct its analytics attribution.
     Unbind {
         unit: UnitId,
         #[arg(long)]
         note: String,
+        #[arg(long)]
+        mistaken: bool,
         #[command(flatten)]
         mutation: Mutation,
     },
@@ -201,6 +218,14 @@ pub enum Enroll {
 
 pub enum Prepared {
     Status,
+    Coverage {
+        before: Option<i64>,
+        limit: u16,
+    },
+    Analytics {
+        days: u16,
+        pick_seed: u64,
+    },
     History {
         unit: Option<UnitId>,
         before: Option<i64>,
@@ -292,6 +317,14 @@ pub fn prepare(command: &Command) -> Result<Prepared> {
     };
     match command {
         Command::Status => Ok(Prepared::Status),
+        Command::Coverage { before, limit } => Ok(Prepared::Coverage {
+            before: *before,
+            limit: *limit,
+        }),
+        Command::Analytics { days, pick_seed } => Ok(Prepared::Analytics {
+            days: *days,
+            pick_seed: *pick_seed,
+        }),
         Command::History {
             unit,
             before,
@@ -433,11 +466,13 @@ pub fn prepare(command: &Command) -> Result<Prepared> {
         Command::Unbind {
             unit,
             note,
+            mistaken,
             mutation,
         } => mutate(
             TrackingCommand::Unbind {
                 unit_id: *unit,
                 note: note.clone(),
+                mistaken: *mistaken,
             },
             mutation,
         ),
@@ -488,6 +523,26 @@ pub async fn send(api: &ApiClient, prepared: Prepared) -> Result<()> {
                 query.push(("before", before.to_string()));
             }
             crate::send::<HistoryPage>(api.request(Method::GET, &path)?.query(&query)).await
+        }
+        Prepared::Coverage { before, limit } => {
+            let mut query = vec![("limit", limit.to_string())];
+            if let Some(before) = before {
+                query.push(("before", before.to_string()));
+            }
+            crate::send::<CoverageHistoryPage>(
+                api.request(Method::GET, "/tracking/coverage")?
+                    .query(&query),
+            )
+            .await
+        }
+        Prepared::Analytics { days, pick_seed } => {
+            crate::send::<AnalyticsReport>(api.request(Method::GET, "/tracking/analytics")?.query(
+                &[
+                    ("days", days.to_string()),
+                    ("pick_seed", pick_seed.to_string()),
+                ],
+            ))
+            .await
         }
         Prepared::Observe(batch) => {
             crate::send::<IngestResult>(

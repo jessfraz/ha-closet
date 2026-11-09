@@ -17,7 +17,9 @@ use tokio_tungstenite::{
 
 use crate::{
     client::{ApiClient, Failure, Result, Transport},
-    images::{ImageSha, LocalImage, MAX_IMAGE_BYTES, NativeImageId},
+    images::{
+        DeliveryFormat, ImageSha, MAX_DELIVERY_BYTES, MAX_IMAGE_BYTES, NativeImageId, PreparedImage,
+    },
 };
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -179,10 +181,14 @@ impl<'a> HaImages<'a> {
         Ok(())
     }
     pub async fn verify(&self, image: &NativeImage, sha: &ImageSha) -> Result<()> {
-        if image.content_type != "image/png"
-            || image.filesize == 0
-            || image.filesize > MAX_IMAGE_BYTES
-        {
+        let format = DeliveryFormat::from_upload_name(&image.name)
+            .ok_or_else(|| Failure::local("native_image_content_mismatch"))?;
+        let limit = if image.name.starts_with("closet-v1-") {
+            MAX_DELIVERY_BYTES as u64
+        } else {
+            MAX_IMAGE_BYTES
+        };
+        if image.content_type != format.mime() || image.filesize == 0 || image.filesize > limit {
             return Err(Failure::local("native_image_content_mismatch"));
         }
         let url = self
@@ -206,7 +212,7 @@ impl<'a> HaImages<'a> {
                 .get(CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.split(';').next())
-                != Some("image/png")
+                != Some(format.mime())
         {
             return Err(Failure::local("native_image_unavailable"));
         }
@@ -228,36 +234,36 @@ impl<'a> HaImages<'a> {
     }
     pub async fn matching(
         &self,
-        asset: &LocalImage,
+        asset: &PreparedImage,
         records: &[NativeImage],
     ) -> Result<Option<NativeImageId>> {
         let mut matches: Vec<_> = records
             .iter()
-            .filter(|image| image.name == asset.sha256.upload_name())
+            .filter(|image| image.name == asset.upload_name())
             .collect();
         matches.sort_by_key(|image| {
             (
-                asset.native_hint.as_ref() != Some(&image.id),
+                asset.source().native_hint.as_ref() != Some(&image.id),
                 image.id.clone(),
             )
         });
         if let Some(image) = matches.first() {
-            if image.filesize != asset.size {
+            if image.filesize != asset.bytes().len() as u64 {
                 return Err(Failure::local("native_image_content_mismatch"));
             }
-            self.verify(image, &asset.sha256).await?;
+            self.verify(image, asset.wire_sha()).await?;
             return Ok(Some(image.id.clone()));
         }
         Ok(None)
     }
     /// Never retried. An ambiguous response requires list + exact-byte GET;
     /// absence is not permission to create another random native ID.
-    pub async fn upload(&self, asset: &LocalImage) -> Result<UploadOutcome> {
-        let bytes = asset.read_verified()?;
+    pub async fn upload(&self, asset: &PreparedImage) -> Result<UploadOutcome> {
+        asset.source().read_verified()?;
         let result = async {
-            let part = Part::bytes(bytes)
-                .file_name(asset.sha256.upload_name())
-                .mime_str("image/png")
+            let part = Part::bytes(asset.bytes().to_vec())
+                .file_name(asset.upload_name())
+                .mime_str(asset.format().mime())
                 .map_err(|_| Failure::local("invalid_image_source"))?;
             let url = self
                 .api

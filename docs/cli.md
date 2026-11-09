@@ -76,10 +76,25 @@ on the named item. Exact native URL aliases across purchases share the same
 resolved image. If both fields are present, they must identify the same slot.
 An optional `upload_name` must equal `closet-<sha256>.png`.
 
-Validation checks mappings, hashes, PNG headers and dimensions, regular files,
-512 assets at most, 10 MiB minus 1 KiB per file and 512 MiB total. Unlisted
-files and symlinks fail. Keep local photos and their manifest in private storage.
-URL-only vendor references need no local file or manifest.
+Validation checks mappings, hashes, the full decoded PNG and delivery encoding,
+regular files, 512 assets at most, 10 MiB minus 1 KiB per source and 512 MiB
+total. Unlisted files and symlinks fail. Keep local photos and their manifest
+in private storage. URL-only references need no local file or manifest.
+
+The same Rust pipeline prepares photos during offline validation and sync.
+It preserves the aspect ratio, applies orientation once, normalizes supported
+color profiles to sRGB, keeps transparency, and never crops or upscales. Deliveries have a maximum 2048-pixel
+long edge and 2 MiB encoded size. If needed, the long edge steps down to 1792,
+1536 or 1280; originals already below 1280 have a final 1024-pixel fallback.
+JPEG quality stays at 92. Transparent photos use lossless PNG.
+Corrupt files and unsupported color metadata fail validation instead of being
+silently uploaded. No AI or external image service is involved.
+
+Source SHA identities remain unchanged. A separate delivery SHA identifies the
+actual uploaded bytes in `closet-v1-<delivery-sha>.jpg` or `.png`. Validation
+reports source bytes, upload bytes, the policy version and a delivery
+fingerprint. Codec versions are pinned and release CI checks the same golden
+fingerprint on all three CLI platforms.
 
 Sync reuses a native image only after exact-byte SHA verification. A missing
 copy gets one multipart upload. A lost reply is reconciled through native
@@ -89,13 +104,17 @@ copy. If it remains absent, inspect the original operation before explicitly
 resolving its durable claim. No uploads or cleanup happen during validation.
 
 After successful inventory and full readback, cleanup removes only exact
-`closet-<sha256>.png` objects whose bytes match that name. Active records and
+`closet-v1-<sha256>.jpg` / `.png` objects and legacy `closet-<sha256>.png`
+objects whose bytes match their name. Active records and
 currently displayed Today references, including archived records and native
 thumbnail aliases, protect shared images. Unrelated HA images are untouched.
 A durable server fence blocks all inventory writers while admitted deletions
 are pending, even after a crash or lease expiration. `cleanup_pending` means
 rerun the same command to reconcile/resume those exact IDs. Failures before
-cleanup never authorize a new deletion batch.
+cleanup never authorize a new deletion batch. If a changed source refers to an
+image already admitted for deletion, `cleanup_source_conflict` stops before
+cleanup. Keep local source bytes or use a live replacement reference before
+resolving that interrupted operation.
 
 The app, integration and CLI must be upgraded together for managed sync. An
 older service without the fence endpoint fails before any image upload. The
@@ -189,6 +208,8 @@ ha-closet tracking status
 ha-closet tracking enroll start UNIT_UUID --port example-enroll \
   --if-match '"1"' --idempotency-key example-enrollment
 ha-closet tracking history --unit UNIT_UUID --limit 50
+ha-closet tracking coverage --limit 50
+ha-closet tracking analytics --days 90 --pick-seed 8
 ha-closet tracking export --output tracking-backup.json
 ha-closet tracking replay --input config/tracking-replay.example.json
 ```
@@ -198,14 +219,18 @@ values above. `enroll confirm` requires session, unit, EPC and `--capture-versio
 `enroll capture` discards earlier candidates. `enroll resume` preserves a saved
 queue but starts a fresh capture. `--replace` on enrollment retires the previous
 tag without replacing the unit. Lookup, baseline, correct, unbind, retire and
-undo are explicit subcommands. `tracking apply --input command.json` covers
+undo are explicit subcommands. `tracking unbind --mistaken` also excludes that
+association from analytics while preserving its audit; ordinary unbind retains
+valid wear history. `tracking apply --input command.json` covers
 other typed commands, including installation and quantity reconciliation.
 
 Config validation and replay are offline, before credentials are resolved.
 Replay always uses a new in-memory simulator, never the configured production
 origin. Exports are private 0600 files, atomically created without overwriting
 an existing path. Import requires a synced catalog with matching stable IDs and
-the usual tracking revision/retry key. Raw `observe` batches are administrator-
+the usual tracking revision/retry key. An import cannot remove or rewrite
+existing movement history. History and coverage use `next_before` cursors; pass
+them as `--before` to read older pages. Raw `observe` batches are administrator-
 only and deduplicated by reader session/sequence. They are not ordinary catalog
 writes. [Tracking setup, rules, recovery and hardware](rfid.md).
 

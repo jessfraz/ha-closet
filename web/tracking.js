@@ -15,7 +15,7 @@ const exceptionLabels = {
   paused: "Automatic tracking is explicitly paused.", archived: "This catalog record is archived.",
   enrollment_recovery: "The enrollment reader needs recovery before tracking resumes.",
 };
-const installationLabels = { needs_tag: "Needs a tag", seamstress_queued: "Queued for installation", installed: "Tag installed", exempt: "No-tag exception" };
+const installationLabels = { needs_tag: "Needs a tag", queued: "Queued for installation", installed: "Tag installed", exempt: "No-tag exception" };
 
 export class TrackingController {
   constructor({ request, element, photo, getItem, openItem, errorMessage, role, changed }) {
@@ -262,7 +262,7 @@ export class TrackingController {
     }
     actions.append(this.button(unit.has_binding ? "Replace tag" : "Enroll tag", () => {
       this.selectedId = unit.id; this.replacementId = unit.has_binding ? unit.id : null; this.mode = "enroll";
-      document.getElementById("close-detail").click(); document.getElementById("tags-tab").click();
+      document.getElementById("tags-tab").click();
     }));
     const manual = this.node("details", ""); manual.append(this.node("summary", "", "Correct this state"));
     const form = this.node("form", "tracking-form");
@@ -285,7 +285,7 @@ export class TrackingController {
     const reason = this.field("Reason for this change", null, ""); reason.input.required = true; reason.input.maxLength = 500;
     const save = this.button(type === "undo" ? "Confirm undo" : type === "retire" ? "Confirm retirement" : "Confirm unbind", () => {
       if (!form.reportValidity()) return;
-      void this.command({ type, ...(type === "undo" ? { event_id: unit.last_event_id } : { unit_id: unit.id }), note: reason.input.value }, revision);
+      void this.command({ type, ...(type === "undo" ? { event_id: unit.last_event_id } : { unit_id: unit.id }), ...(type === "unbind" ? { mistaken: true } : {}), note: reason.input.value }, revision);
     });
     form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); }); form.append(reason.wrapper, save); root.append(form); reason.input.focus();
   }
@@ -529,7 +529,7 @@ export class TrackingController {
     form.append(state.wrapper, model.wrapper, placement.wrapper, notes.wrapper, reason.wrapper, save); root.append(form);
   }
   async installationQueue(root, revision) {
-    root.append(this.node("p", "muted", "Use comfortable samples and let the seamstress choose the actual attachment. An existing care label is only an attachment location, not an RFID identifier."));
+    root.append(this.node("p", "muted", "Test a few tags for comfort and drape before choosing an attachment location. An existing care label is only an attachment location, not an RFID identifier."));
     const units = this.units().filter((unit) => !this.filtering || this.queueFilter.has(unit.catalog_id));
     const grid = this.node("div", "tag-queue");
     for (const unit of units.slice(0, this.queueLimit)) {
@@ -540,8 +540,8 @@ export class TrackingController {
       card.append(this.node("p", "muted", installationLabels[unit.installation.state]));
       const actions = this.node("div", "tracking-actions");
       const trackingRevision = this.snapshot.tracking_revision;
-      if (unit.installation.state === "needs_tag") actions.append(this.button("Queue installation", () => this.command({ type: "installation", unit_id: unit.id, installation: { ...unit.installation, state: "seamstress_queued" } }, trackingRevision)));
-      if (unit.installation.state === "seamstress_queued") actions.append(this.button("Mark installed", () => this.command({ type: "installation", unit_id: unit.id, installation: { ...unit.installation, state: "installed" } }, trackingRevision)));
+      if (unit.installation.state === "needs_tag") actions.append(this.button("Queue installation", () => this.command({ type: "installation", unit_id: unit.id, installation: { ...unit.installation, state: "queued" } }, trackingRevision)));
+      if (unit.installation.state === "queued") actions.append(this.button("Mark installed", () => this.command({ type: "installation", unit_id: unit.id, installation: { ...unit.installation, state: "installed" } }, trackingRevision)));
       card.append(actions);
       const details = this.node("details", ""); details.append(this.node("summary", "", "Installation details"));
       this.installationForm(details, unit); card.append(details); grid.append(card);

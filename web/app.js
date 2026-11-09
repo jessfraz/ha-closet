@@ -1,6 +1,7 @@
 "use strict";
 
 import { TrackingController } from "./tracking.js";
+import { AnalyticsController } from "./analytics.js";
 
 // The token belongs to this tab only. The JSON file, not this UI, owns the catalog.
 const byId = (id) => document.getElementById(id);
@@ -82,6 +83,11 @@ function applyLocation(url = navigationURL(), { refresh = false } = {}) {
   const itemId = url.searchParams.get("closet_item") || null;
   const filtersChanged = filterFields.some(([key]) => filters[key] !== appliedFilters[key]);
   const first = !locationInitialized;
+  const nextView = ["today", "analytics", "tags", "tracking-settings"].includes(url.searchParams.get("closet_view")) ? url.searchParams.get("closet_view") : "inventory";
+  const viewChanged = nextView !== view;
+  const days = ["30", "90", "365"].includes(url.searchParams.get("closet_days")) ? Number(url.searchParams.get("closet_days")) : 90;
+  const rangeChanged = days !== analytics.days;
+  analytics.setRange(days);
   if (first || filtersChanged) {
     appliedFilters = filters;
     restoreFilters(filters);
@@ -91,12 +97,13 @@ function applyLocation(url = navigationURL(), { refresh = false } = {}) {
   const itemChanged = itemId !== selectedItemId;
   selectedItemId = itemId;
   if (!system) return;
-  if (filtersChanged && view !== "inventory") selectView("inventory");
+  if (first || viewChanged) showView(nextView);
   if (first || filtersChanged || refresh) void loadInventory();
   if (first || itemChanged || refresh) void loadDetail(itemId);
+  if (view === "analytics" && (first || viewChanged || rangeChanged || refresh)) void analytics.load();
 }
 
-function navigate(filters, itemId, { replace = false } = {}) {
+function navigate(filters, itemId, { replace = false, nextView = view, days = analytics.days } = {}) {
   const url = navigationURL();
   for (const [key] of filterFields) {
     url.searchParams.delete(`closet_${key}`);
@@ -104,6 +111,10 @@ function navigate(filters, itemId, { replace = false } = {}) {
   }
   url.searchParams.delete("closet_item");
   if (itemId) url.searchParams.set("closet_item", itemId);
+  url.searchParams.delete("closet_view");
+  url.searchParams.delete("closet_days");
+  if (nextView !== "inventory") url.searchParams.set("closet_view", nextView);
+  if (nextView === "analytics") url.searchParams.set("closet_days", String(days));
   const queued = navigationHost !== window && pendingLocations.length > 0;
   if (url.href !== navigationURL().href || queued) {
     if (navigationHost === window) {
@@ -120,7 +131,7 @@ function navigate(filters, itemId, { replace = false } = {}) {
 function applyFilters() {
   const filters = Object.fromEntries(filterFields.map(([key, id]) => [key, key === "q" ? byId(id).value.trim() : byId(id).value]));
   const unchanged = filterFields.every(([key]) => filters[key] === appliedFilters[key]);
-  navigate(filters, null);
+  navigate(filters, null, { nextView: "inventory" });
   if (unchanged) void loadInventory();
 }
 
@@ -199,6 +210,7 @@ function errorMessage(error) {
     if (error.code === "tracking_revision_conflict") return "Tracking changed elsewhere. Review the refreshed state and make the change again.";
     if (error.code === "reader_capabilities_unavailable") return "Connect this reader and read its supported settings before requesting power or dwell changes.";
     if (error.code === "reader_cleanup_required") return "Disable the reader and wait for its settings to be restored before removing it or importing tracking data.";
+    if (["history_would_be_lost", "history_conflict", "coverage_history_conflict"].includes(error.code)) return "This backup would erase newer history. Use a current export or restore it to an empty installation.";
     if (error.code === "simulation_isolation") return "Simulator evidence cannot be used for live tracking.";
     if (error.code === "page_invalidated") return "The inventory changed while paging. Refresh to start from the current catalog.";
     if (error.status === 409) return "Another request is in progress or the inventory changed. Read the current state before trying again.";
@@ -278,7 +290,6 @@ function sourceLabel(item) {
 }
 
 function filterFromBadge(field, value, label) {
-  selectView("inventory");
   for (const [, id] of filterFields) byId(id).value = "";
   const select = byId(field);
   if (![...select.options].some((option) => option.value === value)) select.add(new Option(label, value));
@@ -292,7 +303,7 @@ function sourceTone(source) {
   return hash % 6;
 }
 
-function itemCard(item, compact = false) {
+function itemCard(item, compact = false, presentation = "card") {
   const card = element("article", compact ? "item-piece" : "item-card");
   card.dataset.catalogId = item.id;
   const badge = (field, value, label, accessibleLabel) => {
@@ -304,7 +315,7 @@ function itemCard(item, compact = false) {
     button.addEventListener("click", () => filterFromBadge(field, value, label));
     return button;
   };
-  card.append(photo(item));
+  card.append(photo(item, 0, presentation));
   if (item.brand) card.append(badge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
   const button = element("button", "item-open item-name", item.name);
   button.type = "button";
@@ -758,6 +769,7 @@ async function connect() {
   byId("app").hidden = false;
   byId("refresh").hidden = false;
   byId("app-footer").hidden = false;
+  byId("analytics-tab").hidden = data.role !== "owner";
   byId("app-version").textContent = data.version;
   byId("service-status").textContent = "Connected";
   applyLocation(navigationURL(), { refresh: true });
@@ -765,11 +777,16 @@ async function connect() {
 }
 
 function selectView(next) {
+  navigate(appliedFilters, null, { nextView: next });
+}
+
+function showView(next) {
   todayRevision += 1;
+  analytics.suspend();
   stopAutoPaging();
   view = next;
   if (view !== "inventory" && listAutomatic) listAbort?.abort();
-  for (const name of ["inventory", "today", "tags", "tracking-settings"]) {
+  for (const name of ["inventory", "today", "analytics", "tags", "tracking-settings"]) {
     byId(name).hidden = view !== name;
     byId(`${name}-tab`).setAttribute("aria-pressed", String(view === name));
   }
@@ -789,12 +806,21 @@ const tracking = new TrackingController({
     knownTrackingRevision = revision ?? null;
     if (changed && view === "inventory" && ["ready_to_wear", "status", "area"].some((key) => appliedFilters[key])) void loadInventory();
     for (const card of document.querySelectorAll("[data-catalog-id]")) {
+      if (card.closest(".analytics-ranked")) continue;
       card.querySelector(":scope > .tracking-pill")?.remove();
       const item = items.get(card.dataset.catalogId);
       const badge = item && tracking.badge(item);
       if (badge) card.insertBefore(badge, card.querySelector(".item-badges"));
     }
   },
+});
+
+const analytics = new AnalyticsController({
+  request, element, errorMessage, role: () => system?.role,
+  card: (item) => { items.set(item.id, item); return itemCard(item, true, "thumbnail"); },
+  changeRange: (days) => navigate(appliedFilters, null, { nextView: "analytics", days }),
+  openTracking: () => selectView("tracking-settings"),
+  active: () => view === "analytics" && !document.hidden,
 });
 
 byId("login").addEventListener("submit", async (event) => {
@@ -805,6 +831,7 @@ byId("login").addEventListener("submit", async (event) => {
 byId("refresh").addEventListener("click", async () => {
   items.clear();
   if (view === "today") { pollDeadline = 0; await loadToday(); }
+  else if (view === "analytics") await analytics.load();
   else if (view === "inventory") await loadInventory();
   else { tracking.catalogFacets = null; tracking.workspaceKey = null; await tracking.refresh(); }
   if (selectedItemId) void loadDetail(selectedItemId);
@@ -817,6 +844,7 @@ for (const id of ["ready", "tracking-status", "tracking-area"]) byId(id).addEven
 byId("load-more").addEventListener("click", () => void loadInventory(true));
 byId("inventory-tab").addEventListener("click", () => selectView("inventory"));
 byId("today-tab").addEventListener("click", () => selectView("today"));
+byId("analytics-tab").addEventListener("click", () => selectView("analytics"));
 for (const name of ["tags", "tracking-settings"]) byId(`${name}-tab`).addEventListener("click", () => selectView(name));
 byId("close-detail").addEventListener("click", closeDetail);
 byId("detail").addEventListener("cancel", (event) => { event.preventDefault(); closeDetail(); });
@@ -825,13 +853,14 @@ byId("generate").addEventListener("change", () => { todayDraft = true; byId("tod
 document.addEventListener("visibilitychange", () => {
   clearTimeout(pollTimer);
   stopAutoPaging();
-  if (document.hidden) tracking.suspend();
+  if (document.hidden) { tracking.suspend(); analytics.suspend(); }
   else if (system) void tracking.refresh();
   if (document.hidden && listAutomatic) listAbort?.abort();
   if (!document.hidden && view === "today" && system) void loadToday();
+  if (!document.hidden && view === "analytics" && system) void analytics.load();
   if (!document.hidden && view === "inventory") observeNextPage();
 });
-window.addEventListener("pagehide", () => { tracking.suspend(); clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); detailAbort?.abort(); detailRevision += 1; stopNavigation(); });
+window.addEventListener("pagehide", () => { tracking.suspend(); analytics.suspend(); clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); detailAbort?.abort(); detailRevision += 1; stopNavigation(); });
 window.addEventListener("pageshow", () => { startNavigation(); if (system) void tracking.refresh(); if (system) applyLocation(navigationURL(), { refresh: true }); observeNextPage(); });
 startNavigation();
 connect().catch((error) => { if (error instanceof APIError && error.status === 401) byId("login").hidden = false; else notice(errorMessage(error)); });

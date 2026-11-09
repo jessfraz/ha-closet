@@ -213,6 +213,94 @@ fn toml_validation_resolves_registries_and_asset_bytes_before_credentials() {
 }
 
 #[test]
+fn offline_image_delivery_policy_has_locked_byte_identity() {
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Images {
+        images: usize,
+        bytes: u64,
+        delivery_policy: String,
+        upload_bytes: u64,
+        upload_fingerprint: closet::images::ImageSha,
+    }
+    #[derive(Deserialize)]
+    struct Report {
+        images: Images,
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/image-policy");
+    let output = success::<Report>(
+        call(
+            &[
+                "inventory",
+                "validate",
+                "--input",
+                root.join("catalog.json").to_str().unwrap(),
+                "--image-manifest",
+                root.join("manifest.json").to_str().unwrap(),
+                "--images",
+                root.join("images").to_str().unwrap(),
+            ],
+            b"",
+            &[],
+        ),
+        None,
+    );
+    let expected: Images =
+        serde_json::from_slice(include_bytes!("fixtures/image-policy/expected.json")).unwrap();
+    assert_eq!(output.data.images, expected);
+}
+
+#[test]
+fn corrupt_image_decode_fails_validation_and_sync_before_any_connection() {
+    use closet::images::ImageSha;
+    let directory = tempfile::tempdir().unwrap();
+    let input = toml_source::write(directory.path());
+    let images = directory.path().join("wardrobe-images");
+    let path = std::fs::read_dir(&images)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut bytes = std::fs::read(&path).unwrap();
+    let original = ImageSha::digest(&bytes);
+    bytes[45] ^= 0xff;
+    let changed = ImageSha::digest(&bytes);
+    std::fs::remove_file(path).unwrap();
+    std::fs::write(images.join(format!("{changed}.png")), bytes).unwrap();
+    let wardrobe = std::fs::read_to_string(&input)
+        .unwrap()
+        .replace(original.as_str(), changed.as_str());
+    std::fs::write(&input, wardrobe).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    for command in [
+        vec!["inventory", "validate"],
+        vec!["inventory", "sync", "--dry-run"],
+        vec!["inventory", "sync"],
+    ] {
+        let mut args = command;
+        args.extend(["--input", input.to_str().unwrap()]);
+        let diagnostic = failure(
+            call(&args, b"", &[("CLOSET_API_URL", &origin)]),
+            None,
+            "invalid_png_data",
+        );
+        assert!(
+            diagnostic
+                .errors
+                .unwrap()
+                .iter()
+                .any(|error| error.code == "invalid_png_data")
+        );
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
 fn toml_errors_are_offline_private_and_precede_credential_resolution() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();

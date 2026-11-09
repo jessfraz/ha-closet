@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- Add an Analytics page with wear trends, most-worn pieces and overlooked picks.
+  Untracked time and reader outages do not count as neglect.
+- Optimize local image uploads during validation and sync, with bounded sizes,
+  color-aware resizing and unchanged source files.
+- Protect newly referenced photos when resuming an interrupted cleanup, and
+  reconcile earlier upload claims before changing delivery policy.
+- Exclude mistaken tag associations from analytics without deleting the audit.
+- Retain garment history across tracking imports and record restored states.
+- Keep verified coverage intervals so later wear statistics can exclude tracking
+  gaps, without storing every radio read.
+- Use generic installation wording and the `queued` installation state. Existing
+  backups remain readable; API clients should update for the canonical value.
+
 ## 0.2.0
 
 - Pair UHF tags with physical copies of the existing inventory, using photos

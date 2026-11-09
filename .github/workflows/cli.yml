@@ -59,6 +59,17 @@ jobs:
           "target/$TARGET/release/ha-closet" inventory validate --input config/wardrobe.example/wardrobe.toml
           "target/$TARGET/release/ha-closet" tracking config validate --input config/tracking.example.json
           "target/$TARGET/release/ha-closet" tracking replay --input config/tracking-replay.example.json
+          "target/$TARGET/release/ha-closet" inventory validate \
+            --input tests/fixtures/image-policy/catalog.json \
+            --image-manifest tests/fixtures/image-policy/manifest.json \
+            --images tests/fixtures/image-policy/images > "$RUNNER_TEMP/image-policy.json"
+          python3 - "$RUNNER_TEMP/image-policy.json" <<'PY'
+          import json, sys
+          from pathlib import Path
+          actual = json.loads(Path(sys.argv[1]).read_text())["data"]["images"]
+          expected = json.loads(Path("tests/fixtures/image-policy/expected.json").read_text())
+          assert actual == expected, (actual, expected)
+          PY
       - name: Package
         env:
           TARGET: ${{ matrix.target }}

@@ -406,6 +406,29 @@ async fn single_misses_strays_ambiguity_and_bad_coverage_never_invent_movement()
             .iter()
             .any(|d| d.reason == DecisionReason::AmbiguousEvidence)
     );
+    let ambiguity = rig
+        .store
+        .tracking_history(Some(unit), None, 100)
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .find(|event| event.reason == DecisionReason::AmbiguousEvidence)
+        .unwrap();
+    assert!(ambiguity.automatic);
+    assert!(
+        ambiguity
+            .evidence
+            .iter()
+            .any(|reference| reference.port_id == id("port-1"))
+    );
+    assert!(
+        ambiguity
+            .evidence
+            .iter()
+            .any(|reference| reference.port_id == id("port-3"))
+    );
+    assert!(ambiguity.evidence.len() <= 33);
     rig.absent(3_000, false).await;
     assert_eq!(rig.unit(unit).await.status, UnitStatus::NeedsLaundry);
     assert!(!rig.snapshot().await.health.absence_coverage_healthy);
@@ -1006,6 +1029,17 @@ async fn replacement_and_undo_keep_history_and_old_epcs_cannot_drive_the_unit() 
             .any(|b| b.epc == id("0001") && b.retired_at.is_some())
     );
     let event = selected.event_ids[0];
+    let mut missing_retired = export.clone();
+    missing_retired
+        .bindings
+        .retain(|binding| binding.retired_at.is_none());
+    assert!(matches!(
+        rig.command(TrackingCommand::Import {
+            data: Box::new(missing_retired)
+        })
+        .await,
+        Err(TrackingError::Conflict("history_would_be_lost"))
+    ));
     rig.command(TrackingCommand::Undo {
         event_id: event,
         note: "Correct a fictional pairing mistake".into(),
@@ -1676,6 +1710,443 @@ async fn known_only_reader_ownership_is_not_discarded_and_exact_release_clears_i
             .unwrap()
             .reader_operations
             .is_empty()
+    );
+    rig.store.close().await;
+}
+
+#[tokio::test]
+async fn importing_an_older_or_altered_export_cannot_erase_later_garment_history() {
+    let mut rig = Rig::new(1).await;
+    let unit = rig.snapshot().await.units[0].id;
+    rig.command(TrackingCommand::Correct {
+        unit_id: unit,
+        status: UnitStatus::InWash,
+        note: "First manual fact".into(),
+    })
+    .await
+    .unwrap();
+    let older = rig.store.tracking_export(t(rig.now)).await.unwrap();
+    rig.now += 1;
+    rig.command(TrackingCommand::Correct {
+        unit_id: unit,
+        status: UnitStatus::AtCleaners,
+        note: "Later manual fact".into(),
+    })
+    .await
+    .unwrap();
+    let before = rig.store.tracking_export(t(rig.now)).await.unwrap();
+    assert!(matches!(
+        rig.command(TrackingCommand::Import {
+            data: Box::new(older)
+        })
+        .await,
+        Err(TrackingError::Conflict("history_would_be_lost"))
+    ));
+    let mut altered = before.clone();
+    altered.history.last_mut().unwrap().note = Some("Rewritten fact".into());
+    assert!(matches!(
+        rig.command(TrackingCommand::Import {
+            data: Box::new(altered)
+        })
+        .await,
+        Err(TrackingError::Conflict("history_conflict"))
+    ));
+    let after = rig.store.tracking_export(t(rig.now)).await.unwrap();
+    assert_eq!(
+        serde_json::to_vec(&after.history).unwrap(),
+        serde_json::to_vec(&before.history).unwrap()
+    );
+    assert_eq!(after.units[0].unit.status, UnitStatus::AtCleaners);
+    rig.store.close().await;
+}
+
+#[tokio::test]
+async fn coverage_checkpoints_are_bounded_and_loss_config_import_gaps_preserve_history() {
+    let mut rig = Rig::new(1).await;
+    let revision = rig.snapshot().await.tracking_revision;
+    rig.absent(59_900, true).await;
+    let first = rig
+        .store
+        .tracking_coverage(None, 10)
+        .await
+        .unwrap()
+        .intervals
+        .remove(0);
+    assert_eq!(first.started_at, t(100));
+    assert_eq!(first.verified_through, t(100));
+    assert_eq!(first.ended_at, None);
+    rig.absent(300, true).await;
+    let checkpoint = rig
+        .store
+        .tracking_coverage(None, 10)
+        .await
+        .unwrap()
+        .intervals
+        .remove(0);
+    assert_eq!(checkpoint.verified_through, t(60_100));
+    assert_eq!(rig.snapshot().await.tracking_revision, revision);
+    rig.now += 100;
+    rig.batch(ObservationPurpose::Inventory, None, vec![], false)
+        .await
+        .unwrap();
+    let ended = rig
+        .store
+        .tracking_coverage(None, 10)
+        .await
+        .unwrap()
+        .intervals
+        .remove(0);
+    assert_eq!(ended.verified_through, t(60_200));
+    assert_eq!(ended.ended_at, Some(t(60_200)));
+    assert_eq!(
+        ended.end_reason,
+        Some(CoverageEndReason::CoverageUnavailable)
+    );
+    assert_eq!(rig.snapshot().await.tracking_revision, revision);
+    rig.absent(200, true).await;
+    let second = rig.store.tracking_coverage(None, 1).await.unwrap();
+    assert_eq!(second.intervals.len(), 1);
+    assert_eq!(second.next_before, Some(second.intervals[0].id));
+    assert!(second.intervals[0].started_at > ended.ended_at.unwrap());
+    let second_start = second.intervals[0].started_at;
+    let mut cfg = config();
+    cfg.readers[0].label = "Renamed fixture reader".into();
+    rig.command(TrackingCommand::Configure { config: cfg })
+        .await
+        .unwrap();
+    let page = rig.store.tracking_coverage(None, 10).await.unwrap();
+    assert_eq!(page.intervals[0].started_at, second_start);
+    assert_eq!(page.intervals[0].ended_at, Some(t(rig.now)));
+    assert_eq!(
+        page.intervals[0].end_reason,
+        Some(CoverageEndReason::ConfigurationChanged)
+    );
+    rig.absent(300, true).await;
+    let open_export = rig.store.tracking_export(t(rig.now)).await.unwrap();
+    rig.absent(100, true).await;
+    rig.command(TrackingCommand::Import {
+        data: Box::new(open_export),
+    })
+    .await
+    .unwrap();
+    let page = rig.store.tracking_coverage(None, 10).await.unwrap();
+    assert_eq!(
+        page.intervals[0].end_reason,
+        Some(CoverageEndReason::Import)
+    );
+    assert_eq!(page.intervals[0].ended_at, Some(t(rig.now)));
+    let export = rig.store.tracking_export(t(rig.now)).await.unwrap();
+    let mut legacy = export.clone();
+    legacy.coverage.clear();
+    rig.command(TrackingCommand::Import {
+        data: Box::new(legacy),
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        rig.store
+            .tracking_coverage(None, 10)
+            .await
+            .unwrap()
+            .intervals,
+        page.intervals
+    );
+    rig.command(TrackingCommand::Import {
+        data: Box::new(export),
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        rig.store
+            .tracking_coverage(None, 10)
+            .await
+            .unwrap()
+            .intervals,
+        page.intervals
+    );
+    let mut conflicting = rig.store.tracking_export(t(rig.now)).await.unwrap();
+    conflicting.coverage[0].started_at += Duration::milliseconds(1);
+    assert!(matches!(
+        rig.command(TrackingCommand::Import {
+            data: Box::new(conflicting)
+        })
+        .await,
+        Err(TrackingError::Conflict("coverage_history_conflict"))
+    ));
+    assert_eq!(
+        rig.store
+            .tracking_coverage(None, 10)
+            .await
+            .unwrap()
+            .intervals,
+        page.intervals
+    );
+    assert!(matches!(
+        rig.store.tracking_coverage(None, 0).await,
+        Err(TrackingError::Invalid {
+            code: "invalid_history_page",
+            ..
+        })
+    ));
+    rig.store.close().await;
+}
+
+#[tokio::test]
+async fn same_status_area_movement_and_manual_import_state_changes_are_audited() {
+    let mut rig = Rig::new(1).await;
+    let unit = rig.snapshot().await.units[0].id;
+    let mut cfg = config();
+    cfg.areas.push(AreaConfig {
+        id: id("second-closet"),
+        label: "Second fictional closet".into(),
+        kind: AreaKind::Closet,
+        enabled: true,
+        thresholds: AreaThresholds::default(),
+    });
+    cfg.ports.push(PortConfig {
+        id: id("port-7"),
+        reader_id: id("reader"),
+        antenna: 7,
+        area_id: Some(id("second-closet")),
+        role: PortRole::Monitor,
+        enabled: true,
+        required_for_absence: false,
+        commissioned: true,
+        transmit_power_cdbm: None,
+        dwell_ms: None,
+    });
+    rig.command(TrackingCommand::Configure { config: cfg })
+        .await
+        .unwrap();
+    rig.batch(ObservationPurpose::Inventory, None, vec![], true)
+        .await
+        .unwrap();
+    rig.bind(unit, "0001").await;
+    rig.area("0001", 1).await;
+    rig.area("0001", 7).await;
+    let history = rig
+        .store
+        .tracking_history(Some(unit), None, 100)
+        .await
+        .unwrap();
+    let movement = history
+        .events
+        .iter()
+        .find(|event| {
+            event.reason == DecisionReason::StableArea
+                && event.after.unit.current_area == Some(id("second-closet"))
+        })
+        .unwrap();
+    assert_eq!(
+        movement.before.as_ref().unwrap().unit.status,
+        UnitStatus::CleanReady
+    );
+    assert_eq!(movement.after.unit.status, UnitStatus::CleanReady);
+    assert_eq!(
+        movement.before.as_ref().unwrap().unit.current_area,
+        Some(id("closet"))
+    );
+    let mut export = rig.store.tracking_export(t(rig.now)).await.unwrap();
+    export.units[0].unit.status = UnitStatus::InWash;
+    export.units[0].unit.current_area = None;
+    rig.command(TrackingCommand::Import {
+        data: Box::new(export),
+    })
+    .await
+    .unwrap();
+    let after = rig
+        .store
+        .tracking_history(Some(unit), None, 100)
+        .await
+        .unwrap();
+    let imported = &after.events[0];
+    assert!(matches!(imported.kind, HistoryKind::Import));
+    assert_eq!(imported.reason, DecisionReason::Import);
+    assert_eq!(imported.actor, "fixture-operator");
+    assert!(!imported.automatic);
+    assert_eq!(
+        imported.before.as_ref().unwrap().unit.status,
+        UnitStatus::CleanReady
+    );
+    assert_eq!(imported.after.unit.status, UnitStatus::InWash);
+    assert_eq!(after.events.len(), history.events.len() + 1);
+    rig.store.close().await;
+}
+
+#[tokio::test]
+async fn untouched_allocations_from_the_same_store_cannot_bypass_history_retention() {
+    let store = Store::open_simulator(t(0)).await.unwrap();
+    store
+        .sync_at(
+            SyncRequest {
+                items: vec![catalog(1)],
+                dry_run: false,
+                allow_empty: false,
+            },
+            Some(0),
+            "fixture",
+            Some("first"),
+            t(0),
+        )
+        .await
+        .unwrap();
+    let older = store.tracking_export(t(0)).await.unwrap();
+    store
+        .sync_at(
+            SyncRequest {
+                items: vec![catalog(2)],
+                dry_run: false,
+                allow_empty: false,
+            },
+            Some(1),
+            "fixture",
+            Some("second"),
+            t(1),
+        )
+        .await
+        .unwrap();
+    let before = store.tracking_export(t(1)).await.unwrap();
+    let revision = before.tracking_revision;
+    assert!(matches!(
+        store
+            .tracking_command(
+                "fixture",
+                "restore-older",
+                revision,
+                TrackingCommand::Import {
+                    data: Box::new(older)
+                },
+                t(1)
+            )
+            .await,
+        Err(TrackingError::Conflict("history_would_be_lost"))
+    ));
+    let after = store.tracking_export(t(1)).await.unwrap();
+    assert_eq!(after.history, before.history);
+    assert_eq!(after.units, before.units);
+    store.close().await;
+}
+
+#[tokio::test]
+async fn mistaken_pairing_is_a_typed_audit_marker_and_ordinary_removal_preserves_its_meaning() {
+    for mistaken in [false, true] {
+        let mut rig = Rig::new(1).await;
+        let unit = rig.snapshot().await.units[0].id;
+        rig.bind(unit, "0001").await;
+        rig.area("0001", 1).await;
+        rig.absent(1_100, true).await;
+        let before = rig.store.tracking_export(t(rig.now)).await.unwrap();
+        let removal = rig
+            .command(TrackingCommand::Unbind {
+                unit_id: unit,
+                note: "Fictional tag removal".into(),
+                mistaken,
+            })
+            .await
+            .unwrap();
+        let export = rig.store.tracking_export(t(rig.now)).await.unwrap();
+        let event = export
+            .history
+            .iter()
+            .find(|event| event.id == removal.event_ids[0])
+            .unwrap();
+        assert!(matches!(event.kind, HistoryKind::Unbind));
+        assert!(!event.automatic);
+        assert_eq!(event.actor, "fixture-operator");
+        assert_eq!(
+            event.reason,
+            if mistaken {
+                DecisionReason::MistakenPairing
+            } else {
+                DecisionReason::TagUnbound
+            }
+        );
+        assert_eq!(
+            export.bindings[0].retirement,
+            Some(if mistaken {
+                BindingRetirement::MistakenPairing
+            } else {
+                BindingRetirement::Unbound
+            })
+        );
+        assert_eq!(export.history[..before.history.len()], before.history);
+        assert!(!export.units[0].unit.has_binding);
+        if mistaken {
+            rig.command(TrackingCommand::Undo {
+                event_id: event.id,
+                note: "Retract the mistaken-pairing classification".into(),
+            })
+            .await
+            .unwrap();
+            let restored = rig.store.tracking_export(t(rig.now)).await.unwrap();
+            assert!(restored.units[0].unit.has_binding);
+            assert_eq!(
+                restored.bindings[0].retirement,
+                Some(BindingRetirement::MistakenPairing)
+            );
+            assert_eq!(restored.bindings[1].retired_at, None);
+            assert!(matches!(
+                restored.history.last().unwrap().kind,
+                HistoryKind::Undo
+            ));
+            assert_eq!(
+                restored
+                    .history
+                    .last()
+                    .unwrap()
+                    .before
+                    .as_ref()
+                    .unwrap()
+                    .unit
+                    .last_event_id,
+                Some(event.id)
+            );
+        }
+        rig.store.close().await;
+    }
+}
+
+#[tokio::test]
+async fn legacy_unbind_body_keeps_its_canonical_hash_and_idempotent_replay() {
+    #[derive(serde::Serialize)]
+    struct LegacyUnbind<'a> {
+        r#type: &'a str,
+        unit_id: UnitId,
+        note: &'a str,
+    }
+    let mut rig = Rig::new(1).await;
+    let unit = rig.snapshot().await.units[0].id;
+    rig.bind(unit, "0001").await;
+    let legacy = serde_json::to_vec(&LegacyUnbind {
+        r#type: "unbind",
+        unit_id: unit,
+        note: "Ordinary failed-tag removal",
+    })
+    .unwrap();
+    let command: TrackingCommand = serde_json::from_slice(&legacy).unwrap();
+    assert!(matches!(
+        command,
+        TrackingCommand::Unbind {
+            mistaken: false,
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_vec(&command).unwrap(), legacy);
+    let revision = rig.snapshot().await.tracking_revision;
+    let first = rig
+        .store
+        .tracking_command("legacy-operator", "same-key", revision, command, t(rig.now))
+        .await
+        .unwrap();
+    let replay: TrackingCommand = serde_json::from_slice(&legacy).unwrap();
+    let replay = rig
+        .store
+        .tracking_command("legacy-operator", "same-key", 0, replay, t(rig.now))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&first).unwrap(),
+        serde_json::to_vec(&replay).unwrap()
     );
     rig.store.close().await;
 }

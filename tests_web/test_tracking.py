@@ -375,17 +375,15 @@ async def test_reader_settings_save_and_optional_installation_metadata(
                 "button", name="Installation queue", exact=True
             ).click()
             await page.get_by_text("Installation details", exact=True).click()
-            await page.get_by_label("Installation", exact=True).select_option(
-                "seamstress_queued"
-            )
+            await page.get_by_label("Installation", exact=True).select_option("queued")
             await action(page, "Save installation")
             await expect(page.get_by_label("Installation", exact=True)).to_have_value(
-                "seamstress_queued"
+                "queued"
             )
             changed = units(await snapshot(rust_backend))[0]
             installation = changed["installation"]
             assert isinstance(installation, dict)
-            assert installation["state"] == "seamstress_queued"
+            assert installation["state"] == "queued"
             assert (
                 installation["tag_model"] is None and installation["placement"] is None
             )
@@ -463,7 +461,17 @@ async def test_replace_unbind_and_undo_keep_physical_piece_identity(
             await page.get_by_label("Reason for this change", exact=True).fill(
                 "Fictional mistaken pairing"
             )
-            await action(page, "Confirm unbind")
+            async with page.expect_request(
+                lambda request: (
+                    request.method == "POST"
+                    and request.url.endswith("/v1/tracking/commands")
+                )
+            ) as unbinding:
+                await action(page, "Confirm unbind")
+            body = (await unbinding.value).post_data
+            assert body is not None
+            payload: JsonObjectType = json.loads(body)
+            assert payload["type"] == "unbind" and payload["mistaken"] is True
             await expect(
                 page.get_by_role("button", name="Enroll tag", exact=True)
             ).to_be_visible()

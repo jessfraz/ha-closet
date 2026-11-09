@@ -1906,6 +1906,10 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0006_tracking_history.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
         // A fresh 0.1.6 store consumed the ownership marker before use.
         sqlx::query("DROP TABLE ownership_removal_pending")
             .execute(&pool)
@@ -2028,6 +2032,7 @@ mod tests {
             .await
             .unwrap();
         for query in [
+            "DROP TABLE tracking_coverage",
             "DROP TABLE tracking_bindings",
             "DROP TABLE tracking_history",
             "DROP TABLE tracking_sessions",

@@ -36,9 +36,12 @@ use crate::{
     },
     store::{GenerationBasis, Store, StoreError},
     today::TodayConfig,
-    tracking::models::{
-        CommandResult, HistoryPage, IngestResult, ObservationBatch, TrackingCommand, TrackingError,
-        TrackingExport, TrackingSnapshot, UnitId,
+    tracking::{
+        analytics::AnalyticsReport,
+        models::{
+            CommandResult, CoverageHistoryPage, HistoryPage, IngestResult, ObservationBatch,
+            TrackingCommand, TrackingError, TrackingExport, TrackingSnapshot, UnitId,
+        },
     },
 };
 
@@ -778,6 +781,56 @@ struct UnitPath {
     id: UnitId,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AnalyticsQuery {
+    days: Option<u16>,
+    pick_seed: Option<u64>,
+}
+
+/// Observed wear and eligible overlooked pieces, derived from retained evidence.
+#[endpoint {method=GET,path="/v1/tracking/analytics",tags=["tracking"]}]
+async fn tracking_analytics(
+    request: RequestContext<Arc<Context>>,
+    query: Query<AnalyticsQuery>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<AnalyticsReport>, PrivateHeaders>, HttpError> {
+    administrator(&request)?;
+    let query = query.into_inner();
+    let context = request.context();
+    let timezone = context
+        .timezone()
+        .parse()
+        .map_err(|_| HttpError::for_internal_error("invalid_timezone".into()))?;
+    let report = context
+        .store
+        .tracking_analytics_clocked(
+            query.days.unwrap_or(90),
+            query.pick_seed.unwrap_or(0),
+            timezone,
+            || context.clock.now(),
+        )
+        .await
+        .map_err(tracking_error)?;
+    Ok(private(report))
+}
+
+/// Verified coverage intervals distinguish observed time from tracking gaps.
+#[endpoint {method=GET,path="/v1/tracking/coverage",tags=["tracking"]}]
+async fn tracking_coverage(
+    request: RequestContext<Arc<Context>>,
+    query: Query<HistoryQuery>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<CoverageHistoryPage>, PrivateHeaders>, HttpError> {
+    administrator(&request)?;
+    let query = query.into_inner();
+    let coverage = request
+        .context()
+        .store
+        .tracking_coverage(query.before, query.limit.unwrap_or(50))
+        .await
+        .map_err(tracking_error)?;
+    Ok(private(coverage))
+}
+
 /// Audit history includes bindings; routine HA entities do not expose EPCs.
 #[endpoint {method=GET,path="/v1/tracking/history",tags=["tracking"]}]
 async fn tracking_history(
@@ -903,6 +956,16 @@ async fn tracking_script(
         "text/javascript; charset=utf-8",
     )
 }
+#[endpoint {method=GET,path="/analytics.js",tags=["web"]}]
+async fn analytics_script(
+    request: RequestContext<Arc<Context>>,
+) -> Result<Response<Body>, HttpError> {
+    ingress_access(&request)?;
+    static_response(
+        include_str!("../web/analytics.js").into(),
+        "text/javascript; charset=utf-8",
+    )
+}
 #[endpoint {method=GET,path="/brand.svg",tags=["web"]}]
 async fn brand(request: RequestContext<Arc<Context>>) -> Result<Response<Body>, HttpError> {
     ingress_access(&request)?;
@@ -930,7 +993,7 @@ async fn schema(request: RequestContext<Arc<Context>>) -> Result<Response<Body>,
 
 pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     let mut api = ApiDescription::new();
-    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 28] = [
+    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 31] = [
         health.into(),
         system.into(),
         items_list.into(),
@@ -948,6 +1011,8 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
         tracking_projection.into(),
         tracking_command.into(),
         tracking_observations.into(),
+        tracking_coverage.into(),
+        tracking_analytics.into(),
         tracking_history.into(),
         tracking_unit_history.into(),
         tracking_export.into(),
@@ -955,6 +1020,7 @@ pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
         detail.into(),
         script.into(),
         tracking_script.into(),
+        analytics_script.into(),
         style.into(),
         brand.into(),
         brand_dark.into(),

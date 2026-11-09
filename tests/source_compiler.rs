@@ -38,10 +38,10 @@ fn urls(source: &CompiledCatalog) -> BTreeMap<ImageSha, url::Url> {
         .iter()
         .map(|asset| {
             (
-                asset.sha256.clone(),
+                asset.source().sha256.clone(),
                 format!(
                     "https://ha.example.invalid/api/image/serve/{}/original",
-                    &asset.sha256.as_str()[..32]
+                    &asset.source().sha256.as_str()[..32]
                 )
                 .parse()
                 .unwrap(),
@@ -83,9 +83,9 @@ async fn real_producer_preserves_purchases_gallery_facts_and_service_retry_histo
     let source = CompiledCatalog::load(&path).unwrap();
     assert_eq!(source.item_count(), 2);
     assert_eq!(source.assets().len(), 1);
-    assert_eq!(source.assets()[0].slots.len(), 2);
-    assert_eq!(source.assets()[0].slots[0].index, 0);
-    assert_eq!(source.assets()[0].slots[1].index, 1);
+    assert_eq!(source.assets()[0].source().slots.len(), 2);
+    assert_eq!(source.assets()[0].source().slots[0].index, 0);
+    assert_eq!(source.assets()[0].source().slots[1].index, 1);
     assert!(source.materialize(&BTreeMap::new()).is_err()); // No fake URL is invented for a new asset.
     let projected = source.materialize(&urls(&source)).unwrap();
     let items = projected.items();
@@ -171,7 +171,7 @@ fn source_identity_is_format_independent_but_every_input_byte_is_frozen() {
             .source_hash
     );
     let asset = &after.assets()[0];
-    fs::write(&asset.path, b"changed").unwrap();
+    fs::write(&asset.source().path, b"changed").unwrap();
     assert_eq!(
         after.verify_unchanged().unwrap_err().code,
         "catalog_source_changed"
@@ -653,7 +653,7 @@ fn empty_override_is_rejected_and_valid_override_provenance_is_preserved() {
     produce(&path, &authored);
     let source = CompiledCatalog::load(&path).unwrap();
     assert!(!source.items()[0].images.is_empty());
-    assert_eq!(source.assets()[0].slots.len(), 2);
+    assert_eq!(source.assets()[0].source().slots.len(), 2);
     let projected = source.materialize(&urls(&source)).unwrap();
     assert_eq!(
         projected.items()[1].images[1].kind,
@@ -682,7 +682,7 @@ fn asset_directory_is_bounded_and_never_follows_symlinks_or_accepts_hidden_addit
     #[cfg(unix)]
     {
         let source = CompiledCatalog::load(&path).unwrap();
-        let asset = &source.assets()[0].path;
+        let asset = &source.assets()[0].source().path;
         fs::remove_file(asset).unwrap();
         std::os::unix::fs::symlink(directory.path().join("brands.toml"), asset).unwrap();
         assert!(CompiledCatalog::load(&path).is_err());

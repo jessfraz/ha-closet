@@ -4,7 +4,10 @@ mod semantics;
 pub mod types;
 use crate::source::types::*;
 use crate::{
-    images::{ImageSha, ImageSlot, LocalImage, MAX_IMAGE_BYTES, MAX_IMAGE_TOTAL_BYTES, MAX_IMAGES},
+    images::{
+        ImageSha, ImageSlot, LocalImage, MAX_IMAGE_BYTES, MAX_IMAGE_TOTAL_BYTES, MAX_IMAGES,
+        PreparedImage, prepare_images,
+    },
     models::{CatalogItem, ImageReference, Price, Shop, ValidatedCatalog, validate_catalog},
 };
 use icu_casemap::CaseMapper;
@@ -378,7 +381,7 @@ fn projection_size(items: &[CompiledItem], origin: Option<&url::Url>) -> Result<
 }
 pub struct CompiledCatalog {
     items: Vec<CompiledItem>,
-    assets: Vec<LocalImage>,
+    assets: Vec<PreparedImage>,
     source_hash: String,
     read_set: ReadSet,
     brand_names: BTreeMap<String, BrandId>,
@@ -401,7 +404,7 @@ impl CompiledCatalog {
     pub fn items(&self) -> &[CompiledItem] {
         &self.items
     }
-    pub fn assets(&self) -> &[LocalImage] {
+    pub fn assets(&self) -> &[PreparedImage] {
         &self.assets
     }
     pub fn read_set(&self) -> &ReadSet {
@@ -555,9 +558,6 @@ impl CompiledCatalog {
             });
         }
         for (index, asset) in all_assets.iter().enumerate() {
-            asset
-                .read_verified()
-                .map_err(|error| SourceError::single(format!("assets[{index}]"), error.0))?;
             files.push(FileStamp {
                 path: asset.path.clone(),
                 hash: asset.sha256.clone(),
@@ -565,6 +565,8 @@ impl CompiledCatalog {
                 field: format!("assets[{index}]"),
             });
         }
+        let all_assets =
+            prepare_images(all_assets).map_err(|error| SourceError::single("assets", error.0))?;
         wardrobe.styles.sort_by(|a, b| a.id.cmp(&b.id));
         wardrobe.variants.sort_by(|a, b| a.id.cmp(&b.id));
         wardrobe.inventory.sort_by(|a, b| a.id.cmp(&b.id));
@@ -599,7 +601,7 @@ impl CompiledCatalog {
             items,
             assets: all_assets
                 .into_iter()
-                .filter(|asset| !asset.slots.is_empty())
+                .filter(|asset| !asset.source().slots.is_empty())
                 .collect(),
             source_hash,
             read_set,

@@ -466,7 +466,8 @@ pub struct TrackingHealth {
 pub enum InstallationState {
     #[default]
     NeedsTag,
-    SeamstressQueued,
+    #[serde(alias = "seamstress_queued")]
+    Queued,
     Installed,
     Exempt,
 }
@@ -657,6 +658,8 @@ pub enum TrackingCommand {
     Unbind {
         unit_id: UnitId,
         note: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mistaken: bool,
     },
     Undo {
         event_id: i64,
@@ -729,6 +732,7 @@ pub enum DecisionReason {
     TrackingPause,
     Retirement,
     TagUnbound,
+    MistakenPairing,
     TagBound,
     TagReplaced,
     Undo,
@@ -742,6 +746,7 @@ pub enum DecisionReason {
     InvalidClock,
     EnrollmentIsolation,
     InstallationUpdate,
+    Import,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -793,7 +798,7 @@ pub struct TrackingDiagnostics {
     pub decisions: Vec<DecisionDiagnostic>,
     pub faults: Vec<FaultDiagnostic>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryKind {
     Baseline,
@@ -809,8 +814,9 @@ pub enum HistoryKind {
     Archive,
     Restore,
     QuantityReconciliation,
+    Import,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryEvent {
     pub id: i64,
@@ -840,11 +846,49 @@ pub struct StoredUnit {
     pub epc: Option<Epc>,
     pub last_confirmed_kind: Option<AreaKind>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageEndReason {
+    CoverageUnavailable,
+    Restart,
+    ConfigurationChanged,
+    TrackingDisabled,
+    Import,
+}
+impl CoverageEndReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CoverageUnavailable => "coverage_unavailable",
+            Self::Restart => "restart",
+            Self::ConfigurationChanged => "configuration_changed",
+            Self::TrackingDisabled => "tracking_disabled",
+            Self::Import => "import",
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageInterval {
+    pub id: i64,
+    pub started_at: DateTime<Utc>,
+    pub verified_through: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub end_reason: Option<CoverageEndReason>,
+    pub configuration_version: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageHistoryPage {
+    pub intervals: Vec<CoverageInterval>,
+    pub next_before: Option<i64>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TrackingExport {
     pub data_source: DataSource,
     pub configurations: Vec<ConfigurationVersion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<CoverageInterval>,
     pub schema_version: u16,
     pub exported_at: DateTime<Utc>,
     pub tracking_revision: i64,
@@ -862,6 +906,7 @@ pub struct TrackingExport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BindingRetirement {
+    MistakenPairing,
     Replaced,
     Unbound,
     UnitRetired,
@@ -1036,3 +1081,175 @@ pub type Result<T, E = TrackingError> = std::result::Result<T, E>;
 /// Runtime evidence is deliberately excluded from durable export: restart must
 /// earn fresh continuous coverage. These aliases keep bounded reducers explicit.
 pub(crate) type UnitMap = BTreeMap<UnitId, StoredUnit>;
+
+/// The 0.2 operation journal hashes serialized command bytes. These frozen typed
+/// views recognize that spelling only during replay; live writes stay canonical.
+pub(crate) fn previous_command_hash(
+    command: &TrackingCommand,
+) -> serde_json::Result<Option<String>> {
+    legacy_hash::command_hash(command)
+}
+mod legacy_hash {
+    use crate::tracking::models::*;
+    use serde::{Serialize, Serializer, ser::SerializeSeq};
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum OldState {
+        NeedsTag,
+        #[serde(rename = "seamstress_queued")]
+        Queued,
+        Installed,
+        Exempt,
+    }
+    fn state<S: Serializer>(value: &InstallationState, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            InstallationState::NeedsTag => OldState::NeedsTag,
+            InstallationState::Queued => OldState::Queued,
+            InstallationState::Installed => OldState::Installed,
+            InstallationState::Exempt => OldState::Exempt,
+        }
+        .serialize(serializer)
+    }
+    #[derive(Serialize)]
+    #[serde(remote = "Installation")]
+    struct OldInstallation {
+        #[serde(serialize_with = "state")]
+        state: InstallationState,
+        tag_model: Option<String>,
+        placement: Option<String>,
+        notes: Option<String>,
+        no_tag_reason: Option<String>,
+    }
+    #[derive(Serialize)]
+    #[serde(remote = "PhysicalUnit")]
+    struct OldPhysicalUnit {
+        id: UnitId,
+        catalog_id: String,
+        ordinal: u32,
+        status: UnitStatus,
+        last_confirmed_area: Option<AreaId>,
+        current_area: Option<AreaId>,
+        has_binding: bool,
+        #[serde(with = "OldInstallation")]
+        installation: Installation,
+        baseline_at: Option<chrono::DateTime<chrono::Utc>>,
+        evidence: StateEvidence,
+        fence_at: chrono::DateTime<chrono::Utc>,
+        paused: bool,
+        retired: bool,
+        archived: bool,
+        exception: Option<TrackingException>,
+        changed_at: chrono::DateTime<chrono::Utc>,
+        last_event_id: Option<i64>,
+    }
+    #[derive(Serialize)]
+    #[serde(remote = "StoredUnit")]
+    struct OldUnit {
+        #[serde(with = "OldPhysicalUnit")]
+        unit: PhysicalUnit,
+        epc: Option<crate::tracking::models::Epc>,
+        last_confirmed_kind: Option<AreaKind>,
+    }
+    struct UnitRef<'a>(&'a StoredUnit);
+    impl Serialize for UnitRef<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            OldUnit::serialize(self.0, serializer)
+        }
+    }
+    fn optional_unit<S: Serializer>(
+        value: &Option<StoredUnit>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.as_ref().map(UnitRef).serialize(serializer)
+    }
+    fn units<S: Serializer>(value: &[StoredUnit], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(value.len()))?;
+        for unit in value {
+            sequence.serialize_element(&UnitRef(unit))?;
+        }
+        sequence.end()
+    }
+    #[derive(Serialize)]
+    #[serde(remote = "HistoryEvent")]
+    struct OldHistory {
+        id: i64,
+        unit_id: UnitId,
+        at: chrono::DateTime<chrono::Utc>,
+        actor: String,
+        kind: HistoryKind,
+        reason: DecisionReason,
+        automatic: bool,
+        configuration_version: i64,
+        source_area: Option<AreaId>,
+        evidence: Vec<ObservationRef>,
+        note: Option<String>,
+        #[serde(serialize_with = "optional_unit")]
+        before: Option<StoredUnit>,
+        #[serde(with = "OldUnit")]
+        after: StoredUnit,
+    }
+    struct HistoryRef<'a>(&'a HistoryEvent);
+    impl Serialize for HistoryRef<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            OldHistory::serialize(self.0, serializer)
+        }
+    }
+    fn history<S: Serializer>(value: &[HistoryEvent], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(value.len()))?;
+        for event in value {
+            sequence.serialize_element(&HistoryRef(event))?;
+        }
+        sequence.end()
+    }
+    #[derive(Serialize)]
+    #[serde(remote = "TrackingExport")]
+    struct OldExport {
+        data_source: DataSource,
+        configurations: Vec<ConfigurationVersion>,
+        schema_version: u16,
+        exported_at: chrono::DateTime<chrono::Utc>,
+        tracking_revision: i64,
+        configuration_version: i64,
+        config: TrackingConfig,
+        inventory: Vec<InventoryUnits>,
+        #[serde(serialize_with = "units")]
+        units: Vec<StoredUnit>,
+        sessions: Vec<EnrollmentSession>,
+        #[serde(serialize_with = "history")]
+        history: Vec<HistoryEvent>,
+        bindings: Vec<TagBinding>,
+        operations: Vec<OperationRecord>,
+        reader_operations: Vec<ReaderOperation>,
+        reader_controls: Vec<ReaderControlOperation>,
+    }
+    #[derive(Serialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum OldCommand<'a> {
+        Installation {
+            unit_id: UnitId,
+            #[serde(with = "OldInstallation")]
+            installation: &'a Installation,
+        },
+        Import {
+            #[serde(with = "OldExport")]
+            data: &'a TrackingExport,
+        },
+    }
+    pub(super) fn command_hash(command: &TrackingCommand) -> serde_json::Result<Option<String>> {
+        let previous = match command {
+            TrackingCommand::Installation {
+                unit_id,
+                installation,
+            } => OldCommand::Installation {
+                unit_id: *unit_id,
+                installation,
+            },
+            TrackingCommand::Import { data } if data.coverage.is_empty() => {
+                OldCommand::Import { data }
+            }
+            _ => return Ok(None),
+        };
+        serde_json::to_vec(&previous).map(|bytes| Some(crate::models::digest(&bytes)))
+    }
+}

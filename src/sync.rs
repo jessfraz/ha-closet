@@ -8,7 +8,7 @@ use crate::{
         referenced_image_id,
     },
     ha_images::{HaImages, UploadOutcome},
-    images::{ImageSha, ImageValidationReport, LocalImage, LocalImages, NativeImageId},
+    images::{ImageSha, ImageValidationReport, LocalImages, NativeImageId, PreparedImage},
     models::{
         CatalogItem, Item, ItemsPage, SyncReport, SyncRequest, System, TodayResponse,
         ValidatedCatalog, ValidationReport, validate_catalog,
@@ -185,12 +185,9 @@ impl SourceSnapshot {
         }
     }
     pub fn image_report(&self) -> Option<ImageValidationReport> {
-        self.assets().map(|assets| ImageValidationReport {
-            images: assets.len(),
-            bytes: assets.iter().map(|asset| asset.size).sum(),
-        })
+        self.assets().map(ImageValidationReport::from_assets)
     }
-    fn assets(&self) -> Option<&[LocalImage]> {
+    fn assets(&self) -> Option<&[PreparedImage]> {
         match &self.catalog {
             CatalogSource::Json { images, .. } => {
                 images.as_ref().map(|images| images.assets.as_slice())
@@ -206,6 +203,42 @@ impl SourceSnapshot {
                 .as_ref()
                 .and_then(|images| images.native_origin.as_ref()),
             CatalogSource::Toml(_) => None,
+        }
+    }
+    fn unresolved_native_references(&self) -> BTreeSet<NativeImageId> {
+        match &self.catalog {
+            CatalogSource::Json {
+                catalog, images, ..
+            } => {
+                let mapped: BTreeSet<_> = images
+                    .iter()
+                    .flat_map(|images| &images.assets)
+                    .flat_map(|image| &image.source().slots)
+                    .map(|slot| (slot.item_id.as_str(), slot.index))
+                    .collect();
+                catalog
+                    .items()
+                    .iter()
+                    .flat_map(|item| {
+                        item.images
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| !mapped.contains(&(item.id.as_str(), *index)))
+                            .filter_map(|(_, image)| referenced_image_id(&image.url))
+                    })
+                    .collect()
+            }
+            CatalogSource::Toml(catalog) => catalog
+                .items()
+                .iter()
+                .flat_map(|item| &item.images)
+                .filter_map(|image| match image {
+                    crate::source::types::SourceImage::Remote { url, .. } => {
+                        referenced_image_id(url.as_str())
+                    }
+                    crate::source::types::SourceImage::Asset { .. } => None,
+                })
+                .collect(),
         }
     }
     /// JSON already contains deployment URLs. TOML cannot produce a flat API
@@ -482,7 +515,7 @@ async fn delete_pending(
             .await
             .map_err(|_| Failure::local("cleanup_pending"))?;
         if let Some(record) = records.iter().find(|record| record.id == image.id) {
-            if record.name != image.sha256.upload_name() {
+            if ImageSha::from_upload_name(&record.name).as_ref() != Some(&image.sha256) {
                 return Err(Failure::local("cleanup_pending"));
             }
             native
@@ -520,18 +553,18 @@ async fn resolve_assets(
     native: &HaImages<'_>,
     token: &FenceToken,
     state: &FenceStatus,
-    assets: &[LocalImage],
+    assets: &[PreparedImage],
     summary: &mut ImageSummary,
 ) -> Result<BTreeMap<ImageSha, NativeImageId>> {
     let mut resolved = BTreeMap::new();
     for asset in assets {
         acquire(api, token, state.catalog_revision).await?;
         if let Some(id) = native.matching(asset, &native.list().await?).await? {
-            claim(api, token, &asset.sha256, UploadClaimAction::Verified).await?;
-            resolved.insert(asset.sha256.clone(), id);
+            claim(api, token, asset.wire_sha(), UploadClaimAction::Verified).await?;
+            resolved.insert(asset.source().sha256.clone(), id);
             continue;
         }
-        if !claim(api, token, &asset.sha256, UploadClaimAction::Begin).await? {
+        if !claim(api, token, asset.wire_sha(), UploadClaimAction::Begin).await? {
             return Err(Failure::local("image_upload_pending"));
         }
         // Re-list after claiming: another completed/stale initial list is never
@@ -545,12 +578,12 @@ async fn resolve_assets(
         .await;
         match second {
             Ok(Some(id)) => {
-                claim(api, token, &asset.sha256, UploadClaimAction::Verified).await?;
-                resolved.insert(asset.sha256.clone(), id);
+                claim(api, token, asset.wire_sha(), UploadClaimAction::Verified).await?;
+                resolved.insert(asset.source().sha256.clone(), id);
                 continue;
             }
             Err(error) => {
-                let _ = claim(api, token, &asset.sha256, UploadClaimAction::Rejected).await;
+                let _ = claim(api, token, asset.wire_sha(), UploadClaimAction::Rejected).await;
                 return Err(error);
             }
             Ok(None) => {}
@@ -558,12 +591,12 @@ async fn resolve_assets(
         let outcome = match native.upload(asset).await {
             Ok(outcome) => outcome,
             Err(error) => {
-                let _ = claim(api, token, &asset.sha256, UploadClaimAction::Rejected).await;
+                let _ = claim(api, token, asset.wire_sha(), UploadClaimAction::Rejected).await;
                 return Err(error);
             }
         };
         if matches!(outcome, UploadOutcome::Rejected) {
-            claim(api, token, &asset.sha256, UploadClaimAction::Rejected).await?;
+            claim(api, token, asset.wire_sha(), UploadClaimAction::Rejected).await?;
             return Err(Failure::local("native_image_upload_rejected"));
         }
         let mut found = None;
@@ -579,11 +612,36 @@ async fn resolve_assets(
             }
         }
         let id = found.ok_or_else(|| Failure::local("image_upload_pending"))?;
-        claim(api, token, &asset.sha256, UploadClaimAction::Verified).await?;
-        resolved.insert(asset.sha256.clone(), id);
+        claim(api, token, asset.wire_sha(), UploadClaimAction::Verified).await?;
+        resolved.insert(asset.source().sha256.clone(), id);
         summary.uploaded += 1;
     }
     Ok(resolved)
+}
+async fn reconcile_uploads(
+    api: &ApiClient,
+    native: &HaImages<'_>,
+    token: &FenceToken,
+    uploads: &[ImageSha],
+) -> Result<()> {
+    if uploads.is_empty() {
+        return Ok(());
+    }
+    let records = native.list().await?;
+    for sha in uploads {
+        let matching: Vec<_> = records
+            .iter()
+            .filter(|image| ImageSha::from_upload_name(&image.name).as_ref() == Some(sha))
+            .collect();
+        if matching.is_empty() {
+            return Err(Failure::local("image_upload_pending"));
+        }
+        for image in matching {
+            native.verify(image, sha).await?;
+        }
+        claim(api, token, sha, UploadClaimAction::Verified).await?;
+    }
+    Ok(())
 }
 async fn managed(
     api: &ApiClient,
@@ -616,7 +674,7 @@ async fn managed(
         }
     };
     let mut summary = ImageSummary {
-        local: source.assets().map_or(0, <[LocalImage]>::len),
+        local: source.assets().map_or(0, <[PreparedImage]>::len),
         would_prune: Some(0),
         ..Default::default()
     };
@@ -624,14 +682,18 @@ async fn managed(
         let mut resolved = BTreeMap::new();
         if let Some(assets) = source.assets() {
             let records = native.list().await?;
+            let mut missing = BTreeSet::new();
             for asset in assets {
                 match native.matching(asset, &records).await? {
                     Some(id) => {
-                        resolved.insert(asset.sha256.clone(), id);
+                        resolved.insert(asset.source().sha256.clone(), id);
                     }
-                    None => summary.would_upload += 1,
+                    None => {
+                        missing.insert(asset.wire_sha().clone());
+                    }
                 }
             }
+            summary.would_upload = missing.len();
         }
         let output = if summary.would_upload > 0 {
             summary.would_prune = None;
@@ -669,7 +731,20 @@ async fn managed(
     let state = acquire(api, &owner.token, original.data).await?;
     let result = async {
         source.unchanged()?;
+        if !state.pending.is_empty() {
+            let outgoing = source.unresolved_native_references();
+            if state
+                .pending
+                .iter()
+                .any(|image| outgoing.contains(&image.id))
+            {
+                return Err(Failure::local("cleanup_source_conflict"));
+            }
+        }
         summary.pruned += delete_pending(api, &native, &owner.token, state.clone()).await?;
+        // A previous policy's ambiguous POST is still pending work. Reconcile
+        // its exact bytes before allowing a new delivery identity to upload.
+        reconcile_uploads(api, &native, &owner.token, &state.uploads).await?;
         let resolved = match source.assets() {
             Some(assets) => {
                 resolve_assets(api, &native, &owner.token, &state, assets, &mut summary).await?
@@ -686,20 +761,7 @@ async fn managed(
         let references = readback(api, items, &output.data, options.allow_empty).await?;
         source.unchanged()?;
         let status = acquire(api, &owner.token, output.data.catalog_revision).await?;
-        let records = native.list().await?;
-        for sha in status.uploads {
-            let matching: Vec<_> = records
-                .iter()
-                .filter(|image| image.name == sha.upload_name())
-                .collect();
-            if matching.is_empty() {
-                return Err(Failure::local("image_upload_pending"));
-            }
-            for image in matching {
-                native.verify(image, &sha).await?;
-            }
-            claim(api, &owner.token, &sha, UploadClaimAction::Verified).await?;
-        }
+        reconcile_uploads(api, &native, &owner.token, &status.uploads).await?;
         let images = candidates(&native, &references).await?;
         source.unchanged()?;
         let state = response::<FenceStatus>(

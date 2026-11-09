@@ -1,0 +1,36 @@
+[
+  {
+    "id": "example-policy-alpha",
+    "brand": "Example Label",
+    "name": "Synthetic alpha delivery fixture",
+    "category": "clothing.outerwear",
+    "quantity": 1,
+    "purchase_source": "Example fixture",
+    "images": [
+      {
+        "url": "https://images.example.invalid/alpha.png",
+        "source_url": "https://shop.example.invalid/jacket",
+        "kind": "product_reference",
+        "confidence": "high"
+      }
+    ],
+    "shop": null
+  },
+  {
+    "id": "example-policy-photo",
+    "brand": "Example Label",
+    "name": "Synthetic photo delivery fixture",
+    "category": "clothing.outerwear",
+    "quantity": 1,
+    "purchase_source": "Example fixture",
+    "images": [
+      {
+        "url": "https://images.example.invalid/photo.png",
+        "source_url": "https://shop.example.invalid/jacket",
+        "kind": "product_reference",
+        "confidence": "high"
+      }
+    ],
+    "shop": null
+  }
+]

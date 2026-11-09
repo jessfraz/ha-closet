@@ -98,6 +98,8 @@ pub enum Step {
         at: DateTime<Utc>,
         unit: UnitSelector,
         note: String,
+        #[serde(default)]
+        mistaken: bool,
     },
     Pause {
         at: DateTime<Utc>,
@@ -359,9 +361,15 @@ async fn execute(store: &Store, scenario: Scenario) -> Result<Report, Error> {
                 unit_id: unit_id(store, at, &unit).await?,
                 note,
             },
-            Step::Unbind { unit, note, .. } => TrackingCommand::Unbind {
+            Step::Unbind {
+                unit,
+                note,
+                mistaken,
+                ..
+            } => TrackingCommand::Unbind {
                 unit_id: unit_id(store, at, &unit).await?,
                 note,
+                mistaken,
             },
             Step::Pause { unit, paused, .. } => TrackingCommand::Pause {
                 unit_id: unit_id(store, at, &unit).await?,

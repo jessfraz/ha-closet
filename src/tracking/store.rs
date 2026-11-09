@@ -7,7 +7,9 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::models::{CatalogItem, digest};
 use crate::store::Store;
-use crate::tracking::engine::{Changes, DurableState, Engine, EngineMode, UnitChange};
+use crate::tracking::engine::{
+    Changes, CoverageProgress, DurableState, Engine, EngineMode, UnitChange,
+};
 use crate::tracking::models::*;
 
 const STATE: &str =
@@ -24,7 +26,7 @@ const BUMP: &str =
 const CONFIGURE: &str =
     "UPDATE tracking_state SET config=?,enabled=?,configuration_version=? WHERE singleton=1";
 const UPSERT_INVENTORY: &str = "INSERT INTO tracking_inventory(catalog_id,catalog_quantity,declared_quantity,next_ordinal,needs_reconciliation,capacity_limited,archived) VALUES(?,?,?,?,?,?,?) ON CONFLICT(catalog_id) DO UPDATE SET catalog_quantity=excluded.catalog_quantity,declared_quantity=excluded.declared_quantity,next_ordinal=excluded.next_ordinal,needs_reconciliation=excluded.needs_reconciliation,capacity_limited=excluded.capacity_limited,archived=excluded.archived";
-const UPSERT_UNIT: &str = "INSERT INTO tracking_units(id,catalog_id,ordinal,epc,status,last_confirmed_area,current_area,baseline_at,evidence,installation_state,fence_at,paused,retired,archived,exception,changed_at,last_event_id,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET epc=excluded.epc,status=excluded.status,last_confirmed_area=excluded.last_confirmed_area,current_area=excluded.current_area,baseline_at=excluded.baseline_at,evidence=excluded.evidence,installation_state=excluded.installation_state,fence_at=excluded.fence_at,paused=excluded.paused,retired=excluded.retired,archived=excluded.archived,exception=excluded.exception,changed_at=excluded.changed_at,last_event_id=excluded.last_event_id,body=excluded.body";
+const UPSERT_UNIT: &str = "INSERT INTO tracking_units(id,catalog_id,ordinal,epc,status,last_confirmed_area,current_area,baseline_at,evidence,fence_at,paused,retired,archived,exception,changed_at,last_event_id,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET epc=excluded.epc,status=excluded.status,last_confirmed_area=excluded.last_confirmed_area,current_area=excluded.current_area,baseline_at=excluded.baseline_at,evidence=excluded.evidence,fence_at=excluded.fence_at,paused=excluded.paused,retired=excluded.retired,archived=excluded.archived,exception=excluded.exception,changed_at=excluded.changed_at,last_event_id=excluded.last_event_id,body=excluded.body";
 const UPSERT_SESSION: &str = "INSERT INTO tracking_sessions(id,port_id,state,capture_version,body) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET port_id=excluded.port_id,state=excluded.state,capture_version=excluded.capture_version,body=excluded.body";
 const INSERT_HISTORY: &str = "INSERT INTO tracking_history(unit_id,at,kind,body) VALUES(?,?,?,?)";
 const UPDATE_HISTORY: &str = "UPDATE tracking_history SET body=? WHERE id=?";
@@ -66,6 +68,291 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<String> {
 fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T> {
     Ok(serde_json::from_str(value)?)
 }
+const COVERAGE_PAGE: &str = "SELECT id,started_at,verified_through,ended_at,end_reason,configuration_version FROM tracking_coverage WHERE id<? ORDER BY id DESC LIMIT ?";
+const COVERAGE_ALL: &str = "SELECT id,started_at,verified_through,ended_at,end_reason,configuration_version FROM tracking_coverage ORDER BY id LIMIT 100001";
+const COVERAGE_OPEN: &str = "SELECT id,started_at,verified_through,ended_at,end_reason,configuration_version FROM tracking_coverage WHERE ended_at IS NULL";
+const INSERT_COVERAGE: &str = "INSERT INTO tracking_coverage(started_at,verified_through,configuration_version) VALUES(?,?,?) RETURNING id";
+const CHECKPOINT_COVERAGE: &str =
+    "UPDATE tracking_coverage SET verified_through=? WHERE id=? AND ended_at IS NULL";
+const CLOSE_COVERAGE: &str = "UPDATE tracking_coverage SET verified_through=?,ended_at=?,end_reason=? WHERE id=? AND ended_at IS NULL";
+const IMPORT_COVERAGE: &str = "INSERT INTO tracking_coverage(id,started_at,verified_through,ended_at,end_reason,configuration_version) VALUES(?,?,?,?,?,?)";
+
+struct HistoryRetention {
+    pristine: bool,
+    existing_ids: BTreeSet<i64>,
+}
+fn binding_row(row: &sqlx::sqlite::SqliteRow) -> Result<TagBinding> {
+    Ok(TagBinding {
+        id: row.try_get("id")?,
+        unit_id: row
+            .try_get::<String, _>("unit_id")?
+            .parse()
+            .map_err(|_| invalid("stored_data_invalid", "unit_id"))?,
+        epc: row
+            .try_get::<String, _>("epc")?
+            .parse()
+            .map_err(|_| invalid("stored_data_invalid", "epc"))?,
+        bound_at: parse_time(&row.try_get::<String, _>("bound_at")?)?,
+        retired_at: row
+            .try_get::<Option<String>, _>("retired_at")?
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+        retirement: row
+            .try_get::<Option<String>, _>("retirement")?
+            .as_deref()
+            .map(decode)
+            .transpose()?,
+    })
+}
+async fn preserve_import_history(
+    conn: &mut SqliteConnection,
+    runtime: &Engine,
+    data: &TrackingExport,
+) -> Result<HistoryRetention> {
+    let rows = sqlx::query(EXPORT_HISTORY).fetch_all(&mut *conn).await?;
+    if rows.len() > 100_000 {
+        return Err(TrackingError::Conflict("history_would_be_lost"));
+    }
+    let current = rows
+        .iter()
+        .map(body::<HistoryEvent>)
+        .collect::<Result<Vec<_>>>()?;
+    // Syncing a catalog into a fresh restore destination allocates placeholder
+    // UUIDs. Those untouched automatic allocations are the only replaceable
+    // history; they contain no tag, baseline, correction or physical observation.
+    let pristine = runtime.configuration_version == 0
+        && !data.units.is_empty()
+        && data
+            .units
+            .iter()
+            .all(|unit| !runtime.units.contains_key(&unit.unit.id))
+        && runtime.sessions.is_empty()
+        && runtime.reader_operations.is_empty()
+        && runtime.reader_controls.is_empty()
+        && current.iter().all(|event| {
+            event.automatic
+                && event.actor == "catalog"
+                && matches!(event.kind, HistoryKind::QuantityReconciliation)
+                && event.before.is_none()
+                && event.after.epc.is_none()
+                && event.after.unit.baseline_at.is_none()
+                && event.after.unit.status == UnitStatus::Unknown
+        });
+    let mut existing_ids = BTreeSet::new();
+    if !pristine {
+        let incoming = data
+            .history
+            .iter()
+            .map(|event| (event.id, event))
+            .collect::<BTreeMap<_, _>>();
+        for event in current {
+            let supplied = incoming
+                .get(&event.id)
+                .ok_or(TrackingError::Conflict("history_would_be_lost"))?;
+            if *supplied != &event {
+                return Err(TrackingError::Conflict("history_conflict"));
+            }
+            existing_ids.insert(event.id);
+        }
+        let bindings = data
+            .bindings
+            .iter()
+            .map(|binding| (binding.id, binding))
+            .collect::<BTreeMap<_, _>>();
+        let rows = sqlx::query(BINDINGS).fetch_all(conn).await?;
+        if rows.len() > 100_000 {
+            return Err(TrackingError::Conflict("history_would_be_lost"));
+        }
+        for row in &rows {
+            let old = binding_row(row)?;
+            let new = bindings
+                .get(&old.id)
+                .ok_or(TrackingError::Conflict("history_would_be_lost"))?;
+            if old.unit_id != new.unit_id
+                || old.epc != new.epc
+                || old.bound_at != new.bound_at
+                || old.retired_at.is_some()
+                    && (old.retired_at != new.retired_at || old.retirement != new.retirement)
+            {
+                return Err(TrackingError::Conflict("history_conflict"));
+            }
+        }
+    }
+    Ok(HistoryRetention {
+        pristine,
+        existing_ids,
+    })
+}
+fn import_changes_state(before: &StoredUnit, after: &StoredUnit) -> bool {
+    let mut normalized = after.clone();
+    normalized.unit.fence_at = before.unit.fence_at;
+    normalized.unit.changed_at = before.unit.changed_at;
+    normalized.unit.last_event_id = before.unit.last_event_id;
+    before != &normalized
+}
+
+fn coverage_row(row: &sqlx::sqlite::SqliteRow) -> Result<CoverageInterval> {
+    let reason: Option<String> = row.try_get("end_reason")?;
+    let end_reason = reason
+        .map(|reason| match reason.as_str() {
+            "coverage_unavailable" => Ok(CoverageEndReason::CoverageUnavailable),
+            "restart" => Ok(CoverageEndReason::Restart),
+            "configuration_changed" => Ok(CoverageEndReason::ConfigurationChanged),
+            "tracking_disabled" => Ok(CoverageEndReason::TrackingDisabled),
+            "import" => Ok(CoverageEndReason::Import),
+            _ => Err(invalid("stored_data_invalid", "coverage")),
+        })
+        .transpose()?;
+    Ok(CoverageInterval {
+        id: row.try_get("id")?,
+        started_at: parse_time(&row.try_get::<String, _>("started_at")?)?,
+        verified_through: parse_time(&row.try_get::<String, _>("verified_through")?)?,
+        ended_at: row
+            .try_get::<Option<String>, _>("ended_at")?
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+        end_reason,
+        configuration_version: row.try_get("configuration_version")?,
+    })
+}
+async fn coverage_intervals(conn: &mut SqliteConnection) -> Result<Vec<CoverageInterval>> {
+    let rows = sqlx::query(COVERAGE_ALL).fetch_all(conn).await?;
+    if rows.len() > 100_000 {
+        return Err(invalid("tracking_export_too_large", "coverage"));
+    }
+    rows.iter().map(coverage_row).collect()
+}
+async fn close_coverage(
+    conn: &mut SqliteConnection,
+    runtime: &mut Engine,
+    reason: CoverageEndReason,
+) -> Result<()> {
+    let progress = runtime.coverage_progress.as_ref();
+    let open = if let Some(progress) = progress {
+        Some((progress.interval.id, progress.latest_verified))
+    } else {
+        sqlx::query(COVERAGE_OPEN)
+            .fetch_optional(&mut *conn)
+            .await?
+            .as_ref()
+            .map(coverage_row)
+            .transpose()?
+            .map(|row| (row.id, row.verified_through))
+    };
+    if let Some((id, through)) = open {
+        let result = sqlx::query(CLOSE_COVERAGE)
+            .bind(through.to_rfc3339())
+            .bind(through.to_rfc3339())
+            .bind(reason.as_str())
+            .bind(id)
+            .execute(conn)
+            .await?;
+        if result.rows_affected() != 1 {
+            return Err(TrackingError::Conflict("coverage_changed"));
+        }
+    }
+    runtime.coverage_progress = None;
+    Ok(())
+}
+async fn persist_coverage(
+    conn: &mut SqliteConnection,
+    runtime: &mut Engine,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    if !runtime.health(now).absence_coverage_healthy {
+        if runtime.coverage_progress.is_some() {
+            let reason = if runtime.config.enabled {
+                CoverageEndReason::CoverageUnavailable
+            } else {
+                CoverageEndReason::TrackingDisabled
+            };
+            close_coverage(conn, runtime, reason).await?;
+        }
+        return Ok(());
+    }
+    if let Some(progress) = runtime.coverage_progress.as_mut() {
+        progress.latest_verified = now;
+        // A healthy stream can contain thousands of reads per second. Only this
+        // watermark is checkpointed, at most once per minute, without changing
+        // the garment revision. A crash loses confidence after that checkpoint.
+        if now.signed_duration_since(progress.checkpoint_at) >= Duration::minutes(1) {
+            let result = sqlx::query(CHECKPOINT_COVERAGE)
+                .bind(now.to_rfc3339())
+                .bind(progress.interval.id)
+                .execute(conn)
+                .await?;
+            if result.rows_affected() != 1 {
+                return Err(TrackingError::Conflict("coverage_changed"));
+            }
+            progress.interval.verified_through = now;
+            progress.checkpoint_at = now;
+        }
+        return Ok(());
+    }
+    // Also reconciles an open row left by an aborted transaction/runtime reload.
+    close_coverage(conn, runtime, CoverageEndReason::Restart).await?;
+    let id = sqlx::query_scalar(INSERT_COVERAGE)
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .bind(runtime.configuration_version)
+        .fetch_one(conn)
+        .await?;
+    runtime.coverage_progress = Some(CoverageProgress {
+        interval: CoverageInterval {
+            id,
+            started_at: now,
+            verified_through: now,
+            ended_at: None,
+            end_reason: None,
+            configuration_version: runtime.configuration_version,
+        },
+        latest_verified: now,
+        checkpoint_at: now,
+    });
+    Ok(())
+}
+async fn merge_coverage(
+    conn: &mut SqliteConnection,
+    incoming: Vec<CoverageInterval>,
+) -> Result<()> {
+    let mut existing = coverage_intervals(conn)
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row))
+        .collect::<BTreeMap<_, _>>();
+    for mut row in incoming {
+        let was_open = row.ended_at.is_none();
+        if was_open {
+            row.ended_at = Some(row.verified_through);
+            row.end_reason = Some(CoverageEndReason::Import);
+        }
+        if let Some(current) = existing.get(&row.id) {
+            if current == &row
+                || was_open
+                    && current.started_at == row.started_at
+                    && current.configuration_version == row.configuration_version
+                    && current.verified_through >= row.verified_through
+            {
+                continue;
+            }
+            return Err(TrackingError::Conflict("coverage_history_conflict"));
+        }
+        sqlx::query(IMPORT_COVERAGE)
+            .bind(row.id)
+            .bind(row.started_at.to_rfc3339())
+            .bind(row.verified_through.to_rfc3339())
+            .bind(row.ended_at.map(|at| at.to_rfc3339()))
+            .bind(row.end_reason.map(CoverageEndReason::as_str))
+            .bind(row.configuration_version)
+            .execute(&mut *conn)
+            .await?;
+        existing.insert(row.id, row);
+    }
+    Ok(())
+}
+
 fn state_name(state: EnrollmentState) -> &'static str {
     match state {
         EnrollmentState::Active => "active",
@@ -80,14 +367,6 @@ fn evidence_name(e: StateEvidence) -> &'static str {
         StateEvidence::Unknown => "unknown",
         StateEvidence::Manual => "manual",
         StateEvidence::Rfid => "rfid",
-    }
-}
-fn installation_name(state: InstallationState) -> &'static str {
-    match state {
-        InstallationState::NeedsTag => "needs_tag",
-        InstallationState::SeamstressQueued => "seamstress_queued",
-        InstallationState::Installed => "installed",
-        InstallationState::Exempt => "exempt",
     }
 }
 fn history_name(k: &HistoryKind) -> &'static str {
@@ -105,6 +384,7 @@ fn history_name(k: &HistoryKind) -> &'static str {
         HistoryKind::Archive => "archive",
         HistoryKind::Restore => "restore",
         HistoryKind::QuantityReconciliation => "quantity_reconciliation",
+        HistoryKind::Import => "import",
     }
 }
 async fn inventory(conn: &mut SqliteConnection) -> Result<BTreeMap<String, InventoryRecord>> {
@@ -144,6 +424,14 @@ async fn load(
     }
     let config = decode(&row.try_get::<String, _>("config")?)?;
     let configuration_version = row.try_get("configuration_version")?;
+    let reason = if force {
+        CoverageEndReason::Restart
+    } else if configuration_version != runtime.configuration_version {
+        CoverageEndReason::ConfigurationChanged
+    } else {
+        CoverageEndReason::CoverageUnavailable
+    };
+    close_coverage(conn, runtime, reason).await?;
     let rows = paged(conn, UNITS, "id").await?;
     let units = rows
         .into_iter()
@@ -223,7 +511,6 @@ async fn write_unit(conn: &mut SqliteConnection, u: &StoredUnit) -> Result<()> {
         .bind(p.current_area.as_ref().map(AreaId::as_str))
         .bind(p.baseline_at.map(|t| t.to_rfc3339()))
         .bind(evidence_name(p.evidence))
-        .bind(installation_name(p.installation.state))
         .bind(p.fence_at.to_rfc3339())
         .bind(p.paused)
         .bind(p.retired)
@@ -303,12 +590,18 @@ async fn event(
     after.unit.last_event_id = Some(id);
     history.id = id;
     history.after = after.clone();
-    if before.as_ref().and_then(|u| u.epc.as_ref()) != after.epc.as_ref() {
-        let retirement = match history.kind {
-            HistoryKind::Retire => BindingRetirement::UnitRetired,
-            HistoryKind::Replace => BindingRetirement::Replaced,
-            HistoryKind::Undo => BindingRetirement::Undo,
-            _ => BindingRetirement::Unbound,
+    if !matches!(history.kind, HistoryKind::Import)
+        && before.as_ref().and_then(|u| u.epc.as_ref()) != after.epc.as_ref()
+    {
+        let retirement = if history.reason == DecisionReason::MistakenPairing {
+            BindingRetirement::MistakenPairing
+        } else {
+            match history.kind {
+                HistoryKind::Retire => BindingRetirement::UnitRetired,
+                HistoryKind::Replace => BindingRetirement::Replaced,
+                HistoryKind::Undo => BindingRetirement::Undo,
+                _ => BindingRetirement::Unbound,
+            }
         };
         sqlx::query(RETIRE_BINDING)
             .bind(now.to_rfc3339())
@@ -713,6 +1006,7 @@ impl Store {
         changes: Changes,
         now: DateTime<Utc>,
     ) -> Result<()> {
+        persist_coverage(conn, next, now).await?;
         if changes.units.is_empty() && !changes.sessions_changed {
             return Ok(());
         }
@@ -744,6 +1038,32 @@ impl Store {
         }
         next.revision = sqlx::query_scalar(BUMP).fetch_one(&mut *conn).await?;
         Ok(())
+    }
+    pub async fn tracking_coverage(
+        &self,
+        before: Option<i64>,
+        limit: u16,
+    ) -> Result<CoverageHistoryPage> {
+        if limit == 0 || limit > MAX_HISTORY_PAGE || before.is_some_and(|v| v <= 0) {
+            return Err(invalid("invalid_history_page", "limit"));
+        }
+        let rows = sqlx::query(COVERAGE_PAGE)
+            .bind(before.unwrap_or(i64::MAX))
+            .bind(i64::from(limit) + 1)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut intervals = rows.iter().map(coverage_row).collect::<Result<Vec<_>>>()?;
+        let more = intervals.len() > usize::from(limit);
+        intervals.truncate(usize::from(limit));
+        let next_before = if more {
+            intervals.last().map(|i| i.id)
+        } else {
+            None
+        };
+        Ok(CoverageHistoryPage {
+            intervals,
+            next_before,
+        })
     }
     pub async fn tracking_history(
         &self,
@@ -845,7 +1165,10 @@ impl Store {
             .fetch_optional(&mut *tx)
             .await?
         {
-            if row.try_get::<String, _>("request_hash")? != request_hash {
+            let saved_hash: String = row.try_get("request_hash")?;
+            if saved_hash != request_hash
+                && previous_command_hash(&command)?.as_deref() != Some(saved_hash.as_str())
+            {
                 return Err(TrackingError::Conflict("idempotency_conflict"));
             }
             let response: CommandResult = decode(&row.try_get::<String, _>("response")?)?;
@@ -867,6 +1190,12 @@ impl Store {
         match command {
             TrackingCommand::Configure { config } => {
                 if next.configure(config, now)? {
+                    let reason = if next.config.enabled {
+                        CoverageEndReason::ConfigurationChanged
+                    } else {
+                        CoverageEndReason::TrackingDisabled
+                    };
+                    close_coverage(&mut tx, &mut next, reason).await?;
                     config_changed = true;
                     sessions_changed = true;
                     changed = true;
@@ -1090,7 +1419,11 @@ impl Store {
                     Vec::new(),
                 ));
             }
-            TrackingCommand::Unbind { unit_id, note } => {
+            TrackingCommand::Unbind {
+                unit_id,
+                note,
+                mistaken,
+            } => {
                 if !text(&note, 500) {
                     return Err(invalid("invalid_note", "note"));
                 }
@@ -1111,7 +1444,11 @@ impl Store {
                         Some(before),
                         after,
                         HistoryKind::Unbind,
-                        DecisionReason::TagUnbound,
+                        if mistaken {
+                            DecisionReason::MistakenPairing
+                        } else {
+                            DecisionReason::TagUnbound
+                        },
                         Some(note),
                         Vec::new(),
                     ));
@@ -1416,7 +1753,8 @@ impl Store {
                 }
             }
             TrackingCommand::Import { data } => {
-                self.import_tracking(&mut tx, &mut next, *data, now).await?;
+                self.import_tracking(&mut tx, &mut next, *data, actor, now)
+                    .await?;
                 changed = true;
             }
         }
@@ -1522,6 +1860,7 @@ impl Store {
                 })
                 .collect();
         }
+        persist_coverage(&mut tx, &mut next, now).await?;
         unit_ids.sort();
         unit_ids.dedup();
         let response = CommandResult {
@@ -1579,31 +1918,7 @@ impl Store {
         if rows.len() > 100_000 {
             return Err(invalid("tracking_export_too_large", "bindings"));
         }
-        let mut bindings = Vec::new();
-        for row in rows {
-            bindings.push(TagBinding {
-                id: row.try_get("id")?,
-                unit_id: row
-                    .try_get::<String, _>("unit_id")?
-                    .parse()
-                    .map_err(|_| invalid("stored_data_invalid", "unit_id"))?,
-                epc: row
-                    .try_get::<String, _>("epc")?
-                    .parse()
-                    .map_err(|_| invalid("stored_data_invalid", "epc"))?,
-                bound_at: parse_time(&row.try_get::<String, _>("bound_at")?)?,
-                retired_at: row
-                    .try_get::<Option<String>, _>("retired_at")?
-                    .as_deref()
-                    .map(parse_time)
-                    .transpose()?,
-                retirement: row
-                    .try_get::<Option<String>, _>("retirement")?
-                    .as_deref()
-                    .map(decode)
-                    .transpose()?,
-            });
-        }
+        let bindings = rows.iter().map(binding_row).collect::<Result<Vec<_>>>()?;
         let mut configurations = Vec::new();
         for row in sqlx::query(CONFIGURATIONS).fetch_all(&mut *tx).await? {
             configurations.push(ConfigurationVersion {
@@ -1622,6 +1937,7 @@ impl Store {
                 DataSource::Simulation
             },
             configurations,
+            coverage: coverage_intervals(&mut tx).await?,
             schema_version: TRACKING_SCHEMA_VERSION,
             exported_at: now,
             tracking_revision: runtime.revision,
@@ -1652,6 +1968,7 @@ impl Store {
         conn: &mut SqliteConnection,
         next: &mut Engine,
         data: TrackingExport,
+        actor: &str,
         now: DateTime<Utc>,
     ) -> Result<()> {
         if next.requires_reader_cleanup() {
@@ -1665,6 +1982,7 @@ impl Store {
             || data.bindings.len() > 100_000
             || data.operations.len() > 100_000
             || data.configurations.len() > 10_000
+            || data.coverage.len() > 100_000
         {
             return Err(invalid("invalid_tracking_export", "schema_version"));
         }
@@ -1838,18 +2156,45 @@ impl Store {
                 return Err(invalid("invalid_tracking_export", "reader_controls"));
             }
         }
-        // Validate completely before destructive replacement. The operation log
-        // and catalog are never erased by a tracking restore.
+        let mut coverage_ids = BTreeSet::new();
+        for interval in &data.coverage {
+            if interval.id <= 0
+                || !coverage_ids.insert(interval.id)
+                || interval.started_at > interval.verified_through
+                || interval.ended_at.is_some() != interval.end_reason.is_some()
+                || interval
+                    .ended_at
+                    .is_some_and(|end| end != interval.verified_through)
+                || !versions.contains(&interval.configuration_version)
+            {
+                return Err(invalid("invalid_tracking_export", "coverage"));
+            }
+        }
+        let retention = preserve_import_history(conn, next, &data).await?;
+        let previous_units = next.units.clone();
+        close_coverage(conn, next, CoverageEndReason::Import).await?;
+        // Immutable history and stable units stay in place. A pristine catalog
+        // bootstrap is the sole exception, so a fresh backup restore can replace
+        // the destination's never-observed placeholder unit UUIDs.
+        if retention.pristine {
+            sqlx::query(DELETE_HISTORY).execute(&mut *conn).await?;
+        }
         for query in [
             DELETE_BINDINGS,
-            DELETE_HISTORY,
             DELETE_SESSIONS,
-            DELETE_UNITS,
-            DELETE_INVENTORY,
             DELETE_READER_OPERATIONS,
             DELETE_READER_CONTROLS,
         ] {
             sqlx::query(query).execute(&mut *conn).await?;
+        }
+        if retention.pristine {
+            sqlx::query(DELETE_UNITS).execute(&mut *conn).await?;
+            sqlx::query(DELETE_INVENTORY).execute(&mut *conn).await?;
+        } else {
+            // The full validated binding snapshot may swap EPCs between units.
+            // Clear the unique association inside this transaction before the
+            // typed unit upserts, without deleting any referenced unit identity.
+            sqlx::query(CLEAR_UNIT_EPCS).execute(&mut *conn).await?;
         }
         for record in &data.inventory {
             let next_ordinal = data
@@ -1877,6 +2222,9 @@ impl Store {
             next.units.insert(u.unit.id, u);
         }
         for h in data.history {
+            if retention.existing_ids.contains(&h.id) {
+                continue;
+            }
             sqlx::query(IMPORT_HISTORY)
                 .bind(h.id)
                 .bind(h.unit_id.to_string())
@@ -1905,6 +2253,7 @@ impl Store {
                 .execute(&mut *conn)
                 .await?;
         }
+        merge_coverage(conn, data.coverage).await?;
         next.configuration_version = next.configuration_version.max(data.configuration_version) + 1;
         next.config = data.config;
         sqlx::query(CONFIGURE)
@@ -1968,6 +2317,39 @@ impl Store {
                 .execute(&mut *conn)
                 .await?;
             next.reader_controls.insert(op.reader_id.clone(), op);
+        }
+        let changes = next
+            .units
+            .values()
+            .filter_map(|after| {
+                previous_units
+                    .get(&after.unit.id)
+                    .filter(|before| import_changes_state(before, after))
+                    .map(|before| (before.clone(), after.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (before, mut after) in changes {
+            after.unit.changed_at = now;
+            let mut change = UnitChange::new(
+                Some(before),
+                after,
+                HistoryKind::Import,
+                DecisionReason::Import,
+                None,
+                Vec::new(),
+            );
+            event(
+                conn,
+                &mut change,
+                EventContext {
+                    actor,
+                    automatic: false,
+                    configuration_version: next.configuration_version,
+                    at: now,
+                },
+            )
+            .await?;
+            next.units.insert(change.after.unit.id, change.after);
         }
         next.reset_evidence(now);
         Ok(())
@@ -2766,6 +3148,7 @@ const CONFIGURATIONS: &str =
 const CONFIGURATION: &str = "SELECT body FROM tracking_configurations WHERE version=?";
 const INSERT_CONFIGURATION: &str =
     "INSERT OR IGNORE INTO tracking_configurations(version,at,body) VALUES(?,?,?)";
+const CLEAR_UNIT_EPCS: &str = "UPDATE tracking_units SET epc=NULL WHERE epc IS NOT NULL";
 const DELETE_BINDINGS: &str = "DELETE FROM tracking_bindings";
 const DELETE_HISTORY: &str = "DELETE FROM tracking_history";
 const DELETE_SESSIONS: &str = "DELETE FROM tracking_sessions";
@@ -2788,7 +3171,7 @@ SELECT i.id,
    OR EXISTS(SELECT 1 FROM tracking_units u
       WHERE u.catalog_id=i.id AND u.retired=0 AND u.archived=0
         AND (u.baseline_at IS NULL
-          OR (u.installation_state='exempt' AND u.evidence!='manual')
+          OR (json_extract(u.body,'$.unit.installation.state')='exempt' AND u.evidence!='manual')
           OR (u.epc IS NULL AND u.evidence!='manual')))
    OR EXISTS(SELECT 1 FROM tracking_inventory t
       WHERE t.catalog_id=i.id AND t.capacity_limited=1)) AS fallback
@@ -3009,6 +3392,28 @@ mod tests {
         }
         sqlx::query(BUMP).fetch_one(&mut *tx).await.unwrap();
         tx.commit().await.unwrap();
+        for n in 0..1_000 {
+            let start = now + chrono::Duration::seconds(n * 2);
+            let end = start + chrono::Duration::seconds(1);
+            sqlx::query(IMPORT_COVERAGE)
+                .bind(n + 1)
+                .bind(start.to_rfc3339())
+                .bind(end.to_rfc3339())
+                .bind(end.to_rfc3339())
+                .bind(CoverageEndReason::CoverageUnavailable.as_str())
+                .bind(1_i64)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+        }
+        let open_start = now + chrono::Duration::seconds(2_000);
+        sqlx::query(INSERT_COVERAGE)
+            .bind(open_start.to_rfc3339())
+            .bind(open_start.to_rfc3339())
+            .bind(1_i64)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
         sqlx::query("ANALYZE").execute(&store.pool).await.unwrap();
         let unit = first.unwrap();
         let id = unit.unit.id.to_string();
@@ -3096,7 +3501,6 @@ mod tests {
                     .bind(Option::<String>::None)
                     .bind(&timestamp)
                     .bind("rfid")
-                    .bind("installed")
                     .bind(&timestamp)
                     .bind(false)
                     .bind(false)
@@ -3230,6 +3634,47 @@ mod tests {
             (
                 "closed reader control delete",
                 sqlx::query(DELETE_READER_CONTROL).bind("reader"),
+            ),
+            (
+                "coverage page",
+                sqlx::query(COVERAGE_PAGE).bind(i64::MAX).bind(50_i64),
+            ),
+            ("coverage export", sqlx::query(COVERAGE_ALL)),
+            ("open coverage", sqlx::query(COVERAGE_OPEN)),
+            (
+                "coverage insert",
+                sqlx::query(INSERT_COVERAGE)
+                    .bind(&timestamp)
+                    .bind(&timestamp)
+                    .bind(1_i64),
+            ),
+            (
+                "coverage checkpoint",
+                sqlx::query(CHECKPOINT_COVERAGE)
+                    .bind(&timestamp)
+                    .bind(1_001_i64),
+            ),
+            (
+                "coverage close",
+                sqlx::query(CLOSE_COVERAGE)
+                    .bind(&timestamp)
+                    .bind(&timestamp)
+                    .bind(CoverageEndReason::Restart.as_str())
+                    .bind(1_001_i64),
+            ),
+            (
+                "coverage import",
+                sqlx::query(IMPORT_COVERAGE)
+                    .bind(1_002_i64)
+                    .bind(&timestamp)
+                    .bind(&timestamp)
+                    .bind(&timestamp)
+                    .bind(CoverageEndReason::Import.as_str())
+                    .bind(1_i64),
+            ),
+            (
+                "clear imported EPC associations",
+                sqlx::query(CLEAR_UNIT_EPCS),
             ),
             ("availability", sqlx::query(AVAILABILITY)),
         ];
@@ -3989,6 +4434,331 @@ mod tests {
                 .state,
             EnrollmentState::Expired
         );
+        store.close().await;
+    }
+
+    #[tokio::test]
+    async fn released_tracking_schema_keeps_history_and_decodes_legacy_queue_after_column_removal()
+    {
+        use std::borrow::Cow;
+        let legacy = legacy_database(Some(1)).await;
+        let pool = sqlx::SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&legacy.path)
+                .foreign_keys(true),
+        )
+        .await
+        .unwrap();
+        let mut previous = sqlx::migrate!("./migrations");
+        previous.migrations = Cow::Owned(
+            previous
+                .iter()
+                .filter(|m| m.version <= 5)
+                .cloned()
+                .collect(),
+        );
+        previous.run(&pool).await.unwrap();
+        let now = DateTime::<Utc>::UNIX_EPOCH;
+        let mut unit = new_unit(UnitId::new(), legacy.item.id.clone(), 1, false, now);
+        unit.unit.installation.state = InstallationState::Queued;
+        unit.unit.last_event_id = Some(1);
+        let history = HistoryEvent {
+            id: 1,
+            unit_id: unit.unit.id,
+            at: now,
+            actor: "catalog".into(),
+            kind: HistoryKind::QuantityReconciliation,
+            reason: DecisionReason::QuantityReconciliation,
+            automatic: true,
+            configuration_version: 0,
+            source_area: None,
+            evidence: Vec::new(),
+            note: None,
+            before: None,
+            after: unit.clone(),
+        };
+        // Exact legacy wire token, confined to the backwards-compatibility fixture.
+        let legacy_state = "seamstress_queued";
+        let old_unit: String =
+            sqlx::query_scalar("SELECT json_set(?,'$.unit.installation.state',?)")
+                .bind(encode(&unit).unwrap())
+                .bind(legacy_state)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let old_history: String =
+            sqlx::query_scalar("SELECT json_set(?,'$.after.unit.installation.state',?)")
+                .bind(encode(&history).unwrap())
+                .bind(legacy_state)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO tracking_inventory(catalog_id,catalog_quantity,next_ordinal) VALUES(?,1,2)")
+            .bind(&legacy.item.id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO tracking_units(id,catalog_id,ordinal,epc,status,last_confirmed_area,current_area,baseline_at,installation_state,evidence,fence_at,paused,retired,archived,exception,changed_at,last_event_id,body) VALUES(?,?,1,NULL,'unknown',NULL,NULL,NULL,?,'unknown',?,0,0,0,'needs_baseline',?,1,?)")
+            .bind(unit.unit.id.to_string()).bind(&legacy.item.id).bind(legacy_state)
+            .bind(now.to_rfc3339()).bind(now.to_rfc3339()).bind(old_unit).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO tracking_history(id,unit_id,at,kind,body) VALUES(1,?,?,'quantity_reconciliation',?)")
+            .bind(unit.unit.id.to_string()).bind(now.to_rfc3339()).bind(&old_history).execute(&pool).await.unwrap();
+        pool.close().await;
+        let store = Store::open(&legacy.path).await.unwrap();
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('tracking_units')")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        assert!(!names.iter().any(|name| name == "installation_state"));
+        let view = store.tracking_snapshot(Utc::now()).await.unwrap();
+        assert_eq!(view.units[0].installation.state, InstallationState::Queued);
+        assert_eq!(
+            serde_json::to_string(&view.units[0].installation.state).unwrap(),
+            "\"queued\""
+        );
+        let persisted: String = sqlx::query_scalar("SELECT body FROM tracking_history WHERE id=1")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted, old_history,
+            "migration must not rewrite historical evidence"
+        );
+        let export = store.tracking_export(Utc::now()).await.unwrap();
+        let old_export: String = sqlx::query_scalar("SELECT json_remove(?,'$.coverage')")
+            .bind(encode(&export).unwrap())
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let decoded: TrackingExport = decode(&old_export).unwrap();
+        assert!(decoded.coverage.is_empty());
+        assert_eq!(
+            decoded.history[0].after.unit.installation.state,
+            InstallationState::Queued
+        );
+        store.close().await;
+    }
+
+    #[tokio::test]
+    async fn real_restart_closes_coverage_at_the_durable_checkpoint_and_requires_fresh_warmup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("coverage.sqlite3");
+        let store = Store::open(&path).await.unwrap();
+        let now = Utc::now() + chrono::Duration::seconds(1);
+        let mut config = setup_config();
+        config.thresholds.warmup_ms = 100;
+        config.thresholds.coverage_max_gap_ms = 1_000;
+        command(&store, "config", TrackingCommand::Configure { config }, now).await;
+        let revision = store
+            .tracking_snapshot(now)
+            .await
+            .unwrap()
+            .tracking_revision;
+        let readback = ReaderReadback {
+            reader_id: identifier("reader"),
+            at: now,
+            capabilities: ReaderCapabilities {
+                antenna_ports: vec![1, 2],
+                min_power_cdbm: None,
+                max_power_cdbm: None,
+                min_dwell_ms: None,
+                max_dwell_ms: None,
+                continuous_inventory_proof: true,
+                inventory_pause: true,
+                firmware: None,
+            },
+            ports: Vec::new(),
+        };
+        for sequence in 1..=612 {
+            let at = now + chrono::Duration::milliseconds((sequence - 1) * 100);
+            let mut batch = batch(
+                at,
+                sequence as u64,
+                ObservationPurpose::Inventory,
+                None,
+                Vec::new(),
+            );
+            batch.readback = (sequence == 1).then(|| readback.clone());
+            batch.coverage = vec![PortCoverage {
+                port_id: identifier("monitor"),
+                started_at: at - chrono::Duration::milliseconds(100),
+                ended_at: at,
+                proof: CoverageProof::VerifiedInventory,
+            }];
+            store.tracking_ingest(batch, at).await.unwrap();
+        }
+        let open = store
+            .tracking_coverage(None, 10)
+            .await
+            .unwrap()
+            .intervals
+            .remove(0);
+        assert_eq!(open.started_at, now + chrono::Duration::milliseconds(100));
+        assert_eq!(
+            open.verified_through,
+            now + chrono::Duration::milliseconds(60_100)
+        );
+        assert_eq!(open.ended_at, None);
+        assert_eq!(
+            store
+                .tracking_snapshot(now + chrono::Duration::seconds(62))
+                .await
+                .unwrap()
+                .tracking_revision,
+            revision
+        );
+        store.close().await; // No disconnect/closing report: process-loss semantics.
+        let reopened = Store::open(&path).await.unwrap();
+        let closed = reopened
+            .tracking_coverage(None, 10)
+            .await
+            .unwrap()
+            .intervals
+            .remove(0);
+        assert_eq!(closed.ended_at, Some(open.verified_through));
+        assert_eq!(closed.end_reason, Some(CoverageEndReason::Restart));
+        assert!(
+            !reopened
+                .tracking_snapshot(now + chrono::Duration::seconds(62))
+                .await
+                .unwrap()
+                .health
+                .absence_coverage_healthy
+        );
+        assert_eq!(
+            reopened
+                .tracking_snapshot(now + chrono::Duration::seconds(62))
+                .await
+                .unwrap()
+                .tracking_revision,
+            revision
+        );
+        reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn actual_020_queued_installation_and_nested_import_retries_keep_their_saved_receipts() {
+        let installation_bytes =
+            include_bytes!("../../tests/fixtures/tracking-020-retry/installation.json");
+        let import_bytes = include_bytes!("../../tests/fixtures/tracking-020-retry/import.json");
+        let install: TrackingCommand = serde_json::from_slice(installation_bytes).unwrap();
+        let import: TrackingCommand = serde_json::from_slice(import_bytes).unwrap();
+        assert_eq!(
+            previous_command_hash(&install).unwrap(),
+            Some(digest(installation_bytes))
+        );
+        assert_eq!(
+            previous_command_hash(&import).unwrap(),
+            Some(digest(import_bytes))
+        );
+        assert_ne!(
+            digest(installation_bytes),
+            digest(&serde_json::to_vec(&install).unwrap())
+        );
+        assert_ne!(
+            digest(import_bytes),
+            digest(&serde_json::to_vec(&import).unwrap())
+        );
+        let TrackingCommand::Import { data } = import.clone() else {
+            panic!("released import fixture");
+        };
+        let now = data.exported_at + chrono::Duration::seconds(1);
+        let store = Store::open_simulator(now).await.unwrap();
+        store
+            .sync_at(
+                SyncRequest {
+                    items: vec![fixture(0)],
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(0),
+                "destination",
+                Some("seed"),
+                now,
+            )
+            .await
+            .unwrap();
+        command(
+            &store,
+            "restore-source",
+            TrackingCommand::Import { data },
+            now,
+        )
+        .await;
+        let import_response: CommandResult = serde_json::from_slice(include_bytes!(
+            "../../tests/fixtures/tracking-020-retry/import-response.json"
+        ))
+        .unwrap();
+        // Installation receipts came through the real operational import. The
+        // import receipt itself was created afterwards by the 0.2 producer.
+        sqlx::query(INSERT_OPERATION)
+            .bind("fixture-operator")
+            .bind("released-import")
+            .bind(digest(import_bytes))
+            .bind(encode(&import_response).unwrap())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let changed: CommandResult = serde_json::from_slice(include_bytes!(
+            "../../tests/fixtures/tracking-020-retry/installation-response.json"
+        ))
+        .unwrap();
+        let noop: CommandResult = serde_json::from_slice(include_bytes!(
+            "../../tests/fixtures/tracking-020-retry/noop-response.json"
+        ))
+        .unwrap();
+        for (key, request, expected) in [
+            ("released-installation", install.clone(), changed),
+            ("released-noop", install.clone(), noop),
+            ("released-import", import.clone(), import_response),
+        ] {
+            let replay = store
+                .tracking_command("fixture-operator", key, -1, request, now)
+                .await
+                .unwrap();
+            assert_eq!(encode(&replay).unwrap(), encode(&expected).unwrap());
+        }
+        let mut altered = install;
+        if let TrackingCommand::Installation { installation, .. } = &mut altered {
+            installation.placement = Some("Different fictional placement".into());
+        }
+        assert!(matches!(
+            store
+                .tracking_command(
+                    "fixture-operator",
+                    "released-installation",
+                    -1,
+                    altered,
+                    now
+                )
+                .await,
+            Err(TrackingError::Conflict("idempotency_conflict"))
+        ));
+        let mut altered = import.clone();
+        if let TrackingCommand::Import { data } = &mut altered {
+            data.units[0].unit.installation.notes = Some("Changed nested fact".into());
+        }
+        assert!(matches!(
+            store
+                .tracking_command("fixture-operator", "released-import", -1, altered, now)
+                .await,
+            Err(TrackingError::Conflict("idempotency_conflict"))
+        ));
+        let mut altered = import;
+        if let TrackingCommand::Import { data } = &mut altered {
+            data.coverage.push(CoverageInterval {
+                id: 1,
+                started_at: now,
+                verified_through: now,
+                ended_at: Some(now),
+                end_reason: Some(CoverageEndReason::Import),
+                configuration_version: 0,
+            });
+        }
+        assert!(matches!(
+            store
+                .tracking_command("fixture-operator", "released-import", -1, altered, now)
+                .await,
+            Err(TrackingError::Conflict("idempotency_conflict"))
+        ));
         store.close().await;
     }
 }

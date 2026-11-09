@@ -4,7 +4,10 @@ use closet::{
     api,
     client::{ApiClient, Transport},
     ha_images::NativeImage,
-    images::{ImageManifest, ImageSha, LocalImages, ManifestImage, NativeImageId},
+    images::{
+        DeliveryFormat, ImageManifest, ImageSha, LocalImage, LocalImages, ManifestImage,
+        NativeImageId, PreparedImage, prepare_images,
+    },
     models::{CatalogItem, SyncRequest, parse_catalog},
     store::Store,
     sync::{SourceSnapshot, SyncOptions, inventory_sync},
@@ -186,10 +189,7 @@ async fn upload(
     );
     let field = body.content.next_field().await.unwrap().unwrap();
     assert_eq!(field.name(), Some("file"));
-    assert_eq!(
-        field.content_type().map(ToString::to_string).as_deref(),
-        Some("image/png")
-    );
+    let content_type = field.content_type().unwrap().to_string();
     let name = field.file_name().unwrap().to_owned();
     let bytes = field.bytes().await.unwrap().to_vec();
     assert!(body.content.next_field().await.unwrap().is_none());
@@ -203,13 +203,21 @@ async fn upload(
         ImageSha::from_upload_name(&name),
         Some(ImageSha::digest(&bytes))
     );
+    assert!(name.starts_with("closet-v1-"));
+    assert_eq!(
+        DeliveryFormat::from_upload_name(&name).unwrap().mime(),
+        content_type
+    );
+    let decoded = image::load_from_memory(&bytes).unwrap();
+    assert!(decoded.width() <= 2048 && decoded.height() <= 2048);
+    assert!(bytes.len() <= closet::images::MAX_DELIVERY_BYTES);
     if !protocol.drop_upload.load(Ordering::SeqCst) {
         state.sequence += 1;
         let id = NativeImageId::try_from(format!("{:032x}", state.sequence + 1000)).unwrap();
         let record = NativeImage {
             id: id.clone(),
             name,
-            content_type: "image/png".into(),
+            content_type,
             filesize: bytes.len() as u64,
         };
         state.images.insert(id, Stored { record, bytes });
@@ -233,7 +241,7 @@ async fn original(
     let id = NativeImageId::try_from(path.into_inner().id).unwrap();
     let state = ctx.context().state.lock().await;
     Ok(match state.images.get(&id) {
-        Some(image) => raw(200, image.bytes.clone(), "image/png"),
+        Some(image) => raw(200, image.bytes.clone(), &image.record.content_type),
         None => raw(404, Vec::new(), "image/png"),
     })
 }
@@ -446,8 +454,10 @@ impl Fixture {
         }
     }
     fn source(&self) -> SourceSnapshot {
+        self.source_bytes(png())
+    }
+    fn source_bytes(&self, bytes: Vec<u8>) -> SourceSnapshot {
         let items = Self::source_items();
-        let bytes = png();
         let sha = ImageSha::digest(&bytes);
         let images = self.directory.path().join("wardrobe-images");
         std::fs::create_dir_all(&images).unwrap();
@@ -480,19 +490,41 @@ impl Fixture {
     }
     async fn add(&self, id: u32, name: String, bytes: Vec<u8>) -> NativeImageId {
         let id = NativeImageId::try_from(format!("{id:032x}")).unwrap();
+        let content_type = DeliveryFormat::from_upload_name(&name)
+            .map_or("image/png", DeliveryFormat::mime)
+            .into();
         self.protocol.state.lock().await.images.insert(
             id.clone(),
             Stored {
                 record: NativeImage {
                     id: id.clone(),
                     name,
-                    content_type: "image/png".into(),
+                    content_type,
                     filesize: bytes.len() as u64,
                 },
                 bytes,
             },
         );
         id
+    }
+    fn delivery(&self) -> PreparedImage {
+        let bytes = png();
+        let path = self.directory.path().join("delivery-source.png");
+        std::fs::write(&path, &bytes).unwrap();
+        prepare_images(vec![LocalImage {
+            sha256: ImageSha::digest(&bytes),
+            path,
+            size: bytes.len() as u64,
+            native_hint: None,
+            slots: vec![],
+        }])
+        .unwrap()
+        .remove(0)
+    }
+    async fn add_delivery(&self, id: u32) -> NativeImageId {
+        let image = self.delivery();
+        self.add(id, image.upload_name(), image.bytes().to_vec())
+            .await
     }
     async fn restart_backend(&mut self) {
         let store = Store::open(self.directory.path().join("closet.sqlite3"))
@@ -524,9 +556,7 @@ impl Fixture {
 async fn one_sync_uploads_verifies_prunes_and_reuses_without_changing_sources() {
     let fixture = Fixture::new().await;
     let source = fixture.source();
-    let old = fixture
-        .add(1, ImageSha::digest(&png()).upload_name(), png())
-        .await; // Existing identical bytes are reused.
+    let old = fixture.add_delivery(1).await; // Existing delivery bytes are reused.
     let unrelated = fixture
         .add(2, "another-integration.png".into(), png())
         .await;
@@ -590,6 +620,187 @@ async fn lost_upload_reply_reconciles_once_and_definite_rejection_can_retry() {
         .await
         .unwrap();
     assert_eq!(fixture.protocol.state.lock().await.posts, 2);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn optimized_jpeg_reconciles_legacy_pending_bytes_before_upload_and_reuses_wire_identity() {
+    use closet::{
+        client::response,
+        fence::{
+            FenceAcquire, FenceStatus, FenceToken, FenceUpload, UploadClaimAction,
+            UploadClaimStatus,
+        },
+    };
+    use reqwest::Method;
+    let fixture = Fixture::new().await;
+    let manifest: ImageManifest =
+        serde_json::from_slice(include_bytes!("fixtures/image-policy/manifest.json")).unwrap();
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/image-policy/images")
+            .join(format!("{}.png", manifest.images[1].sha256)),
+    )
+    .unwrap();
+    let source_sha = ImageSha::digest(&bytes);
+    let source = fixture.source_bytes(bytes.clone());
+    let input_path = fixture
+        .directory
+        .path()
+        .join("wardrobe-images")
+        .join(format!("{source_sha}.png"));
+    let manifest_path = fixture.directory.path().join("wardrobe-images.json");
+    let source_manifest = std::fs::read(&manifest_path).unwrap();
+    let token = FenceToken::new().unwrap();
+    response::<FenceStatus>(
+        fixture
+            .api
+            .request(Method::POST, "/inventory/fence")
+            .unwrap()
+            .json(&FenceAcquire {
+                token: token.clone(),
+                expected_revision: 0,
+            }),
+    )
+    .await
+    .unwrap();
+    let claim = response::<UploadClaimStatus>(
+        fixture
+            .api
+            .request(Method::POST, "/inventory/fence/uploads")
+            .unwrap()
+            .json(&FenceUpload {
+                token: token.clone(),
+                sha256: source_sha.clone(),
+                action: UploadClaimAction::Begin,
+            }),
+    )
+    .await
+    .unwrap();
+    assert!(claim.data.claimed);
+    let state = fixture.options().state_directory.unwrap();
+    std::fs::create_dir(&state).unwrap();
+    let token_path = state.join("fence-token");
+    std::fs::write(&token_path, token.as_str()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    assert_eq!(
+        inventory_sync(&fixture.api, &source, &fixture.options())
+            .await
+            .unwrap_err()
+            .error_code,
+        "image_upload_pending"
+    );
+    assert_eq!(fixture.protocol.state.lock().await.posts, 0);
+    assert_eq!(fixture.store.counts().await.unwrap().1, 0);
+    let legacy = fixture
+        .add(1, source_sha.upload_name(), bytes.clone())
+        .await;
+    let result = inventory_sync(&fixture.api, &source, &fixture.options())
+        .await
+        .unwrap();
+    assert!(result.data.verified);
+    let counts = result.data.images.unwrap();
+    assert_eq!((counts.uploaded, counts.pruned), (1, 1));
+    let live = fixture.store.active_items().await.unwrap();
+    let native = fixture.protocol.state.lock().await;
+    assert!(!native.images.contains_key(&legacy));
+    assert_eq!(native.images.len(), 1);
+    let stored = native.images.values().next().unwrap();
+    assert_eq!(stored.record.content_type, "image/jpeg");
+    assert!(stored.record.name.starts_with("closet-v1-") && stored.record.name.ends_with(".jpg"));
+    assert_ne!(ImageSha::digest(&stored.bytes), source_sha);
+    assert!(live[0].images[0].url.contains(stored.record.id.as_str()));
+    let deployed = stored.record.id.clone();
+    drop(native);
+    let repeat = inventory_sync(&fixture.api, &source, &fixture.options())
+        .await
+        .unwrap();
+    assert_eq!(repeat.data.images.unwrap().uploaded, 0);
+    let native = fixture.protocol.state.lock().await;
+    assert_eq!(native.posts, 1);
+    assert!(native.images.contains_key(&deployed));
+    drop(native);
+    assert_eq!(std::fs::read(input_path).unwrap(), bytes);
+    assert_eq!(std::fs::read(manifest_path).unwrap(), source_manifest);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn dry_run_counts_distinct_delivery_bytes_and_apply_maps_every_source() {
+    use image::ImageEncoder;
+    let fixture = Fixture::new().await;
+    let mut items = Fixture::source_items();
+    let mut second = items[0].clone();
+    second.id = "example-second-source".into();
+    items.push(second);
+    let raw_source = png();
+    let decoded = image::load_from_memory(&raw_source).unwrap();
+    let mut with_metadata = Vec::new();
+    let mut encoder = image::codecs::png::PngEncoder::new(&mut with_metadata);
+    encoder
+        .set_exif_metadata(
+            b"II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x01\0\0\0\0\0\0\0".to_vec(),
+        )
+        .unwrap();
+    encoder
+        .write_image(
+            decoded.as_bytes(),
+            decoded.width(),
+            decoded.height(),
+            decoded.color().into(),
+        )
+        .unwrap();
+    let directory = fixture.directory.path().join("dedup-images");
+    std::fs::create_dir(&directory).unwrap();
+    let mut mappings = Vec::new();
+    for (index, bytes) in [raw_source, with_metadata].into_iter().enumerate() {
+        let sha = ImageSha::digest(&bytes);
+        std::fs::write(directory.join(format!("{sha}.png")), bytes).unwrap();
+        mappings.push(ManifestImage {
+            item_id: items[index].id.clone(),
+            sha256: sha,
+            image_index: Some(0),
+            native_id: None,
+            upload_name: None,
+        });
+    }
+    let path = fixture.directory.path().join("dedup-manifest.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&ImageManifest {
+            version: 1,
+            images: mappings,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let catalog = closet::models::validate_catalog(items).unwrap();
+    let local = LocalImages::read(&path, &directory, catalog.items()).unwrap();
+    assert_ne!(
+        local.assets[0].source().sha256,
+        local.assets[1].source().sha256
+    );
+    assert_eq!(local.assets[0].wire_sha(), local.assets[1].wire_sha());
+    let source = SourceSnapshot::new(catalog, Some(local), None);
+    let mut options = fixture.options();
+    options.dry_run = true;
+    let preview = inventory_sync(&fixture.api, &source, &options)
+        .await
+        .unwrap();
+    assert_eq!(preview.data.images.unwrap().would_upload, 1);
+    options.dry_run = false;
+    let applied = inventory_sync(&fixture.api, &source, &options)
+        .await
+        .unwrap();
+    assert_eq!(applied.data.images.unwrap().uploaded, 1);
+    let current = fixture.store.active_items().await.unwrap();
+    assert_eq!(current.len(), 2);
+    assert_eq!(current[0].images[0].url, current[1].images[0].url);
+    assert_eq!(fixture.protocol.state.lock().await.posts, 1);
     fixture.close().await;
 }
 #[tokio::test]
@@ -656,7 +867,7 @@ async fn writer_is_blocked_during_native_delete_without_holding_a_sql_transactio
     let fixture = Fixture::new().await;
     let source = fixture.source();
     let sha = ImageSha::digest(&png());
-    fixture.add(1, sha.upload_name(), png()).await;
+    fixture.add_delivery(1).await;
     fixture.add(2, sha.upload_name(), png()).await;
     fixture.protocol.hold_delete.store(true, Ordering::SeqCst);
     {
@@ -691,7 +902,7 @@ async fn uncertain_delete_recovers_exact_pending_ids_after_backend_restart() {
     let mut fixture = Fixture::new().await;
     let source = fixture.source();
     let sha = ImageSha::digest(&png());
-    let kept = fixture.add(1, sha.upload_name(), png()).await;
+    let kept = fixture.add_delivery(1).await;
     let obsolete = fixture.add(2, sha.upload_name(), png()).await;
     fixture.protocol.fail_delete.store(true, Ordering::SeqCst);
     assert_eq!(
@@ -730,6 +941,67 @@ async fn uncertain_delete_recovers_exact_pending_ids_after_backend_restart() {
     assert_eq!(state.deletes, vec![obsolete.clone(), obsolete.clone()]);
     assert!(state.images.contains_key(&kept));
     assert!(!state.images.contains_key(&obsolete));
+    drop(state);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn pending_cleanup_blocks_reintroduced_native_references_but_local_bytes_can_recover() {
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let kept = fixture.add_delivery(1).await;
+    let obsolete = fixture
+        .add(2, ImageSha::digest(&png()).upload_name(), png())
+        .await;
+    fixture.protocol.fail_delete.store(true, Ordering::SeqCst);
+    assert_eq!(
+        inventory_sync(&fixture.api, &source, &fixture.options())
+            .await
+            .unwrap_err()
+            .error_code,
+        "cleanup_pending"
+    );
+    fixture.protocol.fail_delete.store(false, Ordering::SeqCst);
+    let mut items = Fixture::source_items();
+    items[0].images[0].url = format!(
+        "https://{}/api/image/serve/{obsolete}/original",
+        fixture.native.local_addr()
+    );
+    let catalog = closet::models::validate_catalog(items).unwrap();
+    let references_only = SourceSnapshot::new(catalog.clone(), None, None);
+    assert_eq!(
+        inventory_sync(&fixture.api, &references_only, &fixture.options())
+            .await
+            .unwrap_err()
+            .error_code,
+        "cleanup_source_conflict"
+    );
+    let state = fixture.protocol.state.lock().await;
+    assert!(state.images.contains_key(&obsolete));
+    assert_eq!(state.deletes, vec![obsolete.clone()]);
+    drop(state);
+    assert_eq!(fixture.store.counts().await.unwrap().0, 1);
+    // The same outgoing slot is recoverable when its reviewed local bytes are
+    // explicitly bound. Simulate the current deployment disappearing as well.
+    fixture.protocol.state.lock().await.images.remove(&kept);
+    let local = LocalImages::read(
+        &fixture.directory.path().join("wardrobe-images.json"),
+        &fixture.directory.path().join("wardrobe-images"),
+        catalog.items(),
+    )
+    .unwrap();
+    let recoverable = SourceSnapshot::new(catalog, Some(local), None);
+    let output = inventory_sync(&fixture.api, &recoverable, &fixture.options())
+        .await
+        .unwrap();
+    assert!(output.data.verified);
+    let counts = output.data.images.unwrap();
+    assert_eq!((counts.uploaded, counts.pruned), (1, 1));
+    let current = fixture.store.active_items().await.unwrap();
+    let state = fixture.protocol.state.lock().await;
+    assert!(!state.images.contains_key(&obsolete));
+    let record = state.images.values().next().unwrap();
+    assert!(current[0].images[0].url.contains(record.record.id.as_str()));
     drop(state);
     fixture.close().await;
 }

@@ -55,7 +55,9 @@ ha-closet inventory sync --input wardrobe.toml
 Local photos live in `wardrobe-images/` and are referenced by their SHA, not a
 Home Assistant URL. The same command reuses or uploads them, verifies the
 inventory and removes obsolete Closet-managed copies. Other Home Assistant
-images are left alone; source files are never rewritten.
+images are left alone; source files are never rewritten. Validation and sync
+automatically resize and encode local photos for faster loading, with size and
+quality limits checked before upload.
 
 Existing JSON catalogs still work. See the [catalog format](docs/catalog.md)
 and [CLI reference](docs/cli.md) for the schema and revision/retry controls.
@@ -103,6 +105,9 @@ stops working, the app keeps the last status. Everything stays in the inventory;
 
 Enrollment works on a phone or tablet, but the UHF reader detects the tags, not
 the phone. Clothes that cannot comfortably take a tag can stay untagged.
+Movement history stays with each physical piece, even when its tag changes.
+Analytics shows wear trends and most-worn pieces, and can pick a ready piece
+that has had less attention. It builds up from observed history.
 Tracking starts disabled. [Setup, enrollment and recovery](docs/rfid.md).
 
 ## Today

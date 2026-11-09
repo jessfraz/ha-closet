@@ -28,7 +28,9 @@ _ROUTES = (
     (re.compile(r"inventory/fence"), frozenset({"POST", "DELETE"})),
     (re.compile(r"today/generate"), frozenset({"POST"})),
     (
-        re.compile(r"tracking|tracking/projection|tracking/export|tracking/history"),
+        re.compile(
+            r"tracking|tracking/projection|tracking/export|tracking/history|tracking/coverage|tracking/analytics"
+        ),
         frozenset({"GET"}),
     ),
     (re.compile(r"tracking/units/[a-f0-9-]{36}/history"), frozenset({"GET"})),
@@ -77,7 +79,9 @@ class ClosetView(HomeAssistantView):
             else {"limit", "page_token"}
             if path == "tracking/projection"
             else {"before", "limit"}
-            if path.endswith("/history")
+            if path.endswith("/history") or path == "tracking/coverage"
+            else {"days", "pick_seed"}
+            if path == "tracking/analytics"
             else set()
         )
         if (
@@ -86,7 +90,11 @@ class ClosetView(HomeAssistantView):
         ):
             raise web.HTTPBadRequest(reason="Unsupported query parameters")
         user = request["hass_user"]
-        private_tracking = path == "tracking/export" or path.endswith("/history")
+        private_tracking = path in {
+            "tracking/export",
+            "tracking/coverage",
+            "tracking/analytics",
+        } or path.endswith("/history")
         if not user.is_active or (
             (request.method != "GET" or private_tracking) and not user.is_admin
         ):

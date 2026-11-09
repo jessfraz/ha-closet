@@ -20,6 +20,139 @@
         ],
         "type": "string"
       },
+      "AnalyticsItem": {
+        "additionalProperties": false,
+        "properties": {
+          "inferred_wears": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "item": {
+            "$ref": "#/components/schemas/CatalogItem"
+          },
+          "last_worn_at": {
+            "description": "Latest valid inference across retained history, not just the selected window.",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "tracked_units": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unit_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inferred_wears",
+          "item",
+          "tracked_units",
+          "unit_count"
+        ],
+        "type": "object"
+      },
+      "AnalyticsReport": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/WearDay"
+            },
+            "type": "array"
+          },
+          "days": {
+            "format": "uint16",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "distinct_items_worn": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "healthy_observation_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inferred_wears": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minimum_observation_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "most_worn": {
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsItem"
+            },
+            "type": "array"
+          },
+          "overlooked": {
+            "items": {
+              "$ref": "#/components/schemas/OverlookedUnit"
+            },
+            "type": "array"
+          },
+          "pick": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OverlookedUnit"
+              }
+            ],
+            "nullable": true
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "total_units": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tracked_units": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tracking_enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "as_of",
+          "daily",
+          "days",
+          "distinct_items_worn",
+          "from",
+          "healthy_observation_ms",
+          "inferred_wears",
+          "minimum_observation_ms",
+          "most_worn",
+          "overlooked",
+          "timezone",
+          "total_units",
+          "tracked_units",
+          "tracking_enabled"
+        ],
+        "type": "object"
+      },
       "AreaConfig": {
         "additionalProperties": false,
         "properties": {
@@ -101,6 +234,7 @@
       },
       "BindingRetirement": {
         "enum": [
+          "mistaken_pairing",
           "replaced",
           "unbound",
           "unit_retired",
@@ -266,6 +400,77 @@
         ],
         "type": "object"
       },
+      "CoverageEndReason": {
+        "enum": [
+          "coverage_unavailable",
+          "restart",
+          "configuration_changed",
+          "tracking_disabled",
+          "import"
+        ],
+        "type": "string"
+      },
+      "CoverageHistoryPage": {
+        "additionalProperties": false,
+        "properties": {
+          "intervals": {
+            "items": {
+              "$ref": "#/components/schemas/CoverageInterval"
+            },
+            "type": "array"
+          },
+          "next_before": {
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "intervals"
+        ],
+        "type": "object"
+      },
+      "CoverageInterval": {
+        "additionalProperties": false,
+        "properties": {
+          "configuration_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "end_reason": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CoverageEndReason"
+              }
+            ],
+            "nullable": true
+          },
+          "ended_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "verified_through": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "configuration_version",
+          "id",
+          "started_at",
+          "verified_through"
+        ],
+        "type": "object"
+      },
       "CoverageProof": {
         "oneOf": [
           {
@@ -401,6 +606,7 @@
           "tracking_pause",
           "retirement",
           "tag_unbound",
+          "mistaken_pairing",
           "tag_bound",
           "tag_replaced",
           "undo",
@@ -413,7 +619,8 @@
           "old_evidence",
           "invalid_clock",
           "enrollment_isolation",
-          "installation_update"
+          "installation_update",
+          "import"
         ],
         "type": "string"
       },
@@ -938,7 +1145,8 @@
           "undo",
           "archive",
           "restore",
-          "quantity_reconciliation"
+          "quantity_reconciliation",
+          "import"
         ],
         "type": "string"
       },
@@ -1111,7 +1319,7 @@
       "InstallationState": {
         "enum": [
           "needs_tag",
-          "seamstress_queued",
+          "queued",
           "installed",
           "exempt"
         ],
@@ -1531,6 +1739,51 @@
           "key",
           "request_hash",
           "response"
+        ],
+        "type": "object"
+      },
+      "OverlookedUnit": {
+        "additionalProperties": false,
+        "properties": {
+          "inferred_wears": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "item": {
+            "$ref": "#/components/schemas/CatalogItem"
+          },
+          "last_worn_at": {
+            "description": "Latest valid inference across retained history, not just the selected window.",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "observed_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ordinal": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ready_to_wear": {
+            "type": "boolean"
+          },
+          "unit_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "inferred_wears",
+          "item",
+          "observed_ms",
+          "ordinal",
+          "ready_to_wear",
+          "unit_id"
         ],
         "type": "object"
       },
@@ -2987,6 +3240,9 @@
           {
             "additionalProperties": false,
             "properties": {
+              "mistaken": {
+                "type": "boolean"
+              },
               "note": {
                 "type": "string"
               },
@@ -3491,6 +3747,12 @@
             },
             "type": "array"
           },
+          "coverage": {
+            "items": {
+              "$ref": "#/components/schemas/CoverageInterval"
+            },
+            "type": "array"
+          },
           "data_source": {
             "$ref": "#/components/schemas/DataSource"
           },
@@ -3802,6 +4064,31 @@
         ],
         "type": "object"
       },
+      "WearDay": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "format": "date",
+            "type": "string"
+          },
+          "inferred_wears": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "inferred_wears",
+          "observed_ms"
+        ],
+        "type": "object"
+      },
       "WeatherContext": {
         "properties": {
           "coverage": {
@@ -3855,13 +4142,31 @@
   "info": {
     "description": "Inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "openapi": "3.0.3",
   "paths": {
     "/": {
       "get": {
         "operationId": "index",
+        "responses": {
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/analytics.js": {
+      "get": {
+        "operationId": "analytics_script",
         "responses": {
           "default": {
             "content": {
@@ -4790,6 +5095,64 @@
         ]
       }
     },
+    "/v1/tracking/analytics": {
+      "get": {
+        "operationId": "tracking_analytics",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "schema": {
+              "format": "uint16",
+              "minimum": 0,
+              "nullable": true,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pick_seed",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "nullable": true,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsReport"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Observed wear and eligible overlooked pieces, derived from retained evidence.",
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
     "/v1/tracking/commands": {
       "post": {
         "operationId": "tracking_command",
@@ -4838,6 +5201,63 @@
           }
         },
         "summary": "Every administrative tracking operation uses its own revision and replay key.",
+        "tags": [
+          "tracking"
+        ]
+      }
+    },
+    "/v1/tracking/coverage": {
+      "get": {
+        "operationId": "tracking_coverage",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "before",
+            "schema": {
+              "format": "int64",
+              "nullable": true,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "uint16",
+              "minimum": 0,
+              "nullable": true,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageHistoryPage"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Verified coverage intervals distinguish observed time from tracking gaps.",
         "tags": [
           "tracking"
         ]

@@ -75,6 +75,41 @@ components as separate stable catalog records before enrollment, each with its
 own quantity and tag. A single tag tracks one independently movable component,
 not a whole set. Keep the shared purchase/fitting metadata on those records.
 
+### History and analytics
+
+Movement history has no automatic expiry. Each physical unit keeps its own
+journal, even after tag replacement, retirement or catalog archival. Events
+retain UTC time, before/after state, areas, reason, manual/automatic attribution,
+observation references and the applicable configuration version. Corrections
+and undo append events rather than rewriting what was previously recorded.
+
+Verified coverage intervals are retained too. Their start, last verified time,
+end reason and configuration version distinguish observed time from gaps.
+Checkpoints are written at most once per minute, not once per radio read. After
+a crash, an unfinished interval ends at its last durable checkpoint; downtime
+is never counted as observation. Raw radio diagnostics remain short-lived.
+
+The **Analytics** page shows observed wear over the last 30, 90 or 365 days:
+
+- **Most worn:** count inferred departures from closet/rewear into Being worn,
+  once per episode. Repeated reads, continued absence and diagnostic changes
+  are not additional wears. Keep manual assertions and corrections identifiable.
+- **Overlooked pieces:** time since last observed wear, qualified by how much
+  healthy, enrolled tracking time exists. Untagged time and reader outages are
+  not evidence of neglect. Compare an appropriate season or chosen time window.
+- **An overlooked-piece pick:** choose from currently ready pieces with at
+  least seven healthy observed days in the selected period. The server checks
+  availability again for each pick. Individual copies qualify independently.
+
+Rewears between cleaning and care turnaround can be derived later from the
+same retained events. Cleaning statuses use the documented household
+assumptions.
+
+Compute these from the journal and coverage intervals, per unit before rolling
+up to catalog records. Fold in correction/undo events; do not maintain a second
+editable wear counter. The administrator-only history and coverage endpoints
+are cursor-paged. Analytics reads the retained history in bounded pages.
+
 ## First garment
 
 1. Sync the existing catalog normally. The same photos, filters and search are
@@ -116,7 +151,10 @@ No-tag garments stay usable in the inventory and do not infer absence.
 **Replace tag** preserves the unit UUID, confirmed status and history, retires
 the old binding,
 and requires a fresh capture for the new EPC. Old-tag reads cannot move the unit.
-**Unbind** removes a mistaken binding without deleting its history. An audited
+**Unbind mistaken tag** records that the association was wrong. Analytics excludes
+that binding period from wear and observed-time totals; the original events
+remain in the audit. Ordinary tag replacement retains valid earlier wear.
+The CLI also supports an ordinary unbind when the association was correct. An audited
 **Undo** is allowed only when subsequent changes and uniqueness checks permit
 it. A replacement's new tag cannot silently take over another unit's identity.
 
@@ -212,6 +250,7 @@ ha-closet tracking status
 ha-closet tracking config apply --input tracking.json \
   --if-match '"0"' --idempotency-key configure-first-reader
 ha-closet tracking history --limit 50
+ha-closet tracking coverage --limit 50
 ha-closet tracking export --output tracking-backup.json
 ```
 
@@ -261,12 +300,15 @@ backup mechanism; copying a live database without its WAL is not a backup.
 HA entity state is not the tracking authority.
 
 The versioned tracking export includes units, active/retired bindings,
-configuration versions, audit history, idempotency receipts and durable reader
+configuration versions, audit history, verified coverage intervals, idempotency
+receipts and durable reader
 ownership/restoration operations. It excludes catalog metadata and secrets.
 The CLI writes it atomically with mode 0600 and never overwrites a destination.
 For restore, sync the same stable catalog IDs first, then import under the
-current tracking revision. Import validates identities and uniqueness and resets
-live evidence. It does not rewrite the catalog. Protect and test the complete
+current tracking revision. Import validates identities and uniqueness, preserves
+existing history and resets live evidence. An older or altered export cannot
+silently erase newer movement events. Imported state changes are themselves
+audited. Import does not rewrite the catalog. Protect and test the complete
 SQLite backup for larger histories; bounded JSON exports fail explicitly rather
 than silently truncating data.
 
