@@ -1423,6 +1423,123 @@ async fn cancelled_toml_upload_reconciles_real_object_without_another_post() {
 }
 
 #[tokio::test]
+async fn sync_deadline_recovers_a_durable_pending_upload_with_a_longer_same_owner_budget() {
+    use closet::{
+        client::response,
+        fence::{FenceAcquire, FenceStatus, FenceToken},
+    };
+    use reqwest::Method;
+
+    let mut fixture = Fixture::new().await;
+    let input = toml_source::write(fixture.directory.path());
+    let source = SourceSnapshot::from_toml(&input).unwrap();
+    let mut options = fixture.options();
+    options.operation_timeout = Some(Duration::from_secs(1));
+    fixture.protocol.hold_upload.store(true, Ordering::SeqCst);
+    let first = {
+        let operation = inventory_sync(&fixture.api, &source, &options);
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => panic!("unexpected completion before upload barrier: {result:?}"),
+            _ = fixture.protocol.upload_entered.notified() => {}
+        }
+        tokio::time::timeout(Duration::from_secs(3), operation).await
+    };
+    fixture.protocol.hold_upload.store(false, Ordering::SeqCst);
+    fixture.protocol.upload_release.notify_one();
+    let before = fixture.store.counts().await.unwrap();
+    let token_path = options
+        .state_directory
+        .as_ref()
+        .unwrap()
+        .join("fence-token");
+    let token_bytes = std::fs::read_to_string(&token_path).unwrap();
+    let wire_sha = {
+        let native = fixture.protocol.state.lock().await;
+        assert_eq!(native.posts, 1);
+        ImageSha::digest(&native.images.values().next().unwrap().bytes)
+    };
+    fixture.restart_backend().await;
+    let pending = response::<FenceStatus>(
+        fixture
+            .api
+            .request(Method::POST, "/inventory/fence")
+            .unwrap()
+            .json(&FenceAcquire {
+                token: FenceToken::try_from(token_bytes.clone()).unwrap(),
+                expected_revision: 0,
+            }),
+    )
+    .await
+    .unwrap()
+    .data;
+    options.operation_timeout = Some(Duration::from_secs(5));
+    let recovered = inventory_sync(&fixture.api, &source, &options)
+        .await
+        .unwrap();
+    let final_counts = fixture.store.counts().await.unwrap();
+    let posts = fixture.protocol.state.lock().await.posts;
+    let token_after = std::fs::read_to_string(token_path).unwrap();
+    fixture.close().await;
+
+    assert_eq!(first.unwrap().unwrap_err().error_code, "sync_timeout");
+    assert_eq!(before, (0, 0, 0));
+    assert_eq!(pending.uploads, [wire_sha]);
+    assert!(pending.pending.is_empty());
+    assert_eq!(token_after, token_bytes);
+    assert!(recovered.data.verified);
+    assert_eq!(recovered.data.images.unwrap().uploaded, 0);
+    assert_eq!(posts, 1);
+    assert_eq!(final_counts, (1, 2, 0));
+}
+
+#[tokio::test]
+async fn invalid_library_sync_budgets_fail_before_source_reads_or_connections() {
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    std::fs::remove_dir_all(fixture.directory.path().join("wardrobe-images")).unwrap();
+    let Fixture {
+        directory,
+        store,
+        context,
+        backend,
+        native,
+        protocol,
+        api,
+    } = fixture;
+    native.close().await.unwrap();
+    let mut codes = Vec::new();
+    for budget in [
+        Duration::ZERO,
+        Duration::from_secs(7201),
+        Duration::from_secs(7200) + Duration::from_nanos(1),
+    ] {
+        let options = SyncOptions {
+            operation_timeout: Some(budget),
+            state_directory: Some(directory.path().join("state")),
+            ..Default::default()
+        };
+        codes.push(
+            inventory_sync(&api, &source, &options)
+                .await
+                .unwrap_err()
+                .error_code,
+        );
+    }
+    let counts = store.counts().await.unwrap();
+    let owner_state_created = directory.path().join("state").exists();
+    let native_posts = protocol.state.lock().await.posts;
+    let connections = protocol.connections.load(Ordering::SeqCst);
+    backend.close().await.unwrap();
+    context.shutdown().await.unwrap();
+    store.close().await;
+    assert_eq!(codes, ["invalid_sync_timeout"; 3]);
+    assert_eq!(counts, (0, 0, 0));
+    assert!(!owner_state_created);
+    assert_eq!((native_posts, connections), (0, 0));
+}
+
+#[tokio::test]
 async fn toml_native_url_budget_rejects_before_any_https_or_websocket_request() {
     use closet::source::{
         CompiledCatalog,

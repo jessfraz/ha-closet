@@ -39,7 +39,7 @@ struct Cli {
     /// Read the selected credential from an owner-only file instead of its env.
     #[arg(long, global = true)]
     token_file: Option<PathBuf>,
-    /// Closet API request deadline in seconds. Complete sync is bounded to 10 minutes.
+    /// Deadline for each Closet API request in seconds.
     #[arg(long, default_value = "30", value_parser = clap::value_parser!(u64).range(1..=300), global = true)]
     timeout: u64,
     #[command(subcommand)]
@@ -83,6 +83,9 @@ enum Inventory {
         /// Persistent owner-token directory. Defaults to the user state directory.
         #[arg(long)]
         state_dir: Option<PathBuf>,
+        /// Complete sync budget in seconds. Defaults: Home Assistant 3600, native 600.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=closet::sync::MAX_SYNC_TIMEOUT.as_secs()))]
+        sync_timeout: Option<u64>,
     },
 }
 
@@ -374,6 +377,7 @@ async fn run(cli: Cli) -> Result<()> {
             if_match,
             idempotency_key,
             state_dir,
+            sync_timeout,
             ..
         }) => {
             let source = sync_source.ok_or_else(|| Failure::local("invalid_catalog"))?;
@@ -386,6 +390,7 @@ async fn run(cli: Cli) -> Result<()> {
                     if_match,
                     idempotency_key,
                     state_directory: state_dir,
+                    operation_timeout: sync_timeout.map(Duration::from_secs),
                 },
             )
             .await?;

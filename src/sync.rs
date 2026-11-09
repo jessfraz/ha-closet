@@ -25,7 +25,7 @@ use std::{
     time::Duration,
 };
 
-pub const SYNC_TIMEOUT: Duration = Duration::from_secs(600);
+pub const MAX_SYNC_TIMEOUT: Duration = Duration::from_secs(7200);
 #[derive(Default)]
 pub struct SyncOptions {
     pub dry_run: bool,
@@ -33,6 +33,22 @@ pub struct SyncOptions {
     pub if_match: Option<String>,
     pub idempotency_key: Option<String>,
     pub state_directory: Option<PathBuf>,
+    /// Complete network sync budget, independent of per-request deadlines.
+    pub operation_timeout: Option<Duration>,
+}
+impl SyncOptions {
+    fn timeout(&self, transport: Transport) -> Result<Duration> {
+        let timeout = self
+            .operation_timeout
+            .unwrap_or(Duration::from_secs(match transport {
+                Transport::HomeAssistant => 3600,
+                Transport::Native => 600,
+            }));
+        if timeout.is_zero() || timeout > MAX_SYNC_TIMEOUT {
+            return Err(Failure::local("invalid_sync_timeout"));
+        }
+        Ok(timeout)
+    }
 }
 #[derive(Debug, Default, Serialize)]
 pub struct ImageSummary {
@@ -803,6 +819,7 @@ pub async fn inventory_sync(
     source: &SourceSnapshot,
     options: &SyncOptions,
 ) -> Result<Output<SyncOutput>> {
+    let timeout = options.timeout(api.transport)?;
     if source.assets().is_some() && api.transport != Transport::HomeAssistant {
         return Err(Failure::local("image_transport_required"));
     }
@@ -844,5 +861,31 @@ pub async fn inventory_sync(
             },
         })
     };
-    tokio::select! { result=tokio::time::timeout(SYNC_TIMEOUT,operation)=>result.map_err(|_|Failure::local("sync_timeout"))?, _=tokio::signal::ctrl_c()=>Err(Failure::local("sync_cancelled")) }
+    tokio::select! { result=tokio::time::timeout(timeout,operation)=>result.map_err(|_|Failure::local("sync_timeout"))?, _=tokio::signal::ctrl_c()=>Err(Failure::local("sync_cancelled")) }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{client::Transport, sync::SyncOptions};
+    use std::time::Duration;
+
+    #[test]
+    fn sync_budget_defaults_follow_transport_and_allow_a_bounded_override() {
+        let mut options = SyncOptions::default();
+        assert_eq!(
+            options.timeout(Transport::HomeAssistant).unwrap(),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            options.timeout(Transport::Native).unwrap(),
+            Duration::from_secs(600)
+        );
+        options.operation_timeout = Some(Duration::from_secs(7200));
+        for transport in [Transport::Native, Transport::HomeAssistant] {
+            assert_eq!(
+                options.timeout(transport).unwrap(),
+                Duration::from_secs(7200)
+            );
+        }
+    }
 }

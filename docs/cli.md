@@ -271,8 +271,11 @@ codes. Errors make no stdout output, except a broken output pipe can leave
 partial output.
 
 `--timeout` sets each Closet API request deadline in seconds, including the
-body (default 30, range 1–300). Complete sync has a ten-minute budget; native
-reads/WebSocket commands have 15 seconds and one upload has 120 seconds.
+body (default 30, range 1–300). Home Assistant sync has a one-hour network
+budget for large photo batches; native catalog sync defaults to ten minutes.
+`inventory sync --sync-timeout SECONDS` overrides that budget (1–7200 seconds).
+Photo preparation runs locally before the network operation. Native reads and
+WebSocket commands have 15 seconds and one upload has 120 seconds.
 Redirects are never followed. A timeout or lost reply does not prove that a
 write was rejected. Only an exact, durable pending deletion can be resumed;
 uploads and inventory writes are never automatically retried.

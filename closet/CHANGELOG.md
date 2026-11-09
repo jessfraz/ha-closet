@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Give large Home Assistant photo syncs a one-hour network budget and a bounded
+  override. Image preparation, upload, inventory verification and cleanup remain
+  one command. Per-request deadlines and safe recovery still apply.
+
 ## 0.3.0
 
 - Add an Analytics page with wear trends, most-worn pieces and overlooked picks.

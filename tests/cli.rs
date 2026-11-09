@@ -571,6 +571,48 @@ impl Service {
     }
 }
 
+#[test]
+fn invalid_sync_budgets_fail_locally_without_echoing_input_or_connecting() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    for budget in ["0", "7201", "sentinel-private-budget"] {
+        let output = call(
+            &["inventory", "sync", "--sync-timeout", budget],
+            &bytes(&catalog()),
+            &[("CLOSET_API_URL", &origin), ("CLOSET_API_TOKEN", TOKEN)],
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("sentinel-private"));
+        failure(output, None, "invalid_arguments");
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn real_cli_sync_accepts_both_operation_budget_boundaries() {
+    let service = Service::new().await;
+    let outputs: Vec<_> = ["1", "7200"]
+        .into_iter()
+        .map(|budget| {
+            service.call(
+                &["inventory", "sync", "--dry-run", "--sync-timeout", budget],
+                &bytes(&catalog()),
+            )
+        })
+        .collect();
+    let counts = service.store.counts().await.unwrap();
+    service.finish().await;
+    for output in outputs {
+        let result = success::<SyncReport>(output, Some(200));
+        assert_eq!(result.data.created, 1);
+    }
+    assert_eq!(counts, (0, 0, 0));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_service_sync_reads_and_conditional_replay_preserve_source_fields() {
     let service = Service::new().await;
