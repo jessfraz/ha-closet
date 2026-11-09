@@ -22,6 +22,53 @@ def state(hass: HomeAssistant, entity_id: str) -> State:
     return result
 
 
+async def test_tracking_health_follows_areas_without_a_global_switch(
+    hass: HomeAssistant,
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    entry = await connect(hass, rust_backend)
+    registry = er.async_get(hass)
+    health_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry.entry_id}_tracking_health"
+    )
+    assert health_id is not None
+    assert state(hass, health_id).state == "disabled"
+    current = await snapshot(rust_backend)
+    original_units = units(current)
+    config = current["config"]
+    assert isinstance(config, dict)
+    # An older client may still send the old switch. Areas determine activation.
+    config["enabled"] = False
+    config["areas"] = [
+        {
+            "id": "fictional-rack",
+            "label": "Fictional rack",
+            "kind": "rewear",
+            "enabled": True,
+        }
+    ]
+    await command(rust_backend, {"type": "configure", "config": config})
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    active = await snapshot(rust_backend)
+    active_config = active["config"]
+    assert isinstance(active_config, dict) and active_config["enabled"] is True
+    assert state(hass, health_id).state in {"warming_up", "needs_attention"}
+    assert units(active) == original_units
+
+    config["enabled"] = True
+    config["areas"] = []
+    await command(rust_backend, {"type": "configure", "config": config})
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    stopped = await snapshot(rust_backend)
+    stopped_config = stopped["config"]
+    assert isinstance(stopped_config, dict) and stopped_config["enabled"] is False
+    assert state(hass, health_id).state == "disabled"
+    assert units(stopped) == original_units
+
+
 async def test_tracking_manual_readiness_entities_and_restore(
     hass: HomeAssistant,
     rust_backend: RustBackend,

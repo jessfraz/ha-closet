@@ -24,7 +24,7 @@ const INSERT_OPERATION: &str =
 const BUMP: &str =
     "UPDATE tracking_state SET revision=revision+1 WHERE singleton=1 RETURNING revision";
 const CONFIGURE: &str =
-    "UPDATE tracking_state SET config=?,enabled=?,configuration_version=? WHERE singleton=1";
+    "UPDATE tracking_state SET config=?,configuration_version=? WHERE singleton=1";
 const UPSERT_INVENTORY: &str = "INSERT INTO tracking_inventory(catalog_id,catalog_quantity,declared_quantity,next_ordinal,needs_reconciliation,capacity_limited,archived) VALUES(?,?,?,?,?,?,?) ON CONFLICT(catalog_id) DO UPDATE SET catalog_quantity=excluded.catalog_quantity,declared_quantity=excluded.declared_quantity,next_ordinal=excluded.next_ordinal,needs_reconciliation=excluded.needs_reconciliation,capacity_limited=excluded.capacity_limited,archived=excluded.archived";
 const UPSERT_UNIT: &str = "INSERT INTO tracking_units(id,catalog_id,ordinal,epc,status,last_confirmed_area,current_area,baseline_at,evidence,fence_at,paused,retired,archived,exception,changed_at,last_event_id,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET epc=excluded.epc,status=excluded.status,last_confirmed_area=excluded.last_confirmed_area,current_area=excluded.current_area,baseline_at=excluded.baseline_at,evidence=excluded.evidence,fence_at=excluded.fence_at,paused=excluded.paused,retired=excluded.retired,archived=excluded.archived,exception=excluded.exception,changed_at=excluded.changed_at,last_event_id=excluded.last_event_id,body=excluded.body";
 const UPSERT_SESSION: &str = "INSERT INTO tracking_sessions(id,port_id,state,capture_version,body) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET port_id=excluded.port_id,state=excluded.state,capture_version=excluded.capture_version,body=excluded.body";
@@ -263,7 +263,7 @@ async fn persist_coverage(
 ) -> Result<()> {
     if !runtime.health(now).absence_coverage_healthy {
         if runtime.coverage_progress.is_some() {
-            let reason = if runtime.config.enabled {
+            let reason = if runtime.config.enabled() {
                 CoverageEndReason::CoverageUnavailable
             } else {
                 CoverageEndReason::TrackingDisabled
@@ -1168,6 +1168,7 @@ impl Store {
             let saved_hash: String = row.try_get("request_hash")?;
             if saved_hash != request_hash
                 && previous_command_hash(&command)?.as_deref() != Some(saved_hash.as_str())
+                && previous_activation_hash(&command)?.as_deref() != Some(saved_hash.as_str())
             {
                 return Err(TrackingError::Conflict("idempotency_conflict"));
             }
@@ -1190,7 +1191,7 @@ impl Store {
         match command {
             TrackingCommand::Configure { config } => {
                 if next.configure(config, now)? {
-                    let reason = if next.config.enabled {
+                    let reason = if next.config.enabled() {
                         CoverageEndReason::ConfigurationChanged
                     } else {
                         CoverageEndReason::TrackingDisabled
@@ -1806,7 +1807,6 @@ impl Store {
             }
             sqlx::query(CONFIGURE)
                 .bind(encode(&next.config)?)
-                .bind(next.config.enabled)
                 .bind(next.configuration_version)
                 .execute(&mut *tx)
                 .await?;
@@ -2258,7 +2258,6 @@ impl Store {
         next.config = data.config;
         sqlx::query(CONFIGURE)
             .bind(encode(&next.config)?)
-            .bind(next.config.enabled)
             .bind(next.configuration_version)
             .execute(&mut *conn)
             .await?;
@@ -3272,10 +3271,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let mut cfg = TrackingConfig {
-            enabled: true,
-            ..TrackingConfig::default()
-        };
+        let mut cfg = TrackingConfig::default();
         cfg.areas.push(AreaConfig {
             id: identifier("closet"),
             label: "Fictional closet".into(),
@@ -3450,8 +3446,52 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
+        // The singleton state has one row at every catalog size. Compare the
+        // released statements against their replacements on this same populated
+        // database, then run the real column-removal migration again.
+        sqlx::raw_sql("ALTER TABLE tracking_state ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1))")
+            .execute(&store.pool).await.unwrap();
+        let previous_queries = [
+            ("previous analytics state", sqlx::query("SELECT enabled FROM tracking_state WHERE singleton=1")),
+            ("previous configure", sqlx::query("UPDATE tracking_state SET config=?,enabled=?,configuration_version=? WHERE singleton=1")
+                .bind(encode(&cfg).unwrap()).bind(true).bind(2_i64)),
+        ];
+        let mut plans = Vec::new();
+        for (name, mut query) in previous_queries {
+            let args = query.take_arguments().unwrap().unwrap();
+            let sql = query.sql();
+            let mut explain = QueryBuilder::<Sqlite>::new("EXPLAIN QUERY PLAN ");
+            explain.push(sql.as_str());
+            let details = sqlx::query_with::<Sqlite, _>(explain.into_sql(), args.clone())
+                .fetch_all(&store.pool)
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.get::<String, _>("detail"))
+                .collect();
+            let mut bytecode = QueryBuilder::<Sqlite>::new("EXPLAIN ");
+            bytecode.push(sql.as_str());
+            let opcodes = sqlx::query_with::<Sqlite, _>(bytecode.into_sql(), args)
+                .fetch_all(&store.pool)
+                .await
+                .unwrap()
+                .len();
+            plans.push(Plan {
+                name,
+                details,
+                opcodes,
+            });
+        }
+        sqlx::raw_sql(include_str!("../../migrations/0008_area_tracking.sql"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
         let queries = [
             ("state", sqlx::query(STATE)),
+            (
+                "analytics state",
+                sqlx::query(crate::tracking::analytics::STATE),
+            ),
             (
                 "inventory page",
                 sqlx::query(INVENTORY).bind("fixture-0800"),
@@ -3477,7 +3517,6 @@ mod tests {
                 "configure",
                 sqlx::query(CONFIGURE)
                     .bind(encode(&cfg).unwrap())
-                    .bind(true)
                     .bind(2_i64),
             ),
             (
@@ -3680,7 +3719,6 @@ mod tests {
             ),
             ("availability", sqlx::query(AVAILABILITY)),
         ];
-        let mut plans = Vec::new();
         for (name, mut query) in queries {
             let args = query.take_arguments().unwrap().unwrap();
             let sql = query.sql();
@@ -3880,7 +3918,6 @@ mod tests {
     }
     fn setup_config() -> TrackingConfig {
         TrackingConfig {
-            enabled: true,
             areas: vec![AreaConfig {
                 id: identifier("closet"),
                 label: "Fictional closet".into(),
@@ -4762,6 +4799,94 @@ mod tests {
                 .await,
             Err(TrackingError::Conflict("idempotency_conflict"))
         ));
+        store.close().await;
+    }
+    #[tokio::test]
+    async fn released_042_activation_requests_replay_after_backup_import() {
+        // Produced by the unmodified 0.4.2 main checkout. Both requests had
+        // enabled=false despite enabled areas, including historical configs.
+        let backup: TrackingExport = serde_json::from_slice(include_bytes!(
+            "../../tests/fixtures/tracking-042-activation/backup.json"
+        ))
+        .unwrap();
+        let now = backup.exported_at + chrono::Duration::seconds(1);
+        let mut items: Vec<CatalogItem> =
+            serde_json::from_str(include_str!("../../config/catalog.example.json")).unwrap();
+        items.truncate(1);
+        let store = Store::open_simulator(now).await.unwrap();
+        store
+            .sync_at(
+                SyncRequest {
+                    items,
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(0),
+                "destination",
+                Some("seed"),
+                now,
+            )
+            .await
+            .unwrap();
+        let revision = store
+            .tracking_snapshot(now)
+            .await
+            .unwrap()
+            .tracking_revision;
+        store
+            .tracking_command(
+                "destination",
+                "restore-backup",
+                revision,
+                TrackingCommand::Import {
+                    data: Box::new(backup.clone()),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let before = store.tracking_export(now).await.unwrap();
+        assert!(before.config.enabled());
+        let requests: [(&str, &[u8]); 2] = [
+            (
+                "released-configure",
+                include_bytes!("../../tests/fixtures/tracking-042-activation/configure.json"),
+            ),
+            (
+                "released-import",
+                include_bytes!("../../tests/fixtures/tracking-042-activation/import.json"),
+            ),
+        ];
+        for (key, bytes) in requests {
+            let expected = backup
+                .operations
+                .iter()
+                .find(|op| op.actor == "released-operator" && op.key == key)
+                .unwrap();
+            let request: TrackingCommand = serde_json::from_slice(bytes).unwrap();
+            assert_eq!(
+                previous_activation_hash(&request).unwrap().as_deref(),
+                Some(expected.request_hash.as_str())
+            );
+            assert_eq!(digest(bytes), expected.request_hash);
+            assert_ne!(
+                digest(&serde_json::to_vec(&request).unwrap()),
+                expected.request_hash
+            );
+            let receipt = store
+                .tracking_command("released-operator", key, 0, request, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_vec(&receipt).unwrap(),
+                serde_json::to_vec(&expected.response).unwrap()
+            );
+        }
+        let after = store.tracking_export(now).await.unwrap();
+        assert_eq!(before.tracking_revision, after.tracking_revision);
+        assert_eq!(before.configuration_version, after.configuration_version);
+        assert_eq!(before.units, after.units);
+        assert_eq!(before.history, after.history);
         store.close().await;
     }
 }

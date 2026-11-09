@@ -2,7 +2,8 @@
 
 Closet can pair passive UHF RAIN tags with the inventory already in the app.
 The reader supplies observations; Rust decides the status. No model, phone NFC,
-tag-memory programming, or daily check-in is involved. Tracking starts disabled.
+tag-memory programming, or daily check-in is involved. Tracking starts when an
+enabled area is configured.
 
 ## One status per physical garment
 
@@ -111,6 +112,12 @@ editable wear counter. The administrator-only history and coverage endpoints
 are cursor-paged. Analytics reads the retained history in bounded pages.
 
 ## First garment
+
+Tracking starts automatically when an enabled area exists. Removing or disabling
+all areas stops area inference; reader health and commissioning still determine
+whether observations are usable. An enrollment-only position can read tags
+before any area is configured. Adding or changing areas requires fresh coverage
+and the normal warm-up; it never marks garments absent immediately.
 
 1. Sync the existing catalog normally. The same photos, filters and search are
    used for enrollment; no garment description needs retyping.
@@ -242,7 +249,8 @@ bounded reader restoration and closing SQLite. This exceeds Supervisor's
 
 Start from the [fictional configuration](../config/tracking.example.json).
 The layout is illustrative, not a four-antenna coverage recommendation. Leave
-tracking disabled until the real ports, region, power and coverage are verified.
+readers disabled until the real ports, region and power are verified. Confirm
+coverage on each position before relying on automatic absence.
 
 ```sh
 ha-closet tracking config validate --input tracking.json
@@ -318,7 +326,7 @@ configuration before allowing automation. Do not delete someone else's reader
 configuration to make a connection succeed. Disable a managed reader and wait
 for confirmed cleanup before removing it, changing its connection or importing
 tracking data. Unresolved claims retain the old connection for recovery, even
-when tracking is disabled. Closed session history stays restorable after a
+when no areas are active. Closed session history stays restorable after a
 reading position is removed.
 
 ## Before hardware arrives

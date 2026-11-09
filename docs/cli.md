@@ -201,6 +201,11 @@ Catalog metadata stays in the catalog; tracking commands change SQLite runtime
 state. Read `tracking status` for the current tracking ETag before a mutation.
 Its revision is independent of the catalog revision.
 
+Area tracking follows the configured areas automatically. The compatibility
+`enabled` property in responses is computed from enabled areas; older input may
+include it, but cannot override the areas. Enrollment-only reader positions work
+without enabling area inference.
+
 ```sh
 ha-closet tracking config validate --input tracking.json
 ha-closet tracking config apply --input tracking.json \

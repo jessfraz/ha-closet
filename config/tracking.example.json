@@ -1,6 +1,5 @@
 {
   "schema_version": 1,
-  "enabled": false,
   "areas": [
     {
       "id": "example-closet",

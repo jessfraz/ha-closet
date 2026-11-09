@@ -81,7 +81,6 @@
   ],
   "config": {
     "schema_version": 1,
-    "enabled": true,
     "areas": [
       {
         "id": "example-closet",

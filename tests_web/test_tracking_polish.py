@@ -1,5 +1,6 @@
 """Reader-backed position defaults through real service and browser state."""
 
+import pytest
 from playwright.async_api import async_playwright, expect
 
 from tests_ha.conftest import RustBackend, catalog_item
@@ -27,7 +28,7 @@ async def test_new_positions_use_lowest_unused_reported_ports(
             await page.get_by_role(
                 "button", name="Tracking settings", exact=True
             ).click()
-            add = page.get_by_role("button", name="Add reading position", exact=True)
+            add = page.get_by_role("button", name="Add pairing antenna", exact=True)
             positions = page.get_by_role("group", name="Antenna position", exact=True)
             await add.click()
             new = positions.last
@@ -39,6 +40,7 @@ async def test_new_positions_use_lowest_unused_reported_ports(
             await expect(new.get_by_label("Antenna port", exact=True)).to_have_value(
                 "2"
             )
+            await new.get_by_text("Advanced position settings", exact=True).click()
             await new.get_by_label("Position role", exact=True).select_option(
                 "enrollment"
             )
@@ -48,6 +50,9 @@ async def test_new_positions_use_lowest_unused_reported_ports(
                 await expect(
                     positions.last.get_by_label("Antenna port", exact=True)
                 ).to_have_value(expected)
+                await positions.last.get_by_text(
+                    "Advanced position settings", exact=True
+                ).click()
                 await positions.last.get_by_label(
                     "Position role", exact=True
                 ).select_option("enrollment")
@@ -94,9 +99,16 @@ async def test_reader_change_requires_readback_or_explicit_port_and_keeps_row_id
             await page.get_by_role(
                 "button", name="Tracking settings", exact=True
             ).click()
-            await page.get_by_role("button", name="Add reader", exact=True).click()
-            readers = page.get_by_role("group", name="Reader", exact=True)
-            second = readers.nth(1)
+            await page.get_by_role(
+                "button", name="Add pairing antenna", exact=True
+            ).click()
+            positions = page.get_by_role("group", name="Antenna position", exact=True)
+            position = positions.last
+            choice = position.get_by_label("Reader for this position", exact=True)
+            port = position.get_by_label("Antenna port", exact=True)
+            await expect(port).to_have_value("2")
+            await choice.select_option("new-reader")
+            second = position.locator(".tracking-reader-settings")
             await second.get_by_label("Reader label", exact=True).fill(
                 "Example secondary reader"
             )
@@ -104,19 +116,9 @@ async def test_reader_change_requires_readback_or_explicit_port_and_keeps_row_id
             await second.get_by_label("Reader host", exact=True).fill(
                 "reader.example.invalid"
             )
-            await page.get_by_role(
-                "button", name="Add reading position", exact=True
-            ).click()
-            position = page.get_by_role(
-                "group", name="Antenna position", exact=True
-            ).last
-            choice = position.get_by_label("Reader for this position", exact=True)
-            port = position.get_by_label("Antenna port", exact=True)
-            await expect(choice).to_have_value("")
-            await expect(port).to_have_value("")
-            await choice.select_option(label="Example reader")
-            await expect(port).to_have_value("2")
-            await choice.select_option(label="Example secondary reader")
+            conflicting_id = await second.get_by_label(
+                "Reader ID", exact=True
+            ).input_value()
             await expect(port).to_have_value("")
             await expect(position.locator(".antenna-hint")).to_contain_text(
                 "No reader readback"
@@ -124,19 +126,17 @@ async def test_reader_change_requires_readback_or_explicit_port_and_keeps_row_id
             await port.fill("3")
             await choice.select_option(label="Example reader")
             await expect(port).to_have_value("2")
+            await position.get_by_text("Advanced position settings", exact=True).click()
             await position.get_by_label("Position role", exact=True).select_option(
                 "enrollment"
             )
-            await readers.first.get_by_text(
-                "Advanced reader settings", exact=True
+            await positions.first.get_by_role(
+                "button", name="Edit reader connection", exact=True
             ).click()
-            original_id = await readers.first.get_by_label(
-                "Reader ID", exact=True
-            ).input_value()
-            conflicting_id = await second.get_by_label(
-                "Reader ID", exact=True
-            ).input_value()
-            identifier = readers.first.get_by_label("Reader ID", exact=True)
+            original = positions.first.locator(".tracking-reader-settings")
+            await original.get_by_text("Advanced reader settings", exact=True).click()
+            identifier = original.get_by_label("Reader ID", exact=True)
+            original_id = await identifier.input_value()
             await identifier.fill(conflicting_id)
             async with page.expect_response("**/v1/tracking/commands") as response:
                 await page.get_by_role(
@@ -187,6 +187,7 @@ async def test_custom_reader_endpoint_survives_settings_save(
             await page.get_by_role(
                 "button", name="Tracking settings", exact=True
             ).click()
+            await page.get_by_text("Reader connections", exact=True).click()
             await page.get_by_label("Reader label", exact=True).fill(
                 "Example renamed reader"
             )
@@ -204,5 +205,201 @@ async def test_custom_reader_endpoint_survives_settings_save(
             await expect(page.get_by_label("Reader port", exact=True)).to_have_value(
                 "5085"
             )
+        finally:
+            await browser.close()
+
+
+async def test_areas_start_and_stop_tracking_without_an_extra_switch(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 390, "height": 844})
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await expect(
+                page.get_by_role("button", name="Add area", exact=True)
+            ).to_be_visible()
+            await expect(
+                page.get_by_label("Enable area tracking", exact=True)
+            ).to_have_count(0)
+            await page.get_by_role("button", name="Add area", exact=True).click()
+            await page.get_by_label("Area label", exact=True).fill("Example wardrobe")
+            await action(page, "Save tracking settings")
+            config = (await snapshot(rust_backend))["config"]
+            assert isinstance(config, dict)
+            assert config["enabled"] is True
+            areas = config["areas"]
+            assert isinstance(areas, list) and len(areas) == 1
+            await page.reload()
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await expect(page.get_by_label("Area label", exact=True)).to_have_value(
+                "Example wardrobe"
+            )
+            await page.get_by_role("button", name="Remove area", exact=True).click()
+            await action(page, "Save tracking settings")
+            config = (await snapshot(rust_backend))["config"]
+            assert isinstance(config, dict)
+            assert config["areas"] == []
+            assert config["enabled"] is False
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("width", [320, 390, 1440])
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+async def test_tracking_sections_have_space_in_empty_and_populated_settings(
+    rust_backend: RustBackend, width: int, color_scheme: str
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": width, "height": 900})
+            if color_scheme == "dark":
+                await page.emulate_media(color_scheme="dark")
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            for populated in (False, True):
+                if populated:
+                    await page.get_by_role(
+                        "button", name="Add area", exact=True
+                    ).click()
+                    await page.get_by_label("Area label", exact=True).fill(
+                        "Example wardrobe"
+                    )
+                    await page.get_by_role(
+                        "button", name="Add antenna", exact=True
+                    ).click()
+                    await page.get_by_role(
+                        "button", name="Connect a reader", exact=True
+                    ).click()
+                    await page.get_by_label("Reader label", exact=True).fill(
+                        "Example reader"
+                    )
+                    await page.get_by_label("Reader host", exact=True).fill(
+                        "reader.example.invalid"
+                    )
+                sections = page.locator(".tracking-settings-groups > section")
+                await expect(sections.first).to_be_visible()
+                for index in range(1, await sections.count()):
+                    previous = await sections.nth(index - 1).bounding_box()
+                    current = await sections.nth(index).bounding_box()
+                    assert previous is not None and current is not None
+                    assert current["y"] - previous["y"] - previous["height"] >= 24
+                bounds = await page.locator("#tracking-settings-content").bounding_box()
+                assert bounds is not None and bounds["width"] <= 780
+                assert not await page.evaluate(
+                    "document.documentElement.scrollWidth > innerWidth"
+                )
+                if populated:
+                    area = page.get_by_role("group", name="Area", exact=True)
+                    card_box = await area.bounding_box()
+                    add_box = await page.get_by_role(
+                        "button", name="Add area", exact=True
+                    ).bounding_box()
+                    assert card_box is not None and add_box is not None
+                    assert add_box["y"] - card_box["y"] - card_box["height"] >= 12
+                    await expect(
+                        area.get_by_label("Reader label", exact=True)
+                    ).to_have_value("Example reader")
+        finally:
+            await browser.close()
+
+
+async def test_areas_share_a_reader_and_keep_their_antenna_assignments(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 390, "height": 844})
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await page.get_by_role("button", name="Add area", exact=True).click()
+            areas = page.get_by_role("group", name="Area", exact=True)
+            first = areas.first
+            await first.get_by_label("Area label", exact=True).fill("Example wardrobe")
+            first_id = await first.get_by_label("Area ID", exact=True).input_value()
+            await first.get_by_role("button", name="Add antenna", exact=True).click()
+            await first.get_by_role(
+                "button", name="Connect a reader", exact=True
+            ).click()
+            await page.get_by_label("Reader label", exact=True).fill(
+                "Example shared reader"
+            )
+            await page.get_by_label("Reader enabled", exact=True).uncheck()
+            await page.get_by_label("Reader host", exact=True).fill(
+                "reader.example.invalid"
+            )
+            await first.get_by_label("Antenna port", exact=True).fill("1")
+            await page.get_by_role("button", name="Add area", exact=True).click()
+            second = areas.nth(1)
+            await second.get_by_label("Area label", exact=True).fill("Example hamper")
+            await second.get_by_label("Area purpose", exact=True).select_option(
+                "hamper"
+            )
+            second_id = await second.get_by_label("Area ID", exact=True).input_value()
+            await second.get_by_role("button", name="Add antenna", exact=True).click()
+            await expect(
+                second.get_by_label("Reader for this position", exact=True).locator(
+                    "option:checked"
+                )
+            ).to_have_text("Example shared reader")
+            await second.get_by_label("Antenna port", exact=True).fill("2")
+            await action(page, "Save tracking settings")
+            config = (await snapshot(rust_backend))["config"]
+            assert isinstance(config, dict)
+            readers, positions = config["readers"], config["ports"]
+            assert (
+                isinstance(readers, list)
+                and len(readers) == 1
+                and isinstance(readers[0], dict)
+            )
+            assert isinstance(positions, list) and len(positions) == 2
+            assert {
+                (position["area_id"], position["antenna"])
+                for position in positions
+                if isinstance(position, dict)
+            } == {(first_id, 1), (second_id, 2)}
+            assert all(
+                isinstance(position, dict) and position["reader_id"] == readers[0]["id"]
+                for position in positions
+            )
+            await expect(areas).to_have_count(2)
+            await expect(
+                areas.first.get_by_label("Antenna port", exact=True)
+            ).to_have_value("1")
+            await expect(
+                areas.nth(1).get_by_label("Antenna port", exact=True)
+            ).to_have_value("2")
+            await areas.first.get_by_role(
+                "button", name="Remove area", exact=True
+            ).click()
+            await action(page, "Save tracking settings")
+            config = (await snapshot(rust_backend))["config"]
+            assert isinstance(config, dict)
+            positions = config["ports"]
+            assert (
+                isinstance(positions, list)
+                and len(positions) == 1
+                and isinstance(positions[0], dict)
+            )
+            assert positions[0]["area_id"] == second_id and positions[0]["antenna"] == 2
+            await expect(
+                areas.first.get_by_label("Area label", exact=True)
+            ).to_have_value("Example hamper")
         finally:
             await browser.close()

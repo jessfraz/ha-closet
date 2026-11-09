@@ -649,10 +649,16 @@ export class TrackingController {
     root.replaceChildren(); this.retryPanel(root);
     const config = structuredClone(this.snapshot.config);
     const form = this.node("form", "tracking-settings-form");
-    const enabled = this.checkbox("Enable area tracking", config.enabled);
-    form.append(enabled.wrapper, this.node("p", "muted", "An antenna connection alone never proves that an empty area is covered. Commission each position with the actual reader, tags and garments before relying on automatic absence."));
     const groups = this.node("div", "tracking-settings-groups");
-    const areas = this.node("section", ""); areas.append(this.node("h3", "", "1. Areas"), this.node("p", "muted", "Name the areas whose evidence determines garment status."));
+    const areas = this.node("section", "tracking-settings-section");
+    areas.append(this.node("h3", "", "Areas"), this.node("p", "muted", "Add the places you keep clothes, then connect their antennas."));
+    const areaCards = this.node("div", "tracking-config-list"); areas.append(areaCards);
+    const readers = this.node("details", "tracking-settings-section tracking-readers");
+    readers.append(this.node("summary", "", "Reader connections"), this.node("p", "muted", "A reader can serve antennas in several areas. Its connection is shared."));
+    const readerCards = this.node("div", "tracking-config-list"); readers.append(readerCards);
+    const ports = this.node("section", "tracking-settings-section");
+    ports.append(this.node("h3", "", "Tag pairing"), this.node("p", "muted", "Use a separate antenna for pairing tags, or borrow an area antenna from the Tags page."));
+    const enrollmentCards = this.node("div", "tracking-config-list"); ports.append(enrollmentCards);
     const areaFields = [];
     const readerFields = [];
     const portFields = [];
@@ -662,9 +668,35 @@ export class TrackingController {
       details.append(this.node("summary", "", `Advanced ${kind} settings`), field.wrapper);
       return details;
     };
+    // A connection has one editor, even when its antennas span several areas.
+    // Keep it with the first referring position, or with unused connections.
+    const placeReaders = () => {
+      for (const reader of readerFields) {
+        const position = portFields.find((entry) => entry.reader.input.value === reader.id.input.id);
+        const home = position?.readerSettings || readerCards;
+        if (reader.block.parentElement !== home) home.append(reader.block);
+      }
+      for (const position of portFields) position.readerSettings.hidden = !position.readerSettings.querySelector("fieldset");
+      readers.hidden = readerCards.childElementCount === 0;
+    };
+    const editReader = (reader) => {
+      const position = portFields.find((entry) => entry.reader.input.value === reader.id.input.id);
+      (position?.readerSettings || readers).open = true;
+      reader.label.input.focus();
+    };
+    const placePosition = (position) => {
+      const area = areaFields.find((entry) => entry.id.input.id === position.area.input.value);
+      (area?.positions || enrollmentCards).append(position.block);
+      position.area.wrapper.hidden = Boolean(area);
+    };
+    const removePosition = (position) => {
+      portFields.splice(portFields.indexOf(position), 1); placeReaders();
+      position.block.remove(); refreshPositions();
+    };
     const refreshPositions = (changed = null, choose = false) => {
       for (const position of portFields) {
         const reader = readerFields.find((entry) => entry.id.input.id === position.reader.input.value);
+        position.editReader.textContent = reader ? "Edit reader connection" : "Connect a reader";
         const original = reader?.originalConnection;
         const sameConnection = original?.type === reader?.transport.input.value && (original?.type === "impinj_llrp" ? original.host === reader.host.input.value.trim() && original.port === Number(reader.connectionPort.input.value) : original?.type === "impinj_iot" && original.base_url === reader.origin.input.value.trim());
         const readback = sameConnection && this.snapshot.reader_readbacks.find((entry) => entry.reader_id === reader.originalId);
@@ -687,11 +719,12 @@ export class TrackingController {
         for (const [select, records, empty] of [[position.reader.input, readerFields, "Choose a reader"], [position.area.input, areaFields, "No area (enrollment only)"]]) {
           const value = select.value;
           select.replaceChildren(new Option(empty, ""), ...records.map((record) => new Option(record.label.input.value.trim() || "Unnamed", record.id.input.id)));
+          if (records === readerFields) select.add(new Option("Connect another reader…", "new-reader"));
           select.value = value;
           if (select.selectedIndex < 0) select.value = "";
         }
       }
-      refreshPositions();
+      placeReaders(); refreshPositions();
     };
     const referencedId = (field, records) => records.find((record) => record.id.input.id === field.input.value)?.id.input.value.trim() || null;
     const addArea = (area) => {
@@ -706,14 +739,19 @@ export class TrackingController {
         const field = this.number(title, area.thresholds?.[key], true); field.input.min = key === "positive_min_reads" ? "1" : "0";
         thresholds[key] = field; overrides.append(field.wrapper);
       }
-      block.append(label.wrapper, kind.wrapper, active.wrapper, overrides, advancedId("area", id));
-      const fields = { block, id, label, kind, active, thresholds }; areaFields.push(fields);
+      const positions = this.node("div", "tracking-config-list");
+      const antennas = this.node("div", "tracking-area-antennas");
+      antennas.append(this.node("h4", "", "Antennas"), positions, this.button("Add antenna", () => addPort({ id: `position-${crypto.randomUUID()}`, reader_id: "", antenna: null, area_id: null, role: "monitor", enabled: true, required_for_absence: true, commissioned: false }, true, fields)));
+      block.append(label.wrapper, kind.wrapper, active.wrapper, overrides, advancedId("area", id), antennas);
+      const fields = { block, id, label, kind, active, thresholds, positions }; areaFields.push(fields);
       label.input.addEventListener("input", updateReferences);
-      block.append(this.button("Remove area", () => { block.remove(); areaFields.splice(areaFields.indexOf(fields), 1); updateReferences(); })); areas.append(block); updateReferences();
+      block.append(this.button("Remove area", () => {
+        for (const position of [...portFields]) if (position.area.input.value === id.input.id) removePosition(position);
+        block.remove(); areaFields.splice(areaFields.indexOf(fields), 1); updateReferences();
+      })); areaCards.append(block); updateReferences();
     };
     for (const area of config.areas) addArea(area);
     areas.append(this.button("Add area", () => addArea({ id: `area-${crypto.randomUUID()}`, label: "", kind: "closet", enabled: true, thresholds: {} })));
-    const readers = this.node("section", ""); readers.append(this.node("h3", "", "2. Readers"), this.node("p", "muted", "Connect each reader once, then assign its antenna positions below."));
     const addReader = (reader) => {
       const block = this.node("fieldset", "tracking-config-card"); block.append(this.node("legend", "", "Reader"));
       const id = this.field("Reader ID", null, reader.id); id.input.pattern = "[A-Za-z0-9_-]{1,64}"; id.input.required = true;
@@ -728,49 +766,65 @@ export class TrackingController {
       const username = this.field("Username environment variable", null, reader.connection.credentials?.username);
       const password = this.field("Password environment variable", null, reader.connection.credentials?.password);
       for (const field of [username, password]) { field.input.pattern = "[A-Z_][A-Z0-9_]*"; field.input.maxLength = 128; }
-      const update = () => { host.wrapper.hidden = connectionPort.wrapper.hidden = program.wrapper.hidden = transport.input.value !== "impinj_llrp"; host.input.required = connectionPort.input.required = program.input.required = !host.wrapper.hidden; origin.wrapper.hidden = transport.input.value !== "impinj_iot"; auth.wrapper.hidden = origin.wrapper.hidden; username.wrapper.hidden = password.wrapper.hidden = origin.wrapper.hidden || auth.input.value !== "basic_env"; origin.input.required = !origin.wrapper.hidden; username.input.required = password.input.required = !username.wrapper.hidden; };
+      const credentialHint = this.node("p", "muted", "Set credentials in the app environment. Enter only the environment variable names here.");
+      const update = () => { host.wrapper.hidden = connectionPort.wrapper.hidden = program.wrapper.hidden = transport.input.value !== "impinj_llrp"; host.input.required = connectionPort.input.required = program.input.required = !host.wrapper.hidden; origin.wrapper.hidden = transport.input.value !== "impinj_iot"; auth.wrapper.hidden = origin.wrapper.hidden; username.wrapper.hidden = password.wrapper.hidden = origin.wrapper.hidden || auth.input.value !== "basic_env"; origin.input.required = !origin.wrapper.hidden; username.input.required = password.input.required = !username.wrapper.hidden; credentialHint.hidden = username.wrapper.hidden; };
       transport.input.addEventListener("change", update); auth.input.addEventListener("change", update); update();
-      block.append(label.wrapper, active.wrapper, transport.wrapper, host.wrapper, connectionPort.wrapper, program.wrapper, origin.wrapper, auth.wrapper, username.wrapper, password.wrapper, this.node("p", "muted", "Only environment variable names belong here. Set actual credentials in the app environment, never in this form."), advancedId("reader", id));
+      const advanced = advancedId("reader", id); advanced.append(connectionPort.wrapper, program.wrapper);
+      block.append(label.wrapper, active.wrapper, transport.wrapper, host.wrapper, origin.wrapper, auth.wrapper, username.wrapper, password.wrapper, credentialHint, advanced);
       const fields = { block, id, label, active, transport, host, connectionPort, program, origin, auth, username, password, originalId: reader.id, originalConnection: structuredClone(reader.connection) }; readerFields.push(fields);
       label.input.addEventListener("input", updateReferences);
       for (const field of [transport, host, connectionPort, origin]) field.input.addEventListener("input", () => refreshPositions());
-      block.append(this.button("Remove reader", () => { block.remove(); readerFields.splice(readerFields.indexOf(fields), 1); updateReferences(); })); readers.append(block); updateReferences();
+      block.append(this.button("Remove reader", () => { block.remove(); readerFields.splice(readerFields.indexOf(fields), 1); updateReferences(); })); readerCards.append(block); updateReferences();
+      return fields;
     };
     for (const reader of config.readers) addReader(reader);
     readers.append(this.button("Add reader", () => addReader({ id: `reader-${crypto.randomUUID()}`, label: "", enabled: true, connection: { type: "impinj_llrp", credentials: { type: "none" } } })));
-    const ports = this.node("section", ""); ports.append(this.node("h3", "", "3. Reading positions"), this.node("p", "muted", "Choose a named reader and area for each antenna. Use a dedicated enrollment position when the reader cannot pause a monitored position."));
-    const addPort = (port, isNew = false) => {
+    const addPort = (port, isNew = false, areaContext = null) => {
       const block = this.node("fieldset", "tracking-config-card"); block.append(this.node("legend", "", "Antenna position"));
       const id = this.field("Position ID", null, port.id); id.input.pattern = "[A-Za-z0-9_-]{1,64}"; id.input.required = true;
       const selectedReader = readerFields.find((entry) => entry.id.input.value === port.reader_id) || (isNew && readerFields.length === 1 ? readerFields[0] : null);
-      const reader = this.field("Reader for this position", [["", "Choose a reader"], ...readerFields.map((entry) => [entry.id.input.id, entry.label.input.value || "Unnamed reader"])], selectedReader?.id.input.id || ""); reader.input.required = true;
+      const reader = this.field("Reader for this position", [["", "Choose a reader"], ...readerFields.map((entry) => [entry.id.input.id, entry.label.input.value || "Unnamed reader"]), ["new-reader", "Connect another reader…"]], selectedReader?.id.input.id || ""); reader.input.required = true;
       const antenna = this.number("Antenna port", port.antenna); antenna.input.min = "1";
       const hint = this.node("p", "muted antenna-hint"); hint.id = `${antenna.input.id}-hint`;
       antenna.input.setAttribute("aria-describedby", hint.id); hint.setAttribute("role", "status");
-      const area = this.field("Area for this position", [["", "No area (enrollment only)"], ...areaFields.map((entry) => [entry.id.input.id, entry.label.input.value || "Unnamed area"])], areaFields.find((entry) => entry.id.input.value === port.area_id)?.id.input.id || "");
+      const area = this.field("Area for this position", [["", "No area (enrollment only)"], ...areaFields.map((entry) => [entry.id.input.id, entry.label.input.value || "Unnamed area"])], areaContext?.id.input.id || areaFields.find((entry) => entry.id.input.value === port.area_id)?.id.input.id || "");
       const role = this.field("Position role", [["monitor", "Area monitoring"], ["enrollment", "Isolated enrollment position"]], port.role);
       const active = this.checkbox("Position enabled", port.enabled);
       const required = this.checkbox("Required for confirmed absence", port.required_for_absence);
-      const commissioned = this.checkbox("Physically commissioned", port.commissioned);
+      const commissioned = this.checkbox("Coverage tested", port.commissioned);
       const power = this.number("Requested transmit power (hundredths of dBm, optional)", port.transmit_power_cdbm, true);
       const dwell = this.number("Requested antenna dwell (ms, optional)", port.dwell_ms, true); dwell.input.min = "1";
       const updateRole = () => {
         const enrollment = role.input.value === "enrollment";
         area.input.required = !enrollment;
         if (enrollment) required.input.checked = false;
+        commissioned.wrapper.hidden = enrollment;
         required.input.disabled = enrollment || this.busy || Boolean(this.pending) || this.role() !== "owner";
       };
       role.input.addEventListener("change", updateRole); updateRole();
-      block.append(reader.wrapper, antenna.wrapper, hint, role.wrapper, area.wrapper, active.wrapper, required.wrapper, commissioned.wrapper, power.wrapper, dwell.wrapper, this.node("p", "muted", "Power and dwell are requests, not guarantees. Check actual reader capability and readback below. Enrollment on a monitoring antenna explicitly borrows it and pauses affected coverage."), advancedId("position", id));
-      const fields = { block, id, reader, antenna, hint, area, role, active, required, commissioned, power, dwell }; portFields.push(fields);
-      reader.input.addEventListener("change", () => refreshPositions(fields, true));
+      const connection = this.button("Connect a reader", () => {
+        const selected = readerFields.find((entry) => entry.id.input.id === reader.input.value);
+        const record = selected || addReader({ id: `reader-${crypto.randomUUID()}`, label: "", enabled: true, connection: { type: "impinj_llrp", credentials: { type: "none" } } });
+        reader.input.value = record.id.input.id; placeReaders(); refreshPositions(fields, !selected); editReader(record);
+      });
+      const readerSettings = this.node("details", "tracking-reader-settings");
+      readerSettings.append(this.node("summary", "", "Reader connection"));
+      const advanced = advancedId("position", id);
+      advanced.append(role.wrapper, active.wrapper, required.wrapper, power.wrapper, dwell.wrapper);
+      block.append(reader.wrapper, connection, readerSettings, antenna.wrapper, hint, area.wrapper, commissioned.wrapper, advanced);
+      const fields = { block, id, reader, antenna, hint, area, role, active, required, commissioned, power, dwell, editReader: connection, readerSettings }; portFields.push(fields);
+      reader.input.addEventListener("change", () => {
+        if (reader.input.value === "new-reader") connection.click();
+        placeReaders(); refreshPositions(fields, true);
+      });
       antenna.input.addEventListener("input", () => refreshPositions());
-      block.append(this.button("Remove position", () => { block.remove(); portFields.splice(portFields.indexOf(fields), 1); refreshPositions(); })); ports.append(block);
-      refreshPositions(fields, isNew);
+      area.input.addEventListener("change", () => placePosition(fields));
+      block.append(this.button("Remove position", () => removePosition(fields))); placePosition(fields);
+      placeReaders(); refreshPositions(fields, isNew);
     };
     for (const port of config.ports) addPort(port);
-    ports.append(this.button("Add reading position", () => addPort({ id: `position-${crypto.randomUUID()}`, reader_id: "", antenna: null, area_id: null, role: "monitor", enabled: true, required_for_absence: true, commissioned: false }, true)));
-    groups.append(areas, readers, ports); form.append(groups);
+    ports.append(this.button("Add pairing antenna", () => addPort({ id: `position-${crypto.randomUUID()}`, reader_id: "", antenna: null, area_id: null, role: "enrollment", enabled: true, required_for_absence: false, commissioned: false }, true)));
+    placeReaders(); groups.append(areas, ports, readers); form.append(groups);
     const thresholds = this.node("details", ""); thresholds.append(this.node("summary", "", "Default evidence thresholds"));
     const thresholdFields = {};
     const titles = { positive_dwell_ms: "Presence dwell (ms)", positive_min_reads: "Minimum reads", movement_hysteresis_ms: "Movement hysteresis (ms)", absence_ms: "Confirmed absence (ms)", warmup_ms: "Restart/configuration warm-up (ms)", coverage_max_gap_ms: "Maximum coverage gap (ms)", candidate_fresh_ms: "Enrollment candidate freshness (ms)", reader_event_max_age_ms: "Maximum reader event age (ms)" };
@@ -779,7 +833,7 @@ export class TrackingController {
     const save = this.button("Save tracking settings", () => {
       if (!form.reportValidity()) return;
       const next = {
-        schema_version: config.schema_version, enabled: enabled.input.checked,
+        schema_version: config.schema_version,
         areas: areaFields.map((f) => ({ id: f.id.input.value.trim(), label: f.label.input.value.trim(), kind: f.kind.input.value, enabled: f.active.input.checked, thresholds: Object.fromEntries(Object.entries(f.thresholds).map(([key, field]) => [key, nullable(field)])) })),
         readers: readerFields.map((f) => ({ id: f.id.input.value.trim(), label: f.label.input.value.trim(), enabled: f.active.input.checked, connection: f.transport.input.value === "simulator" ? { type: "simulator" } : f.transport.input.value === "impinj_llrp" ? { type: "impinj_llrp", host: f.host.input.value.trim(), port: Number(f.connectionPort.input.value), owned_rospec_id: Number(f.program.input.value) } : { type: "impinj_iot", base_url: f.origin.input.value.trim(), credentials: f.auth.input.value === "none" ? { type: "none" } : { type: "basic_env", username: f.username.input.value.trim(), password: f.password.input.value.trim() } } })),
         ports: portFields.map((f) => ({ id: f.id.input.value.trim(), reader_id: referencedId(f.reader, readerFields) || "", antenna: Number(f.antenna.input.value), area_id: referencedId(f.area, areaFields), role: f.role.input.value, enabled: f.active.input.checked, required_for_absence: f.required.input.checked, commissioned: f.commissioned.input.checked, transmit_power_cdbm: nullable(f.power), dwell_ms: nullable(f.dwell) })),
@@ -790,7 +844,7 @@ export class TrackingController {
     form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); }); form.append(save);
     if (this.role() !== "owner") { for (const input of form.querySelectorAll("input,select,button")) input.disabled = true; }
     root.append(form);
-    const checklist = this.node("details", ""); checklist.append(this.node("summary", "", "Physical commissioning checklist"));
+    const checklist = this.node("details", "tracking-settings-support"); checklist.append(this.node("summary", "", "Test reader coverage"), this.node("p", "muted", "Test each antenna with actual tags and garments before marking it commissioned. A connection alone does not prove an empty area was scanned."));
     const steps = this.node("ol", "");
     for (const text of ["Confirm the exact region, reader, antenna, cables and supported power with the hardware documentation.", "Test representative garment tags and orientations on each antenna, including crowded racks and wet laundry.", "Measure intended coverage and unwanted adjacent-area reads. Tune placement, dwell and power without assuming RSSI is distance.", "Verify empty-area continuous inventory proof, disconnection, recovery and warm-up before marking a position commissioned.", "Test multi-tag enrollment, a bound ambient tag, replacement and isolation before a batch."]) steps.append(this.node("li", "", text));
     checklist.append(steps); root.append(checklist);
@@ -811,7 +865,7 @@ export class TrackingController {
       block.append(this.button("Review physical pieces", async () => { try { this.openItem(await this.item(record.catalog_id)); } catch (error) { this.notice(this.errorMessage(error), true); } }));
       root.append(block);
     }
-    const backup = this.node("details", ""); backup.append(this.node("summary", "", "Tracking backup and recovery"), this.node("p", "muted", "Exports contain private tag associations and movement history. Keep them private. Catalog metadata is not changed by a tracking import."));
+    const backup = this.node("details", "tracking-settings-support"); backup.append(this.node("summary", "", "Tracking backup and recovery"), this.node("p", "muted", "Exports contain private tag associations and movement history. Keep them private. Catalog metadata is not changed by a tracking import."));
     backup.append(this.button("Download tracking export", async () => {
       try {
         const data = await this.request("v1/tracking/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: "application/json" }));

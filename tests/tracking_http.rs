@@ -9,7 +9,7 @@ use closet::{
     tracking::models::*,
 };
 use reqwest::{Client, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const OWNER: &str = "example-owner-credential-for-tracking-tests";
 const INTEGRATION: &str = "example-integration-credential-for-tracking-tests";
@@ -126,7 +126,6 @@ impl App {
     async fn configure(&self) {
         let mut config: TrackingConfig =
             serde_json::from_str(include_str!("../config/tracking.example.json")).unwrap();
-        config.enabled = true;
         config.thresholds.positive_dwell_ms = 1;
         self.mutate("configure", TrackingCommand::Configure { config })
             .await;
@@ -876,4 +875,131 @@ async fn tracking_capacity_cannot_reject_catalog_sync_or_overflow_the_ha_project
         && unit.evidence == StateEvidence::Unknown));
     assert_eq!(projection.counts.tagged_units, 0);
     app.close().await;
+}
+
+// A released configuration request, including the obsolete activation bit.
+// Keep this producer independent of the new serializer to exercise old clients.
+#[derive(Clone, Serialize, Deserialize)]
+struct ReleasedConfig {
+    schema_version: u16,
+    #[serde(default)]
+    enabled: bool,
+    areas: Vec<AreaConfig>,
+    readers: Vec<ReaderConfig>,
+    ports: Vec<PortConfig>,
+    thresholds: Thresholds,
+}
+#[derive(Serialize)]
+struct ReleasedConfigure<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    config: &'a ReleasedConfig,
+}
+#[derive(Deserialize)]
+struct ConfigActivity {
+    enabled: bool,
+}
+fn config_activity(config: &TrackingConfig) -> bool {
+    serde_json::from_slice::<ConfigActivity>(&serde_json::to_vec(config).unwrap())
+        .unwrap()
+        .enabled
+}
+async fn released_configure(app: &App, key: &str, config: &ReleasedConfig) -> CommandResult {
+    let revision = app.snapshot().await.tracking_revision;
+    let mut receipt = None;
+    for _ in 0..2 {
+        let result = app
+            .client
+            .post(format!("{}/v1/tracking/commands", app.origin))
+            .bearer_auth(OWNER)
+            .header("If-Match", format!("\"{revision}\""))
+            .header("Idempotency-Key", key)
+            .json(&ReleasedConfigure {
+                kind: "configure",
+                config,
+            })
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<CommandResult>()
+            .await
+            .unwrap();
+        if let Some(previous) = &receipt {
+            assert_eq!(
+                serde_json::to_vec(previous).unwrap(),
+                serde_json::to_vec(&result).unwrap()
+            );
+        }
+        receipt = Some(result);
+    }
+    receipt.unwrap()
+}
+#[tokio::test]
+async fn area_presence_controls_tracking_and_survives_backup_restore() {
+    let app = App::new().await;
+    assert!(!config_activity(&app.snapshot().await.config));
+    let mut config: ReleasedConfig =
+        serde_json::from_str(include_str!("../config/tracking.example.json")).unwrap();
+    config.enabled = false;
+    config.areas.truncate(1);
+    let area = config.areas[0].id.clone();
+    config
+        .ports
+        .retain(|port| port.area_id.is_none() || port.area_id.as_ref() == Some(&area));
+    released_configure(&app, "old-client-add-area", &config).await;
+    let configured = app.snapshot().await;
+    assert!(
+        config_activity(&configured.config),
+        "an area must enable tracking even when an old client sends enabled=false"
+    );
+    assert!(
+        !configured.health.absence_coverage_healthy,
+        "configured areas still need actual coverage"
+    );
+    let unit = configured.units[0].id;
+    app.mutate(
+        "manual-baseline",
+        TrackingCommand::Baseline {
+            unit_id: unit,
+            area_id: area,
+        },
+    )
+    .await;
+    let baseline = app.snapshot().await.units;
+    config.areas[0].enabled = false;
+    released_configure(&app, "disable-last-area", &config).await;
+    let disabled = app.snapshot().await;
+    assert!(!config_activity(&disabled.config));
+    assert_eq!(disabled.units, baseline);
+    config.areas[0].enabled = true;
+    released_configure(&app, "restore-last-area", &config).await;
+    assert!(config_activity(&app.snapshot().await.config));
+    let copy = tempfile::tempdir().unwrap();
+    let database = copy.path().join("backup.sqlite3");
+    app.cold_backup(&database).await;
+    let store = Store::open(&database).await.unwrap();
+    let now = Utc::now() + Duration::seconds(3);
+    let restored = store.tracking_snapshot(now).await.unwrap();
+    assert!(config_activity(&restored.config));
+    assert!(!restored.health.absence_coverage_healthy);
+    assert_eq!(restored.units, baseline);
+    let mut no_areas = restored.config;
+    no_areas.areas.clear();
+    no_areas.ports.retain(|port| port.area_id.is_none());
+    store
+        .tracking_command(
+            "restore-test",
+            "remove-last-area",
+            restored.tracking_revision,
+            TrackingCommand::Configure { config: no_areas },
+            now,
+        )
+        .await
+        .unwrap();
+    let stopped = store.tracking_snapshot(now).await.unwrap();
+    assert!(!config_activity(&stopped.config));
+    assert_eq!(stopped.units, baseline);
+    store.close().await;
 }

@@ -56,7 +56,9 @@ async fn configuration_and_restart_events_replay_without_reusing_old_coverage() 
     fn changed() -> Scenario {
         let mut scenario = scenario();
         let mut config = scenario.config.clone();
-        config.enabled = false;
+        for area in &mut config.areas {
+            area.enabled = false;
+        }
         scenario.steps.push(Step::Restart {
             at: scenario.started_at + chrono::Duration::seconds(5),
         });

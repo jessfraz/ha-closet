@@ -1566,8 +1566,8 @@ mod tests {
         configured_ports[0].role = PortRole::Enrollment;
         configured_ports[0].required_for_absence = false;
         let config = TrackingConfig {
+            previous_wire: Default::default(),
             schema_version: TRACKING_SCHEMA_VERSION,
-            enabled: true,
             areas: vec![AreaConfig {
                 id: "area-a".parse().unwrap(),
                 label: "Fictional area".into(),
@@ -1905,7 +1905,6 @@ mod tests {
         let clock = SystemReaderClock::default();
         let config = TrackingConfig {
             schema_version: TRACKING_SCHEMA_VERSION,
-            enabled: true,
             areas: vec![AreaConfig {
                 id: "area-a".parse().unwrap(),
                 label: "Fictional area".into(),
@@ -1924,6 +1923,7 @@ mod tests {
             }],
             ports: ports(),
             thresholds: Thresholds::default(),
+            ..Default::default()
         };
         let revision = store
             .tracking_snapshot_clocked(|| clock.now())

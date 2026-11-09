@@ -45,7 +45,6 @@ async def configure(backend: RustBackend) -> None:
     config = current["config"]
     assert isinstance(config, dict)
     config.update(
-        enabled=True,
         areas=[
             {
                 "id": "example-closet",

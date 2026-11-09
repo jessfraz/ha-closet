@@ -45,7 +45,6 @@ fn item(name: &str, quantity: u32) -> CatalogItem {
 fn config() -> TrackingConfig {
     let mut config: TrackingConfig =
         serde_json::from_str(include_str!("../config/tracking.example.json")).unwrap();
-    config.enabled = true;
     config.readers.truncate(1);
     config.readers[0].connection = ReaderConnection::Simulator;
     for port in &mut config.ports {
@@ -375,7 +374,9 @@ async fn automatic_episodes_fold_undo_corrections_returns_and_import() {
     assert_eq!(rig.analytics(90).await.inferred_wears, 1);
 
     let mut disabled = config();
-    disabled.enabled = false;
+    for area in &mut disabled.areas {
+        area.enabled = false;
+    }
     rig.command(TrackingCommand::Configure { config: disabled })
         .await;
     let restored = rig.restored(Vec::new()).await;

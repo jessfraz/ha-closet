@@ -250,17 +250,47 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
 
 .sound-option { display: flex; flex-direction: row; align-items: center; gap: .5rem; }
 .sound-option input, .tracking-config-card input[type="checkbox"], .tracking-settings-form input[type="checkbox"] { width: auto; }
-.tracking-settings-form > label { margin-bottom: 1rem; }
-.tracking-config-card { min-width: 0; display: grid; gap: .65rem; padding: 1rem; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 1rem; }
+.tracking-config-card { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; margin: 0; padding: 20px; border: 1px solid var(--line); border-radius: 6px; }
 .tracking-config-card input { max-width: 100%; }
 .tracking-config-card select { width: 100%; max-width: 100%; }
 .tracking-checkbox > label { display: flex; flex-direction: row; align-items: center; gap: 8px; min-height: 44px; color: var(--ink); cursor: pointer; }
 .tracking-checkbox input { flex: 0 0 auto; min-height: 0; width: 17px; height: 17px; margin: 0; padding: 0; accent-color: var(--accent); }
 .tracking-identifiers { margin-top: 6px; }
 .tracking-identifiers > .field { margin-top: 12px; }
-.tracking-settings-groups > section > .muted { margin: 8px 0 16px; }
+#tracking-settings { max-width: 760px; }
+#tracking-settings > .muted { max-width: 58ch; margin-bottom: 28px; }
+#tracking-settings-content, .tracking-settings-form, .tracking-settings-groups { display: grid; gap: 28px; }
+.tracking-settings-section { min-width: 0; display: grid; justify-items: start; gap: 16px; margin: 0; }
+.tracking-settings-section + .tracking-settings-section { padding-top: 28px; border-top: 1px solid var(--line); }
+.tracking-settings-section > h3 { margin: 0 0 -8px; }
+.tracking-settings-section > .muted { max-width: 60ch; }
+.tracking-config-list { min-width: 0; display: grid; gap: 16px; width: 100%; }
+.tracking-config-list:empty { display: none; }
+.tracking-config-card > legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
+.tracking-config-card input, .tracking-config-card select { width: 100%; }
+.tracking-config-card > .tracking-checkbox, .tracking-config-card > details, .tracking-config-card > p, .tracking-config-card > .tracking-area-antennas { grid-column: 1 / -1; }
+.tracking-config-card > button { justify-self: start; align-self: end; }
+.tracking-config-card > details, .tracking-settings-form > details { margin: 0; }
+.tracking-config-card details > .field { margin-top: 12px; }
+.tracking-area-antennas { display: grid; gap: 16px; padding-top: 20px; border-top: 1px solid var(--line); }
+.tracking-area-antennas > h4 { font-size: 13px; margin: 0; }
+.tracking-area-antennas > button { justify-self: start; }
+.tracking-area-antennas > .tracking-config-list > .tracking-config-card { border: 0; border-radius: 0; border-left: 2px solid var(--line); padding: 0 0 0 16px; }
+.tracking-readers:not([open]) > :not(summary) { display: none; }
+.tracking-reader-settings > .tracking-config-card { margin-top: 16px; padding: 0; border: 0; }
+.tracking-settings-form > details > .field { margin-top: 16px; }
+.tracking-settings-form > button { justify-self: start; }
+.tracking-readers > summary { color: var(--ink); font-size: 14px; }
+.tracking-settings-support { margin: 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.tracking-settings-support summary { font-size: 13px; }
+.tracking-settings-support ol { padding-left: 20px; }
+.tracking-settings-support li + li { margin-top: 8px; }
+@media (max-width: 600px) {
+  .tracking-config-card { grid-template-columns: minmax(0,1fr); padding: 16px; }
+  .tracking-config-card > .tracking-checkbox, .tracking-config-card > details, .tracking-config-card > p, .tracking-config-card > .tracking-area-antennas { grid-column: 1; }
+}
 .lookup-open { max-width: 100%; margin-top: 8px; text-align: left; overflow-wrap: anywhere; }
-.tracking-settings-form > details { margin: 1rem 0; }
+
 
 .analytics-controls { align-items: flex-end; margin-bottom: 12px; }
 .analytics-controls input { min-width: 0; }

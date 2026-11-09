@@ -859,7 +859,7 @@ impl Engine {
             }
             if batch.purpose != ObservationPurpose::Inventory
                 || !batch.connected
-                || !self.config.enabled
+                || !self.config.enabled()
                 || !port.enabled
                 || port.role != PortRole::Monitor
                 || self.borrowed(&port.id)
@@ -1271,14 +1271,7 @@ impl Engine {
     pub fn health(&self, now: DateTime<Utc>) -> TrackingHealth {
         let mut ports = Vec::new();
         let mut required = 0;
-        let mut healthy = self.config.enabled
-            && !self
-                .config
-                .areas
-                .iter()
-                .filter(|a| a.enabled)
-                .collect::<Vec<_>>()
-                .is_empty();
+        let mut healthy = self.config.enabled();
         let mut warming = false;
         let mut covered_areas = BTreeSet::new();
         for port in &self.config.ports {
@@ -1288,32 +1281,34 @@ impl Engine {
                 .as_ref()
                 .is_some_and(|id| self.config.areas.iter().any(|a| &a.id == id && a.enabled));
             let coverage = self.coverage.get(&port.id);
-            let state =
-                if !self.config.enabled || !port.enabled || !reader.is_some_and(|r| r.enabled) {
-                    CoverageState::Disabled
-                } else if self.borrowed(&port.id) {
-                    CoverageState::Borrowed
-                } else if self
-                    .readers
-                    .get(&port.reader_id)
-                    .is_some_and(|r| !r.connected)
+            let state = if !port.enabled
+                || !reader.is_some_and(|r| r.enabled)
+                || port.role == PortRole::Monitor && !enabled_area
+            {
+                CoverageState::Disabled
+            } else if self.borrowed(&port.id) {
+                CoverageState::Borrowed
+            } else if self
+                .readers
+                .get(&port.reader_id)
+                .is_some_and(|r| !r.connected)
+            {
+                CoverageState::Disconnected
+            } else if !port.commissioned {
+                CoverageState::Unverified
+            } else if let Some(c) = coverage {
+                if elapsed(c.until, now) > self.config.thresholds.coverage_max_gap_ms {
+                    CoverageState::Unverified
+                } else if c.state == CoverageState::Healthy
+                    && elapsed(c.since, now) < self.config.thresholds.warmup_ms
                 {
-                    CoverageState::Disconnected
-                } else if !port.commissioned {
-                    CoverageState::Unverified
-                } else if let Some(c) = coverage {
-                    if elapsed(c.until, now) > self.config.thresholds.coverage_max_gap_ms {
-                        CoverageState::Unverified
-                    } else if c.state == CoverageState::Healthy
-                        && elapsed(c.since, now) < self.config.thresholds.warmup_ms
-                    {
-                        CoverageState::WarmingUp
-                    } else {
-                        c.state
-                    }
+                    CoverageState::WarmingUp
                 } else {
-                    CoverageState::Unverified
-                };
+                    c.state
+                }
+            } else {
+                CoverageState::Unverified
+            };
             if port.enabled
                 && port.role == PortRole::Monitor
                 && port.required_for_absence
@@ -1553,7 +1548,6 @@ mod tests {
             .collect();
         TrackingConfig {
             schema_version: 1,
-            enabled: true,
             areas,
             ports,
             readers: vec![ReaderConfig {
@@ -1572,6 +1566,7 @@ mod tests {
                 candidate_fresh_ms: 500,
                 reader_event_max_age_ms: 10_000,
             },
+            ..Default::default()
         }
     }
     fn batch(at: i64, sequence: u64, epoch: u128, port: Option<usize>) -> ObservationBatch {

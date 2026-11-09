@@ -351,25 +351,102 @@ pub struct ReaderReadback {
     pub capabilities: ReaderCapabilities,
     pub ports: Vec<PortReadback>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "TrackingConfigWire", into = "TrackingConfigWire")]
 pub struct TrackingConfig {
     pub schema_version: u16,
-    pub enabled: bool,
     pub areas: Vec<AreaConfig>,
     pub readers: Vec<ReaderConfig>,
     pub ports: Vec<PortConfig>,
     pub thresholds: Thresholds,
+    /// Legacy request spelling, used only to recognize operation journal hashes.
+    #[doc(hidden)]
+    pub previous_wire: PreviousTrackingConfig,
+}
+#[derive(Clone, Debug, Default)]
+pub struct PreviousTrackingConfig(Option<bool>);
+
+// Keep the compatibility bit at the serialization boundary. It never controls
+// tracking and is deliberately excluded from domain equality.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TrackingConfigWire {
+    schema_version: u16,
+    /// Computed from enabled areas. Legacy input is accepted but cannot disable tracking.
+    #[serde(default)]
+    enabled: bool,
+    areas: Vec<AreaConfig>,
+    readers: Vec<ReaderConfig>,
+    ports: Vec<PortConfig>,
+    thresholds: Thresholds,
+}
+impl From<TrackingConfigWire> for TrackingConfig {
+    fn from(wire: TrackingConfigWire) -> Self {
+        Self {
+            schema_version: wire.schema_version,
+            areas: wire.areas,
+            readers: wire.readers,
+            ports: wire.ports,
+            thresholds: wire.thresholds,
+            previous_wire: PreviousTrackingConfig(Some(wire.enabled)),
+        }
+    }
+}
+impl From<TrackingConfig> for TrackingConfigWire {
+    fn from(config: TrackingConfig) -> Self {
+        let enabled = config.enabled();
+        Self {
+            schema_version: config.schema_version,
+            enabled,
+            areas: config.areas,
+            readers: config.readers,
+            ports: config.ports,
+            thresholds: config.thresholds,
+        }
+    }
+}
+impl JsonSchema for TrackingConfig {
+    fn schema_name() -> String {
+        "TrackingConfig".into()
+    }
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        TrackingConfigWire::json_schema(generator)
+    }
+}
+impl PartialEq for TrackingConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.schema_version == other.schema_version
+            && self.areas == other.areas
+            && self.readers == other.readers
+            && self.ports == other.ports
+            && self.thresholds == other.thresholds
+    }
+}
+impl Eq for TrackingConfig {}
+impl TrackingConfig {
+    pub fn enabled(&self) -> bool {
+        self.areas.iter().any(|area| area.enabled)
+    }
+    /// Enrollment positions can operate before any monitored area exists.
+    pub fn reader_active(&self, reader_id: &ReaderId) -> bool {
+        self.readers
+            .iter()
+            .any(|reader| &reader.id == reader_id && reader.enabled)
+            && self
+                .ports
+                .iter()
+                .any(|port| &port.reader_id == reader_id && port.enabled)
+    }
 }
 impl Default for TrackingConfig {
     fn default() -> Self {
         Self {
             schema_version: TRACKING_SCHEMA_VERSION,
-            enabled: false,
             areas: Vec::new(),
             readers: Vec::new(),
             ports: Vec::new(),
             thresholds: Thresholds::default(),
+            previous_wire: PreviousTrackingConfig::default(),
         }
     }
 }
@@ -1089,6 +1166,11 @@ pub(crate) fn previous_command_hash(
 ) -> serde_json::Result<Option<String>> {
     legacy_hash::command_hash(command)
 }
+pub(crate) fn previous_activation_hash(
+    command: &TrackingCommand,
+) -> serde_json::Result<Option<String>> {
+    legacy_hash::activation_hash(command)
+}
 mod legacy_hash {
     use crate::tracking::models::*;
     use serde::{Serialize, Serializer, ser::SerializeSeq};
@@ -1202,15 +1284,91 @@ mod legacy_hash {
         }
         sequence.end()
     }
+    fn previous_config<S: Serializer>(
+        config: &TrackingConfig,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut wire = TrackingConfigWire::from(config.clone());
+        wire.enabled = config.previous_wire.0.unwrap_or(wire.enabled);
+        wire.serialize(serializer)
+    }
+    #[derive(Serialize)]
+    struct PreviousConfiguration<'a> {
+        version: i64,
+        at: chrono::DateTime<chrono::Utc>,
+        #[serde(serialize_with = "previous_config")]
+        config: &'a TrackingConfig,
+    }
+    fn configurations<S: Serializer>(
+        values: &[ConfigurationVersion],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            sequence.serialize_element(&PreviousConfiguration {
+                version: value.version,
+                at: value.at,
+                config: &value.config,
+            })?;
+        }
+        sequence.end()
+    }
+    #[derive(Serialize)]
+    #[serde(remote = "TrackingExport")]
+    struct PreviousActivationExport {
+        data_source: DataSource,
+        #[serde(serialize_with = "configurations")]
+        configurations: Vec<ConfigurationVersion>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        coverage: Vec<CoverageInterval>,
+        schema_version: u16,
+        exported_at: chrono::DateTime<chrono::Utc>,
+        tracking_revision: i64,
+        configuration_version: i64,
+        #[serde(serialize_with = "previous_config")]
+        config: TrackingConfig,
+        inventory: Vec<InventoryUnits>,
+        units: Vec<StoredUnit>,
+        sessions: Vec<EnrollmentSession>,
+        history: Vec<HistoryEvent>,
+        bindings: Vec<TagBinding>,
+        operations: Vec<OperationRecord>,
+        reader_operations: Vec<ReaderOperation>,
+        reader_controls: Vec<ReaderControlOperation>,
+    }
+    #[derive(Serialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum PreviousActivationCommand<'a> {
+        Configure {
+            #[serde(serialize_with = "previous_config")]
+            config: &'a TrackingConfig,
+        },
+        Import {
+            #[serde(with = "PreviousActivationExport")]
+            data: &'a TrackingExport,
+        },
+    }
+    pub(super) fn activation_hash(command: &TrackingCommand) -> serde_json::Result<Option<String>> {
+        let previous = match command {
+            TrackingCommand::Configure { config } => {
+                PreviousActivationCommand::Configure { config }
+            }
+            TrackingCommand::Import { data } => PreviousActivationCommand::Import { data },
+            _ => return Ok(None),
+        };
+        serde_json::to_vec(&previous).map(|bytes| Some(crate::models::digest(&bytes)))
+    }
     #[derive(Serialize)]
     #[serde(remote = "TrackingExport")]
     struct OldExport {
         data_source: DataSource,
+        #[serde(serialize_with = "configurations")]
         configurations: Vec<ConfigurationVersion>,
         schema_version: u16,
         exported_at: chrono::DateTime<chrono::Utc>,
         tracking_revision: i64,
         configuration_version: i64,
+        #[serde(serialize_with = "previous_config")]
         config: TrackingConfig,
         inventory: Vec<InventoryUnits>,
         #[serde(serialize_with = "units")]

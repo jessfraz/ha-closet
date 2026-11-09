@@ -169,7 +169,7 @@ pub async fn run(
                     .filter(|operation| operation.requires_cleanup()).map(|operation| operation.reader_id.clone())
                     .chain(snapshot.reader_controls.iter().filter(|operation| operation.requires_cleanup()).map(|operation| operation.reader_id.clone())).collect();
                 active_version = Some(version);
-                for reader in config.readers.into_iter().filter(|reader| config.enabled && reader.enabled || recovery.contains(&reader.id)) {
+                for reader in config.readers.iter().filter(|reader| config.reader_active(&reader.id) || recovery.contains(&reader.id)).cloned() {
                     if matches!(reader.connection, ReaderConnection::Simulator) { continue; }
                     let ports: Vec<_> = config.ports.iter().filter(|port| port.reader_id == reader.id).cloned().collect();
                     let (stop, stopped) = watch::channel(false);

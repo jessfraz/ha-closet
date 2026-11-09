@@ -414,12 +414,14 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             await page.get_by_role(
                 "button", name="Tracking settings", exact=True
             ).click()
-            await page.get_by_label("Enable area tracking", exact=True).check()
             await page.get_by_role("button", name="Add area", exact=True).click()
             await page.get_by_label("Area label", exact=True).fill("Fictional rack")
             area_id = await page.get_by_label("Area ID", exact=True).input_value()
             assert area_id.startswith("area-")
-            await page.get_by_role("button", name="Add reader", exact=True).click()
+            await page.get_by_role("button", name="Add antenna", exact=True).click()
+            await page.get_by_role(
+                "button", name="Connect a reader", exact=True
+            ).click()
             await page.get_by_label("Reader label", exact=True).fill("Fictional reader")
             reader_id = await page.get_by_label("Reader ID", exact=True).input_value()
             assert reader_id.startswith("reader-")
@@ -427,10 +429,8 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             await page.get_by_label("Reader host", exact=True).fill(
                 "reader.example.invalid"
             )
+            await page.get_by_text("Advanced reader settings", exact=True).click()
             await page.get_by_label("Closet-owned ROSpec ID", exact=True).fill("123")
-            await page.get_by_role(
-                "button", name="Add reading position", exact=True
-            ).click()
             position_id = await page.get_by_label(
                 "Position ID", exact=True
             ).input_value()
@@ -439,9 +439,7 @@ async def test_reader_settings_save_and_optional_installation_metadata(
                 "Reader for this position", exact=True
             ).select_option(label="Fictional reader")
             await page.get_by_label("Antenna port", exact=True).fill("1")
-            await page.get_by_label("Area for this position", exact=True).select_option(
-                label="Fictional rack"
-            )
+            await page.get_by_text("Advanced position settings", exact=True).click()
             await page.get_by_label("Position role", exact=True).select_option(
                 "enrollment"
             )

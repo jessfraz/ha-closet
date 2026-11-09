@@ -110,7 +110,8 @@ the phone. Clothes that cannot comfortably take a tag can stay untagged.
 Movement history stays with each physical piece, even when its tag changes.
 Analytics shows wear trends and most-worn pieces, and can pick a ready piece
 that has had less attention. It builds up from observed history.
-Tracking starts disabled. [Setup, enrollment and recovery](docs/rfid.md).
+Add an area and connect its antennas to start tracking. One reader can serve
+several areas. [Setup, enrollment and recovery](docs/rfid.md).
 
 ## Today
 

@@ -1234,7 +1234,7 @@ pub async fn run_llrp(
             .await
             .map_err(|error| ReaderError::State(error.code()))?;
         let current = context.matches(&snapshot);
-        let disabled = !snapshot.config.enabled || !reader.enabled;
+        let disabled = !snapshot.config.reader_active(&reader.id);
         let claimed = snapshot
             .reader_operations
             .iter()
@@ -2293,11 +2293,17 @@ mod tests {
         program: Option<Vec<u8>>,
         settings: LlrpControlSettings,
     }
+    struct PeerScanControl {
+        paused: watch::Sender<usize>,
+        resume: watch::Receiver<usize>,
+        fresh_tag: bool,
+    }
     async fn fixture_reader(
         listener: tokio::net::TcpListener,
         first_clock_skew: chrono::Duration,
         expected_connections: usize,
         seed: Option<PeerSeed>,
+        mut scans: Option<PeerScanControl>,
     ) -> PeerResult {
         let original = fixture_original_control();
         let mut settings = seed
@@ -2315,6 +2321,7 @@ mod tests {
                 id: 0,
             };
             connections += 1;
+            let mut completed_scans = 0;
             let time = Utc::now()
                 + if connections == 1 {
                     first_clock_skew
@@ -2451,6 +2458,27 @@ mod tests {
                             .unwrap();
                         tokio::time::sleep(Duration::from_millis(255)).await;
                         let ended = Utc::now() + offset;
+                        if connections >= 2
+                            && let Some(control) = &mut scans
+                        {
+                            if control.fresh_tag {
+                                let first = started.timestamp_millis() + 2 - 1_800_000_000_000;
+                                let last = ended.timestamp_millis() - 1_800_000_000_000;
+                                let tag = report(first, last, &[0, 0, 17, 34]);
+                                connection.send(tag.kind, tag.id, tag.body).await.unwrap();
+                            }
+                            let after = if control.fresh_tag { 0 } else { 2 };
+                            if completed_scans == after {
+                                // Synchronize at a running scan, with no
+                                // control reply in flight. Observation of
+                                // healthy state alone is not that boundary.
+                                control.paused.send(connections).unwrap();
+                                while *control.resume.borrow() < connections {
+                                    control.resume.changed().await.unwrap();
+                                }
+                            }
+                        }
+                        completed_scans += 1;
                         let mut ai = vec![0];
                         ai.extend(1001u32.to_be_bytes());
                         ai.extend(1u16.to_be_bytes());
@@ -2510,15 +2538,23 @@ mod tests {
         first_clock_skew: chrono::Duration,
         catalog_sync: bool,
         configuration_change: bool,
+        enrollment_only: bool,
     ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let expected_connections = if catalog_sync { 3 } else { 2 };
+        let (finish_scan, scan_finished) = watch::channel(0_usize);
+        let (pause_scan, mut scan_paused) = watch::channel(0_usize);
         let peer = tokio::spawn(fixture_reader(
             listener,
             first_clock_skew,
             expected_connections,
             None,
+            Some(PeerScanControl {
+                paused: pause_scan,
+                resume: scan_finished,
+                fresh_tag: enrollment_only,
+            }),
         ));
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("fixture.sqlite3"))
@@ -2554,9 +2590,15 @@ mod tests {
         };
         let mut port = scan().config;
         port.dwell_ms = None;
-        let config = TrackingConfig {
+        if enrollment_only {
+            port.role = PortRole::Enrollment;
+            port.area_id = None;
+            port.required_for_absence = false;
+            port.commissioned = false;
+        }
+        let mut config = TrackingConfig {
+            previous_wire: Default::default(),
             schema_version: TRACKING_SCHEMA_VERSION,
-            enabled: true,
             areas: vec![AreaConfig {
                 id: "area-a".parse().unwrap(),
                 label: "Fictional area".into(),
@@ -2571,6 +2613,9 @@ mod tests {
                 ..Default::default()
             },
         };
+        if enrollment_only {
+            config.areas.clear();
+        }
         let before = store.tracking_snapshot(Utc::now()).await.unwrap();
         store
             .tracking_command(
@@ -2582,6 +2627,27 @@ mod tests {
             )
             .await
             .unwrap();
+        if enrollment_only {
+            let before = store.tracking_snapshot(Utc::now()).await.unwrap();
+            assert!(!before.config.enabled());
+            assert!(before.config.reader_active(&reader.id));
+            store
+                .tracking_command(
+                    "fixture",
+                    "lookup-before-area",
+                    before.tracking_revision,
+                    TrackingCommand::StartEnrollment {
+                        unit_ids: Vec::new(),
+                        port_id: port.id.clone(),
+                        borrow: false,
+                        purpose: EnrollmentPurpose::Lookup,
+                        ttl_seconds: 300,
+                    },
+                    Utc::now(),
+                )
+                .await
+                .unwrap();
+        }
         let (stop, shutdown) = watch::channel(false);
         let worker_store = store.clone();
         let task = tokio::spawn(async move {
@@ -2589,16 +2655,32 @@ mod tests {
             run_llrp(&worker_store, &reader, &[port], &clock, shutdown).await
         });
         let mut healthy = false;
-        for _ in 0..100 {
+        for _ in 0..200 {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let snapshot = store.tracking_snapshot(Utc::now()).await.unwrap();
-            if snapshot.health.absence_coverage_healthy {
+            let enrollment_candidate = enrollment_only
+                && snapshot.sessions.iter().any(|session| {
+                    session
+                        .candidates
+                        .iter()
+                        .any(|candidate| candidate.epc.as_str() == "00001122")
+                });
+            if snapshot.health.absence_coverage_healthy || enrollment_candidate {
                 healthy = true;
                 break;
             }
             if task.is_finished() {
                 break;
             }
+        }
+        if healthy {
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                scan_paused.wait_for(|connection| *connection >= 2),
+            )
+            .await
+            .unwrap()
+            .unwrap();
         }
         if catalog_sync && healthy {
             healthy = false;
@@ -2616,7 +2698,8 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            for _ in 0..100 {
+            finish_scan.send(2).unwrap();
+            for _ in 0..200 {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let snapshot = store.tracking_snapshot(Utc::now()).await.unwrap();
                 if snapshot.health.absence_coverage_healthy {
@@ -2627,6 +2710,15 @@ mod tests {
                     break;
                 }
             }
+        }
+        if catalog_sync && healthy {
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                scan_paused.wait_for(|connection| *connection >= 3),
+            )
+            .await
+            .unwrap()
+            .unwrap();
         }
         let mut generation_exited = !configuration_change;
         if configuration_change && healthy {
@@ -2643,7 +2735,8 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            for _ in 0..40 {
+            finish_scan.send(2).unwrap();
+            for _ in 0..200 {
                 if task.is_finished() {
                     generation_exited = true;
                     break;
@@ -2652,6 +2745,7 @@ mod tests {
             }
         }
         let _ = stop.send(true);
+        let _ = finish_scan.send(expected_connections);
         let result = tokio::time::timeout(Duration::from_secs(20), task)
             .await
             .unwrap()
@@ -2662,7 +2756,10 @@ mod tests {
         }
         if !healthy {
             peer.abort();
-            panic!("actual worker never recovered fresh completed coverage after catalog sync");
+            panic!(
+                "actual worker never recovered expected evidence: {:?}",
+                store.tracking_snapshot(Utc::now()).await.unwrap()
+            );
         }
         let peer = tokio::time::timeout(Duration::from_secs(5), peer)
             .await
@@ -2689,10 +2786,23 @@ mod tests {
         );
         let after = store.tracking_snapshot(Utc::now()).await.unwrap();
         assert!(!after.health.absence_coverage_healthy);
-        assert!(
-            after.diagnostics.recent_reads.is_empty(),
-            "buffered pre-reconnect tag leaked into fresh observations"
-        );
+        if enrollment_only {
+            assert!(!after.config.enabled());
+            assert!(
+                after
+                    .diagnostics
+                    .recent_reads
+                    .iter()
+                    .any(|read| read.epc.as_str() == "00001122"
+                        && read.purpose == ObservationPurpose::Enrollment)
+            );
+            assert!(after.units.is_empty());
+        } else {
+            assert!(
+                after.diagnostics.recent_reads.is_empty(),
+                "buffered pre-reconnect tag leaked into fresh observations"
+            );
+        }
         assert!(
             after
                 .reader_operations
@@ -2708,19 +2818,23 @@ mod tests {
     }
     #[tokio::test]
     async fn real_worker_claims_program_proves_empty_scans_and_cleans_up_actual_sqlite_state() {
-        worker_lifecycle(chrono::Duration::zero(), false, false).await;
+        worker_lifecycle(chrono::Duration::zero(), false, false, false).await;
     }
     #[tokio::test]
     async fn real_worker_reconnects_after_accepted_future_reader_timestamps() {
-        worker_lifecycle(chrono::Duration::milliseconds(1900), false, false).await;
+        worker_lifecycle(chrono::Duration::milliseconds(1900), false, false, false).await;
     }
     #[tokio::test]
     async fn real_worker_reinspects_and_resumes_after_normal_catalog_sync() {
-        worker_lifecycle(chrono::Duration::zero(), true, false).await;
+        worker_lifecycle(chrono::Duration::zero(), true, false, false).await;
     }
     #[tokio::test]
     async fn real_worker_cleans_up_and_exits_its_old_configuration_generation() {
-        worker_lifecycle(chrono::Duration::zero(), false, true).await;
+        worker_lifecycle(chrono::Duration::zero(), false, true, false).await;
+    }
+    #[tokio::test]
+    async fn dedicated_enrollment_reads_factory_tag_before_any_area_exists() {
+        worker_lifecycle(chrono::Duration::zero(), false, false, true).await;
     }
     #[tokio::test]
     async fn disabled_startup_restores_durable_claims_without_provisioning_or_observations() {
@@ -2731,7 +2845,7 @@ mod tests {
             Unrelated,
             UnknownOwned,
         }
-        for (reader_enabled, global_enabled, mode) in [
+        for (reader_enabled, area_enabled, mode) in [
             (false, true, Program::Owned),
             (true, false, Program::Owned),
             (false, true, Program::Absent),
@@ -2754,7 +2868,6 @@ mod tests {
             scan.config.dwell_ms = None;
             let config = TrackingConfig {
                 schema_version: TRACKING_SCHEMA_VERSION,
-                enabled: true,
                 areas: vec![AreaConfig {
                     id: "area-a".parse().unwrap(),
                     label: "Fictional area".into(),
@@ -2765,6 +2878,7 @@ mod tests {
                 readers: vec![reader.clone()],
                 ports: vec![scan.config.clone()],
                 thresholds: Thresholds::default(),
+                ..Default::default()
             };
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("crash.sqlite3");
@@ -2820,7 +2934,8 @@ mod tests {
                 .await
                 .unwrap();
             let mut disabled = config;
-            disabled.enabled = global_enabled;
+            disabled.areas[0].enabled = area_enabled;
+            disabled.ports[0].enabled = area_enabled;
             disabled.readers[0].enabled = reader_enabled;
             let snapshot = store.tracking_snapshot_clocked(Utc::now).await.unwrap();
             store
@@ -2862,6 +2977,7 @@ mod tests {
                     program: actual_program,
                     settings: applied,
                 }),
+                None,
             ));
             let (_stop, shutdown) = watch::channel(false);
             let clock = crate::tracking::reader::SystemReaderClock::default();

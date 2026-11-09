@@ -13,13 +13,13 @@ use crate::models::CatalogItem;
 use crate::store::Store;
 use crate::tracking::models::{
     AreaKind, DecisionReason, HistoryKind, InstallationState, Result, StateEvidence, StoredUnit,
-    TrackingError, UnitId, UnitStatus,
+    TrackingConfig, TrackingError, UnitId, UnitStatus,
 };
 
 const PAGE: usize = 500;
 const MINIMUM_OBSERVATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const LIST_LIMIT: usize = 12;
-const STATE: &str = "SELECT enabled FROM tracking_state WHERE singleton=1";
+pub(crate) const STATE: &str = "SELECT config FROM tracking_state WHERE singleton=1";
 const CATALOG: &str = "SELECT id,body FROM items WHERE id>? ORDER BY id LIMIT 500";
 const UNITS: &str = "SELECT id,body FROM tracking_units WHERE id>? ORDER BY id LIMIT 500";
 const HISTORY_FORWARD: &str = "SELECT id,unit_id,at,json_extract(body,'$.automatic') AS automatic,body->'$.kind' AS kind,body->'$.reason' AS reason,body->'$.before' AS before,body->'$.after' AS after FROM tracking_history WHERE id>? ORDER BY id LIMIT 500";
@@ -524,7 +524,8 @@ impl Store {
         }
         let mut tx = self.pool.begin().await?;
         // Establish one SQLite read snapshot before sampling the request clock.
-        let tracking_enabled: bool = sqlx::query_scalar(STATE).fetch_one(&mut *tx).await?;
+        let config: String = sqlx::query_scalar(STATE).fetch_one(&mut *tx).await?;
+        let tracking_enabled = serde_json::from_str::<TrackingConfig>(&config)?.enabled();
         let now = clock();
         let day_spans = window(now, days, timezone)?;
         let from = day_spans

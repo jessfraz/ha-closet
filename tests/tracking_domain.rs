@@ -84,7 +84,6 @@ fn config() -> TrackingConfig {
     }
     TrackingConfig {
         schema_version: 1,
-        enabled: true,
         areas,
         readers: vec![ReaderConfig {
             id: id("reader"),
@@ -103,6 +102,7 @@ fn config() -> TrackingConfig {
             candidate_fresh_ms: 500,
             reader_event_max_age_ms: 10_000,
         },
+        ..Default::default()
     }
 }
 struct Rig {
@@ -1556,7 +1556,9 @@ async fn claimed_readers_require_cleanup_before_identity_changes_or_import_and_c
         ));
         // Disabling retains the old connection so restart recovery can still reach it.
         let mut disabled = cfg.clone();
-        disabled.enabled = false;
+        for area in &mut disabled.areas {
+            area.enabled = false;
+        }
         disabled.readers[0].enabled = false;
         rig.command(TrackingCommand::Configure { config: disabled })
             .await
@@ -1597,7 +1599,9 @@ async fn claimed_readers_require_cleanup_before_identity_changes_or_import_and_c
             .await
             .unwrap();
         let mut final_config = if replace { replaced } else { removed };
-        final_config.enabled = false;
+        for area in &mut final_config.areas {
+            area.enabled = false;
+        }
         rig.command(TrackingCommand::Configure {
             config: final_config.clone(),
         })

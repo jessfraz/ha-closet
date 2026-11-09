@@ -211,7 +211,7 @@ async def seed_analytics(
                     ),
                 )
             connection.execute(
-                "UPDATE tracking_state SET config=?,enabled=1,configuration_version=?,"
+                "UPDATE tracking_state SET config=?,configuration_version=?,"
                 "revision=revision+1 WHERE singleton=1",
                 (json.dumps(tracking["config"]), tracking["configuration_version"]),
             )
