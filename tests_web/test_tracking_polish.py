@@ -1,14 +1,131 @@
 """Reader-backed position defaults through real service and browser state."""
 
+import json
 import re
 
 import pytest
+from homeassistant.util.json import JsonObjectType
 from playwright.async_api import Request, async_playwright, expect
 
 from tests_ha.conftest import RustBackend, catalog_item
 from tests_ha.tracking_fixture import ReaderEvidence, command, configure, snapshot
 from tests_web.test_app import login
 from tests_web.test_tracking import action
+
+
+async def configure_two_pairing_positions(backend: RustBackend) -> None:
+    await configure(backend)
+    config = (await snapshot(backend))["config"]
+    assert isinstance(config, dict)
+    ports = config["ports"]
+    assert isinstance(ports, list) and isinstance(ports[0], dict)
+    second = dict(ports[0])
+    second.update(id="example-second-enroll", antenna=2)
+    ports.append(second)
+    await command(backend, {"type": "configure", "config": config})
+    await ReaderEvidence(backend).observe()
+
+
+async def test_selected_reading_position_survives_piece_search_and_mode_changes(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync(
+        [
+            catalog_item(f"example-{index}", name=f"Example garment {index}")
+            for index in range(3)
+        ]
+    )
+    await configure_two_pairing_positions(rust_backend)
+    physical = (await snapshot(rust_backend))["units"]
+    assert isinstance(physical, list) and isinstance(physical[1], dict)
+    selected_unit = physical[1]["id"]
+    assert isinstance(selected_unit, str)
+    expected = "example-second-enroll"
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 320, "height": 844})
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            station = page.get_by_label("Reading position", exact=True)
+            await station.select_option(expected)
+            chooser = page.get_by_label("Choose a physical piece", exact=True)
+            await chooser.select_option(selected_unit)
+            after_piece = await station.input_value()
+            await page.get_by_label("Find a piece", exact=True).fill("Example")
+            await page.get_by_role("button", name="Find garments", exact=True).click()
+            await expect(chooser).not_to_have_value(selected_unit)
+            await chooser.select_option(selected_unit)
+            after_filter = await station.input_value()
+            await page.get_by_role("button", name="Look up a tag", exact=True).click()
+            await page.get_by_role("button", name="Enroll", exact=True).click()
+            after_mode = await station.input_value()
+            async with page.expect_request(
+                lambda request: (
+                    request.method == "POST"
+                    and request.url.endswith("/v1/tracking/commands")
+                )
+            ) as request:
+                await action(page, "Start enrollment session")
+            body = (await request.value).post_data
+            assert body is not None
+            submitted: JsonObjectType = json.loads(body)
+            sessions = (await snapshot(rust_backend))["sessions"]
+            assert isinstance(sessions, list)
+            active = next(
+                session
+                for session in sessions
+                if isinstance(session, dict) and session["state"] == "active"
+            )
+            assert (
+                after_piece,
+                after_filter,
+                after_mode,
+                submitted["port_id"],
+                active["port_id"],
+            ) == (expected,) * 5
+            await expect(station).to_have_value(expected)
+            await expect(station).to_be_disabled()
+            await action(page, "End session")
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("changed", ["disabled", "antenna"])
+async def test_changed_reading_position_requires_a_fresh_selection(
+    rust_backend: RustBackend, changed: str
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await configure_two_pairing_positions(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            station = page.get_by_label("Reading position", exact=True)
+            await station.select_option("example-second-enroll")
+            config = (await snapshot(rust_backend))["config"]
+            assert isinstance(config, dict)
+            ports = config["ports"]
+            assert isinstance(ports, list) and isinstance(ports[1], dict)
+            if changed == "disabled":
+                ports[1]["enabled"] = False
+            else:
+                ports[1]["antenna"] = 3
+            await command(rust_backend, {"type": "configure", "config": config})
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await expect(station).to_have_value("")
+            await expect(
+                page.get_by_role("button", name="Start enrollment session", exact=True)
+            ).to_be_disabled()
+            await station.select_option("example-enroll")
+            await action(page, "Start enrollment session")
+            await expect(station).to_have_value("example-enroll")
+            await expect(station).to_be_disabled()
+            await action(page, "End session")
+        finally:
+            await browser.close()
 
 
 async def test_lookup_omits_piece_filters_and_does_not_reload_the_catalog(
@@ -180,6 +297,15 @@ async def test_settings_save_feedback_stays_near_save_and_clears_when_draft_chan
             await page.get_by_role("button", name="Add area", exact=True).click()
             await expect(feedback).to_be_hidden()
             await expect(page.locator("#tracking-settings-notice")).to_be_hidden()
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await expect(page.get_by_label("Area label", exact=True)).to_have_count(2)
+            await action(page, "Save tracking settings")
+            await expect(feedback).to_have_text("Tracking settings saved.")
+            await page.get_by_role("button", name="Inventory", exact=True).click()
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await expect(feedback).to_be_hidden()
         finally:
             await browser.close()
 

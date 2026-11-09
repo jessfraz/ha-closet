@@ -456,7 +456,6 @@ function copyList(item, copies, detailed = false) {
         if (appliedFilters.source === source) { badge.classList.add("source-match"); badge.setAttribute("aria-pressed", "true"); }
         actions.append(badge);
       }
-      row.append(actions);
       // A size total may span purchases. Keep the quantity of each acquisition
       // explicit without turning a multi-piece purchase into invented records.
       if (purchases.length > 1 || copy.quantity === null) row.append(element("p", "copy-quantity", pieceCount(copy.quantity)));
@@ -470,6 +469,7 @@ function copyList(item, copies, detailed = false) {
       if (copy.usage?.kind === "safety_work_only") row.append(element("span", "usage-badge", "Safety work only"));
       const badge = tracking.badge(copy);
       if (badge) row.append(badge);
+      row.append(actions);
       rows.append(row);
     }
     sizeRow.append(rows);

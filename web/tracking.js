@@ -26,6 +26,7 @@ export class TrackingController {
     this.mode = "enroll";
     this.sessionId = null;
     this.selectedId = null;
+    this.stationSelection = null;
     this.replacementId = null;
     this.pending = null;
     this.busy = false;
@@ -166,6 +167,7 @@ export class TrackingController {
     }
   }
   setView(view) {
+    if (this.view === "tracking-settings" && view !== this.view && this.settingsNotice.tone === "ok") this.notice("", true);
     this.view = view;
     clearTimeout(this.timer);
     if (!document.hidden) void this.refresh();
@@ -445,7 +447,7 @@ export class TrackingController {
     if (!unit && this.mode !== "lookup") {
       unit = this.filteredQueue()[0]; this.selectedId = unit?.id || null;
     }
-    const key = JSON.stringify([this.mode, this.filterRevision, this.role(), blockers, unit?.id, unit?.has_binding, unit?.installation, session?.id, session?.cursor, session?.state, this.pending, this.snapshot.config.ports, this.snapshot.config.readers.map((reader) => [reader.id, reader.enabled]), this.snapshot.reader_readbacks.map((readback) => [readback.reader_id, readback.capabilities.inventory_pause])]);
+    const key = JSON.stringify([this.mode, this.filterRevision, this.role(), blockers, unit?.id, unit?.has_binding, unit?.installation, session?.id, session?.port_id, session?.cursor, session?.state, this.pending, this.snapshot.config.ports, this.snapshot.config.readers.map((reader) => [reader.id, reader.label, reader.enabled, reader.connection]), this.snapshot.reader_readbacks.map((readback) => [readback.reader_id, readback.capabilities.inventory_pause])]);
     if (key === this.workspaceKey) { this.renderCapture(); return; }
     this.workspaceKey = key;
     const revision = ++this.workspaceRevision;
@@ -525,10 +527,21 @@ export class TrackingController {
   stationControls(purpose) {
     const root = this.node("div", "station-controls");
     const ports = this.snapshot.config.ports.filter((port) => port.enabled && this.snapshot.config.readers.some((reader) => reader.id === port.reader_id && reader.enabled) && (port.role === "enrollment" || this.snapshot.reader_readbacks.some((readback) => readback.reader_id === port.reader_id && readback.capabilities.inventory_pause)));
-    const port = this.field("Reading position", ports.map((port) => {
+    const selectionKey = (port) => JSON.stringify([port.id, port.reader_id, port.antenna, port.area_id, port.role, this.snapshot.config.readers.find((reader) => reader.id === port.reader_id)?.connection]);
+    const option = (port) => {
       const reader = this.snapshot.config.readers.find((reader) => reader.id === port.reader_id);
       return [port.id, `${reader?.label || port.reader_id} · antenna ${port.antenna}${port.role === "enrollment" ? " · enrollment" : " · borrowed area antenna"}`];
-    }), this.session()?.port_id);
+    };
+    const session = this.session(), active = session?.state === "active";
+    // Piece changes and search rebuild this view. Keep an explicit selection,
+    // but require another choice if its physical reader/antenna mapping changes.
+    const selected = active ? this.snapshot.config.ports.find((port) => port.id === session.port_id) : this.stationSelection ? ports.find((port) => selectionKey(port) === this.stationSelection) : ports[0];
+    if (selected) this.stationSelection = selectionKey(selected);
+    const options = ports.map(option);
+    if (active && !ports.some((port) => port.id === session.port_id)) options.push(selected ? option(selected) : [session.port_id, "Active session reading position"]);
+    if (!active && !selected) options.unshift(["", "Choose a reading position"]);
+    const port = this.field("Reading position", options, active ? session.port_id : selected?.id || "");
+    port.input.disabled ||= active;
     root.append(port.wrapper);
     const start = this.button(purpose === "lookup" ? "Start lookup scan" : purpose === "replace" ? "Scan replacement tag" : "Start enrollment session", async () => {
       const selected = ports.find((candidate) => candidate.id === port.input.value);
@@ -538,7 +551,12 @@ export class TrackingController {
       const result = await this.command({ type: "start_enrollment", unit_ids: unitIds, port_id: selected.id, borrow: selected.role !== "enrollment", purpose, ttl_seconds: 900 });
       if (result?.session) { this.sessionId = result.session.id; this.workspaceKey = null; await this.renderWorkspace(); }
     }, false);
-    start.disabled ||= !ports.length || this.session()?.state === "active";
+    start.disabled ||= !selected || active;
+    port.input.addEventListener("change", () => {
+      const selected = ports.find((candidate) => candidate.id === port.input.value);
+      if (selected) this.stationSelection = selectionKey(selected);
+      start.disabled = !selected || active || this.busy || Boolean(this.pending) || this.role() !== "owner";
+    });
     const actions = this.node("div", "enroll-actions"); actions.append(start);
     const saved = [...this.snapshot.sessions].reverse().find((session) => session.purpose === purpose && session.state !== "active" && session.state !== "complete" && session.cursor < session.queue.length && ["not_borrowed", "restored"].includes(session.borrow_state));
     if (purpose !== "lookup" && saved && this.session()?.state !== "active") actions.append(this.button("Resume saved queue", () => this.command({ type: "resume_enrollment", session_id: saved.id, ttl_seconds: 900 }), false));
@@ -990,7 +1008,12 @@ export class TrackingController {
     for (const read of this.snapshot.diagnostics.recent_reads.slice(-30).reverse()) recent.append(this.node("li", "", `${this.time(read.received_at)} · ${read.data_source === "simulation" ? "SIMULATION" : "Live"} · ${read.purpose} · ${read.port_id} · EPC ${read.epc} · ${read.read_count} reads${read.peak_rssi_cdbm !== null ? ` · RSSI ${read.peak_rssi_cdbm / 100} dBm` : ""}`));
     details.append(this.node("h4", "", "Recent reads"), recent.childElementCount ? recent : this.node("p", "muted", "No recent reads."));
     for (const decision of this.snapshot.diagnostics.decisions.slice(-20).reverse()) details.append(this.node("p", "muted", `${this.time(decision.at)} · ${decision.reason.replaceAll("_", " ")}${decision.area_id ? ` · ${this.area(decision.area_id)?.label || decision.area_id}` : ""}`));
-    for (const fault of this.snapshot.diagnostics.faults.slice(-20).reverse()) details.append(this.node("p", "notice", `${this.time(fault.at)} · ${fault.code.replaceAll("_", " ")}`));
+    for (const fault of this.snapshot.diagnostics.faults.slice(-20).reverse()) {
+      const port = this.snapshot.config.ports.find((entry) => entry.id === fault.port_id);
+      const reader = this.snapshot.config.readers.find((entry) => entry.id === (fault.reader_id || port?.reader_id));
+      const source = [reader?.label || fault.reader_id, port ? `antenna ${port.antenna}` : fault.port_id].filter(Boolean).join(" · ");
+      details.append(this.node("p", "notice", `${this.time(fault.at)} · ${source ? `${source} · ` : ""}${fault.code.replaceAll("_", " ")}`));
+    }
     root.replaceChildren(details);
     if (requested) details.querySelector("summary").focus();
   }

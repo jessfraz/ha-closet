@@ -323,6 +323,11 @@ async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
                 page.locator(".tracking-diagnostics details")
             ).to_have_attribute("open", "")
             await expect(page.locator(".tracking-diagnostics summary")).to_be_focused()
+            await expect(
+                page.locator(".tracking-diagnostics p.notice")
+                .filter(has_text="Example reader · disconnected")
+                .first
+            ).to_be_visible()
             await page.get_by_role("button", name="Tags", exact=True).click()
             await expect(confirm).to_be_disabled()
             await reader.observe()
@@ -864,7 +869,10 @@ async def test_unsupported_borrowed_position_requires_dedicated_enrollment(
             await login(page, rust_backend)
             await page.get_by_role("button", name="Tags", exact=True).click()
             position = page.get_by_label("Reading position", exact=True)
-            await expect(position.locator("option")).to_have_count(0)
+            await expect(position).to_have_value("")
+            await expect(
+                position.locator('option[value="example-enroll"]')
+            ).to_have_count(0)
             await expect(
                 page.get_by_role("button", name="Start enrollment session", exact=True)
             ).to_be_disabled()

@@ -4,7 +4,7 @@ import pytest
 from playwright.async_api import Locator, Route, async_playwright, expect
 
 from tests_ha.conftest import RustBackend, catalog_item
-from tests_ha.tracking_fixture import configure
+from tests_ha.tracking_fixture import command, configure, snapshot
 from tests_web.test_app import login
 from tests_web.test_group_detail import prepare_group
 from tests_web.test_inventory_ui import product_photo
@@ -114,13 +114,28 @@ async def test_copy_source_rows_keep_the_same_layout_in_cards_and_details(
 
 
 @pytest.mark.parametrize(
-    ("width", "wide_font"), [(1280, False), (1280, True), (760, True), (390, True)]
+    ("width", "wide_font", "long_area"),
+    [
+        (1280, False, False),
+        (1280, True, False),
+        (760, True, False),
+        (390, True, False),
+        (1280, False, True),
+    ],
 )
 async def test_detail_uses_readable_source_compact_fallback_and_control_height(
-    rust_backend: RustBackend, width: int, wide_font: bool
+    rust_backend: RustBackend, width: int, wide_font: bool, long_area: bool
 ) -> None:
     await rust_backend.sync([catalog_item()])
     await configure(rust_backend)
+    area_label = "Example closet with an exceptionally descriptive area label"
+    if long_area:
+        config = (await snapshot(rust_backend))["config"]
+        assert isinstance(config, dict)
+        areas = config["areas"]
+        assert isinstance(areas, list) and isinstance(areas[0], dict)
+        areas[0]["label"] = area_label
+        await command(rust_backend, {"type": "configure", "config": config})
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
@@ -144,17 +159,20 @@ async def test_detail_uses_readable_source_compact_fallback_and_control_height(
             await expect(detail.get_by_text("Self-bought", exact=True)).to_be_visible()
             fallback = await detail.locator(".photo").bounding_box()
             assert fallback and fallback["height"] <= 160
-            area = await detail.get_by_label("Confirm current area").bounding_box()
+            selector = detail.get_by_label("Confirm current area")
+            if long_area:
+                await expect(
+                    selector.locator("..").get_by_text(area_label, exact=True).last
+                ).to_be_visible()
+            area = await selector.bounding_box()
+            field = await selector.locator("..").bounding_box()
             baseline = await detail.get_by_role(
                 "button", name="Set area baseline", exact=True
             ).bounding_box()
-            assert area and baseline
+            assert area and field and baseline
             assert area["height"] == baseline["height"] == 44
-            if abs(area["y"] - baseline["y"]) <= 1:
-                assert baseline["x"] >= area["x"] + area["width"] + 11
-            else:
-                assert abs(baseline["x"] - area["x"]) <= 1
-                assert baseline["y"] >= area["y"] + area["height"] + 11
+            assert abs(baseline["x"] - area["x"]) <= 1
+            assert baseline["y"] >= field["y"] + field["height"] + 11
             text = await detail.get_by_role(
                 "button", name="Set area baseline", exact=True
             ).evaluate("""button => {
@@ -172,6 +190,37 @@ async def test_detail_uses_readable_source_compact_fallback_and_control_height(
             }""")
             assert text["lines"] == 1
             assert min(text["left"], text["right"], text["top"], text["bottom"]) >= 0
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+async def test_single_purchase_group_status_remains_compact(
+    rust_backend: RustBackend, width: int
+) -> None:
+    record = catalog_item("example-pullover", name="Example long-sleeve cotton layer")
+    record["identity"] = {
+        "style_id": "example-pullover-style",
+        "variant_id": "example-pullover-variant",
+    }
+    await rust_backend.sync([record])
+    await configure(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": width, "height": 900})
+            await login(page, rust_backend)
+            pill = page.locator(
+                '[data-variant-id="example-pullover-variant"] > .tracking-pill'
+            )
+            await expect(pill).to_have_text("Not tracked")
+            extra_width = await pill.evaluate("""pill => {
+                const range = document.createRange();
+                range.selectNodeContents(pill);
+                return pill.getBoundingClientRect().width
+                    - range.getBoundingClientRect().width;
+            }""")
+            assert 0 <= extra_width <= 17, "a status pill should fit its own text"
         finally:
             await browser.close()
 
