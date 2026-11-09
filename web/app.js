@@ -248,7 +248,7 @@ function photo(item, index = 0, presentation = "card") {
   const wrapper = element("div", "photo");
   const reference = Array.isArray(item.images) ? item.images[index] : null;
   const url = object(reference) ? safeLink(reference.url) : null;
-  const placeholder = () => wrapper.replaceChildren(element("span", "photo-placeholder", "No photo"));
+  const placeholder = () => { wrapper.classList.add("photo-empty"); wrapper.replaceChildren(element("span", "photo-placeholder", "No photo")); };
   if (!url) { placeholder(); return wrapper; }
   const image = document.createElement("img");
   image.alt = item.name || "Item";
@@ -281,6 +281,53 @@ function photo(item, index = 0, presentation = "card") {
     ? url : nativePreviewURL(url, presentation === "thumbnail" ? 256 : 512);
   wrapper.append(image);
   return wrapper;
+}
+
+// Native selects keep their keyboard and touch behavior. When a selected label
+// cannot fit, repeat its full text below the control rather than hiding meaning
+// behind an ellipsis or relying on a hover tooltip.
+function readableSelectValues() {
+  const measure = document.createElement("canvas").getContext("2d");
+  let frame = 0;
+  function refresh() {
+    frame = 0;
+    if (!measure) return;
+    for (const select of document.querySelectorAll("select")) {
+      if (!select.getClientRects().length) continue;
+      const sibling = select.nextElementSibling;
+      const existing = sibling?.classList.contains("select-value") ? sibling : null;
+      const text = select.selectedOptions[0]?.textContent || "";
+      const style = getComputedStyle(select);
+      measure.font = style.font;
+      const available = select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 24;
+      if (select.dataset.fullValue === "described" || measure.measureText(text).width <= available) {
+        existing?.remove();
+      } else {
+        const full = existing || element("span", "select-value");
+        // The native selected option already exposes the complete accessible
+        // value. Avoid changing the field's accessible name or reading it twice.
+        full.setAttribute("aria-hidden", "true");
+        if (full.textContent !== text) full.textContent = text;
+        if (!existing) select.after(full);
+      }
+    }
+  }
+  function schedule() { if (!frame) frame = requestAnimationFrame(refresh); }
+  const mutations = new MutationObserver(schedule);
+  const resize = new ResizeObserver(schedule);
+  return {
+    start() {
+      mutations.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "open", "selected"] });
+      resize.observe(document.documentElement);
+      document.addEventListener("change", schedule);
+      schedule();
+    },
+    stop() {
+      mutations.disconnect(); resize.disconnect();
+      document.removeEventListener("change", schedule);
+      cancelAnimationFrame(frame); frame = 0;
+    },
+  };
 }
 
 function sourceOf(item) {
@@ -714,7 +761,7 @@ function purchaseFacts(item) {
   if (item.identity) {
     values.push(["Source", sourceLabel(item)]);
   } else {
-    if (item.purchase_source) values.push(["Purchase source", item.purchase_source]);
+    if (item.purchase_source) values.push(["Purchase source", sourceLabel(item)]);
     if (object(item.shop)) values.push(["Shop", item.shop.label]);
   }
   if (object(item.shop)) {
@@ -1000,6 +1047,7 @@ function showView(next) {
 let knownTrackingRevision = null;
 const tracking = new TrackingController({
   request, element, photo, getItem, openItem: openDetail, sourceLabel, errorMessage, role: () => system?.role,
+  timezone: () => system?.timezone || "UTC",
   changed: () => {
     const revision = tracking.snapshot?.tracking_revision;
     const changed = knownTrackingRevision !== null && revision !== knownTrackingRevision;
@@ -1071,7 +1119,9 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && view === "analytics" && system) void analytics.load();
   if (!document.hidden && view === "inventory") observeNextPage();
 });
-window.addEventListener("pagehide", () => { tracking.suspend(); analytics.suspend(); clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); detailAbort?.abort(); detailRevision += 1; stopNavigation(); });
-window.addEventListener("pageshow", () => { startNavigation(); if (system) void tracking.refresh(); if (system) applyLocation(navigationURL(), { refresh: true }); observeNextPage(); });
+const selectValues = readableSelectValues();
+window.addEventListener("pagehide", () => { selectValues.stop(); tracking.suspend(); analytics.suspend(); clearTimeout(pollTimer); stopAutoPaging(); listAbort?.abort(); detailAbort?.abort(); detailRevision += 1; stopNavigation(); });
+window.addEventListener("pageshow", () => { selectValues.start(); startNavigation(); if (system) void tracking.refresh(); if (system) applyLocation(navigationURL(), { refresh: true }); observeNextPage(); });
+selectValues.start();
 startNavigation();
 connect().catch((error) => { if (error instanceof APIError && error.status === 401) byId("login").hidden = false; else notice(errorMessage(error)); });

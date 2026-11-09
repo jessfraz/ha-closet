@@ -77,12 +77,18 @@ struct App {
 }
 impl App {
     async fn new() -> Self {
+        Self::with_today(None).await
+    }
+    async fn with_today(today: Option<closet::today::TodayConfig>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("catalog.sqlite3"))
             .await
             .unwrap();
-        let context =
-            Arc::new(api::Context::new(store.clone(), OWNER).with_integration(INTEGRATION));
+        let mut context = api::Context::new(store.clone(), OWNER).with_integration(INTEGRATION);
+        if let Some(today) = today {
+            context = context.with_today(today);
+        }
+        let context = Arc::new(context);
         let server = api::start(
             "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             context.clone(),
@@ -106,6 +112,48 @@ impl App {
         self.server.close().await.unwrap();
         self.context.shutdown().await.unwrap();
         self.store.close().await;
+    }
+}
+
+#[tokio::test]
+async fn system_exposes_the_calendar_timezone_without_requiring_today_generation() {
+    #[derive(serde::Deserialize)]
+    struct CalendarSettings {
+        timezone: String,
+        today_configured: bool,
+    }
+    for (today, expected) in [
+        (None, "UTC"),
+        (
+            Some(
+                closet::today::TodayConfig::new(
+                    "http://127.0.0.1:1".into(),
+                    None,
+                    "Pacific/Kiritimati",
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            "Pacific/Kiritimati",
+        ),
+    ] {
+        let app = App::with_today(today).await;
+        let calendar = app
+            .client
+            .get(format!("{}/v1/system", app.origin))
+            .bearer_auth(OWNER)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<CalendarSettings>()
+            .await
+            .unwrap();
+        assert_eq!(calendar.timezone, expected);
+        assert!(!calendar.today_configured);
+        app.close().await;
     }
 }
 

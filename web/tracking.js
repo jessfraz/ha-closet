@@ -18,8 +18,8 @@ const exceptionLabels = {
 const installationLabels = { needs_tag: "Needs a tag", queued: "Queued for installation", installed: "Tag installed", exempt: "No-tag exception" };
 
 export class TrackingController {
-  constructor({ request, element, photo, getItem, openItem, sourceLabel, errorMessage, role, changed }) {
-    Object.assign(this, { request, element, photo, getItem, openItem, sourceLabel, errorMessage, role, changed });
+  constructor({ request, element, photo, getItem, openItem, sourceLabel, errorMessage, role, timezone, changed }) {
+    Object.assign(this, { request, element, photo, getItem, openItem, sourceLabel, errorMessage, role, timezone, changed });
     this.snapshot = null;
     this.online = false;
     this.view = "inventory";
@@ -56,6 +56,16 @@ export class TrackingController {
   notice(text = "", settings = false, tone = "warning") {
     const node = document.getElementById(settings ? "tracking-settings-notice" : "tag-notice");
     node.textContent = text; node.hidden = !text; node.dataset.tone = tone;
+    if (settings) {
+      const feedback = document.getElementById("tracking-save-feedback");
+      if (feedback) { feedback.textContent = text; feedback.hidden = !text; feedback.dataset.tone = tone; }
+    }
+  }
+  time(value, includeDate = false) {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: this.timezone(), timeZoneName: "short", hour: "numeric", minute: "2-digit", second: "2-digit",
+      ...(includeDate ? { year: "numeric", month: "short", day: "numeric" } : {}),
+    }).format(new Date(value));
   }
   button(text, action, quiet = true) {
     const button = this.node("button", quiet ? "quiet" : "", text);
@@ -184,6 +194,7 @@ export class TrackingController {
   async command(body, revision = this.snapshot?.tracking_revision) {
     if (this.busy || this.role() !== "owner" || !this.snapshot) return null;
     this.pending ||= { body: structuredClone(body), key: crypto.randomUUID(), revision, confirmation: this.confirmationContext(body) };
+    const savingSettings = this.pending.body.type === "configure";
     const roots = [document.getElementById("tag-workspace"), document.getElementById("tracking-settings-content"), this.detail?.root].filter(Boolean);
     // Keep the original control state through an uncertain response and retry.
     // Cached views may survive readback, so rendering alone cannot unlock them.
@@ -235,7 +246,10 @@ export class TrackingController {
       // Confirmation always recomputes freshness, isolation and connection guards.
       this.captureKey = null; this.renderCapture();
       this.renderDetail(true);
-      if (this.view === "tracking-settings") this.renderSettings(acknowledged);
+      if (this.view === "tracking-settings") {
+        this.renderSettings(acknowledged);
+        if (savingSettings) document.getElementById("tracking-save-feedback")?.scrollIntoView({ block: "nearest" });
+      }
       for (const root of [document.getElementById("tag-workspace"), document.getElementById("tracking-settings-content"), this.detail?.root]) root?.setAttribute("aria-busy", "false");
     }
   }
@@ -294,7 +308,7 @@ export class TrackingController {
           const list = this.node("ol", "tracking-history");
           for (const event of page.events) {
             const row = this.node("li", "");
-            const time = this.node("time", "", new Date(event.at).toLocaleString(undefined, { timeZoneName: "short" })); time.dateTime = event.at;
+            const time = this.node("time", "", this.time(event.at, true)); time.dateTime = event.at;
             row.append(time, document.createTextNode(`${event.automatic ? "Automatic" : "Manual"} · ${event.reason.replaceAll("_", " ")}: ${statusLabels[event.after.unit.status] || "Unknown"}${event.note ? ` · ${event.note}` : ""}`)); list.append(row);
           }
           history.append(page.events.length ? list : this.node("p", "muted", "No movement history yet."));
@@ -433,23 +447,27 @@ export class TrackingController {
       warning.append(review); fragment.append(warning);
     }
     if (this.role() !== "owner") fragment.append(this.node("p", "notice", "Owner access is needed to change tags or installation records."));
-    await this.queueFilters(fragment);
+    if (this.mode !== "lookup") await this.queueFilters(fragment);
     if (revision !== this.workspaceRevision) return;
     if (this.mode === "enroll" && session?.state !== "active") {
       const choices = this.replacementId === unit?.id ? [unit, ...this.filteredQueue().filter((piece) => piece.id !== unit.id)] : this.filteredQueue();
-      const select = this.field("Choose a physical piece", choices.map((piece) => [piece.id, `Piece ${piece.ordinal} · ${piece.catalog_id}`]), this.selectedId);
+      const select = this.field("Choose a physical piece", choices.map((piece) => {
+        const item = this.catalog.get(piece.catalog_id);
+        return [piece.id, item ? this.pieceLabel(item, piece) : `Piece ${piece.ordinal} · garment details unavailable`];
+      }), this.selectedId);
+      select.input.dataset.fullValue = "described";
       select.input.addEventListener("change", () => { this.invalidateConfirmation(); this.selectedId = select.input.value; this.replacementId = null; this.workspaceKey = null; void this.renderWorkspace(); });
       fragment.append(select.wrapper);
       if (unit) {
         const item = await this.item(unit.catalog_id);
         if (revision !== this.workspaceRevision) return;
-        const summary = this.node("p", "muted selected-copy-details", [item.size ? `Size ${item.size}` : null, this.sourceLabel(item), item.color, `Piece ${unit.ordinal}`].filter(Boolean).join(" · "));
+        const summary = this.node("p", "muted selected-copy-details", [item.brand, item.name, item.size ? `Size ${item.size}` : null, this.sourceLabel(item), item.color, `Piece ${unit.ordinal}`].filter(Boolean).join(" · "));
         summary.id = "selected-copy-details"; summary.setAttribute("role", "status");
         select.input.setAttribute("aria-describedby", summary.id); fragment.append(summary);
       }
       // Resolve names for the queue without an N+1 request on each poll.
       void Promise.all(choices.map(async (piece, index) => {
-        try { const item = await this.item(piece.catalog_id); select.input.options[index].textContent = `${piece.id === this.replacementId ? "Replacement · " : ""}${this.pieceLabel(item, piece)}`; } catch { /* Keep the stable catalog identifier when offline. */ }
+        try { const item = await this.item(piece.catalog_id); select.input.options[index].textContent = `${piece.id === this.replacementId ? "Replacement · " : ""}${this.pieceLabel(item, piece)}`; } catch { /* The selected piece keeps its accessible details when available. */ }
       }));
     }
     if (this.mode === "installation") {
@@ -470,7 +488,7 @@ export class TrackingController {
       const copy = this.node("div", "enroll-copy");
       copy.append(this.node("p", "eyebrow", item.brand), this.node("h2", "", item.name));
       copy.append(this.node("p", "muted", this.pieceLabel(item, unit)));
-      copy.append(this.node("p", "muted", "Place only this piece at the enrollment antenna, then start a fresh scan. The reader supplies the tag; the phone does not scan UHF tags."));
+      copy.append(this.node("p", "muted", "Place only this piece at the enrollment antenna, then start a fresh scan. The UHF reader supplies its tag ID."));
       copy.append(this.stationControls(unit.has_binding ? "replace" : "bind"));
       copy.append(this.node("div", "capture-panel", ""));
       const actions = this.node("div", "enroll-actions");
@@ -669,20 +687,26 @@ export class TrackingController {
       details.append(this.node("summary", "", `Advanced ${kind} settings`), field.wrapper);
       return details;
     };
-    // A connection has one editor, even when its antennas span several areas.
-    // Keep it with the first referring position, or with unused connections.
+    // A shared connection has one draft editor. Keep it at the position being
+    // edited, and only move it when that position stops using this reader.
     const placeReaders = () => {
       for (const reader of readerFields) {
-        const position = portFields.find((entry) => entry.reader.input.value === reader.id.input.id);
+        const positions = portFields.filter((entry) => entry.reader.input.value === reader.id.input.id);
+        const position = positions.find((entry) => reader.block.parentElement === entry.readerSettings) || positions[0];
         const home = position?.readerSettings || readerCards;
         if (reader.block.parentElement !== home) home.append(reader.block);
       }
-      for (const position of portFields) position.readerSettings.hidden = !position.readerSettings.querySelector("fieldset");
+      for (const position of portFields) position.readerSettings.hidden = !readerFields.some((reader) => reader.id.input.id === position.reader.input.value);
       readers.hidden = readerCards.childElementCount === 0;
     };
-    const editReader = (reader) => {
-      const position = portFields.find((entry) => entry.reader.input.value === reader.id.input.id);
-      (position?.readerSettings || readers).open = true;
+    const editReader = (reader, position) => {
+      const home = position.readerSettings;
+      const previous = reader.block.parentElement;
+      if (previous !== home) {
+        if (previous?.matches("details")) previous.open = false;
+        home.append(reader.block);
+      }
+      home.open = true;
       reader.label.input.focus();
     };
     const placePosition = (position) => {
@@ -704,7 +728,6 @@ export class TrackingController {
     const refreshPositions = (changed = null, choose = false) => {
       for (const position of portFields) {
         const reader = readerFields.find((entry) => entry.id.input.id === position.reader.input.value);
-        position.editReader.textContent = reader ? "Edit reader connection" : "Connect a reader";
         const original = reader?.originalConnection;
         const sameConnection = original?.type === reader?.transport.input.value && (original?.type === "impinj_llrp" ? original.host === reader.host.input.value.trim() && original.port === Number(reader.connectionPort.input.value) : original?.type === "impinj_iot" && original.base_url === reader.origin.input.value.trim());
         const readback = sameConnection && this.snapshot.reader_readbacks.find((entry) => entry.reader_id === reader.originalId);
@@ -757,10 +780,10 @@ export class TrackingController {
       const fields = { block, id, label, kind, active, thresholds, positions }; areaFields.push(fields);
       label.input.addEventListener("input", updateReferences);
       id.input.addEventListener("input", () => refreshPositions());
-      block.append(this.button("Remove area", () => {
+      const remove = this.button("Remove area", () => {
         for (const position of [...portFields]) if (position.area.input.value === id.input.id) removePosition(position);
         block.remove(); areaFields.splice(areaFields.indexOf(fields), 1); updateReferences();
-      })); areaCards.append(block); updateReferences();
+      }); remove.classList.add("danger"); block.append(remove); areaCards.append(block); updateReferences();
     };
     for (const area of config.areas) addArea(area);
     areas.append(this.button("Add area", () => addArea({ id: `area-${crypto.randomUUID()}`, label: "", kind: "closet", enabled: true, thresholds: {} })));
@@ -769,7 +792,10 @@ export class TrackingController {
       const id = this.field("Reader ID", null, reader.id); id.input.pattern = "[A-Za-z0-9_-]{1,64}"; id.input.required = true;
       const label = this.field("Reader label", null, reader.label); label.input.required = true; label.input.maxLength = 120;
       const active = this.checkbox("Reader enabled", reader.enabled);
-      const transport = this.field("Reader transport", [["impinj_llrp", "Impinj LLRP"], ["impinj_iot", "Impinj IoT API"], ["simulator", "Simulator (not physical evidence)"]], reader.connection.type);
+      const transport = this.field("Reader transport", [["impinj_llrp", "Impinj LLRP"], ["impinj_iot", "Impinj IoT API"], ["simulator", "Simulator"]], reader.connection.type);
+      const simulationHint = this.node("p", "muted", "Simulation is for testing. It is not physical evidence or reader commissioning.");
+      simulationHint.id = `${transport.input.id}-simulation`;
+      transport.input.setAttribute("aria-describedby", simulationHint.id);
       const host = this.field("Reader host", null, reader.connection.host); host.input.maxLength = 253;
       const connectionPort = this.number("Reader port", reader.connection.port ?? 5084); connectionPort.input.min = "1"; connectionPort.input.max = "65535";
       const program = this.number("Closet-owned ROSpec ID", reader.connection.owned_rospec_id ?? 1); program.input.min = "1"; program.input.max = "4294967295";
@@ -779,14 +805,16 @@ export class TrackingController {
       const password = this.field("Password environment variable", null, reader.connection.credentials?.password);
       for (const field of [username, password]) { field.input.pattern = "[A-Z_][A-Z0-9_]*"; field.input.maxLength = 128; }
       const credentialHint = this.node("p", "muted", "Set credentials in the app environment. Enter only the environment variable names here.");
-      const update = () => { host.wrapper.hidden = connectionPort.wrapper.hidden = program.wrapper.hidden = transport.input.value !== "impinj_llrp"; host.input.required = connectionPort.input.required = program.input.required = !host.wrapper.hidden; origin.wrapper.hidden = transport.input.value !== "impinj_iot"; auth.wrapper.hidden = origin.wrapper.hidden; username.wrapper.hidden = password.wrapper.hidden = origin.wrapper.hidden || auth.input.value !== "basic_env"; origin.input.required = !origin.wrapper.hidden; username.input.required = password.input.required = !username.wrapper.hidden; credentialHint.hidden = username.wrapper.hidden; };
+      const update = () => { host.wrapper.hidden = connectionPort.wrapper.hidden = program.wrapper.hidden = transport.input.value !== "impinj_llrp"; host.input.required = connectionPort.input.required = program.input.required = !host.wrapper.hidden; origin.wrapper.hidden = transport.input.value !== "impinj_iot"; auth.wrapper.hidden = origin.wrapper.hidden; username.wrapper.hidden = password.wrapper.hidden = origin.wrapper.hidden || auth.input.value !== "basic_env"; origin.input.required = !origin.wrapper.hidden; username.input.required = password.input.required = !username.wrapper.hidden; credentialHint.hidden = username.wrapper.hidden; simulationHint.hidden = transport.input.value !== "simulator"; };
       transport.input.addEventListener("change", update); auth.input.addEventListener("change", update); update();
       const advanced = advancedId("reader", id); advanced.append(connectionPort.wrapper, program.wrapper);
+      transport.wrapper.append(simulationHint);
       block.append(label.wrapper, active.wrapper, transport.wrapper, host.wrapper, origin.wrapper, auth.wrapper, username.wrapper, password.wrapper, credentialHint, advanced);
       const fields = { block, id, label, active, transport, host, connectionPort, program, origin, auth, username, password, originalId: reader.id, originalConnection: structuredClone(reader.connection) }; readerFields.push(fields);
       label.input.addEventListener("input", updateReferences);
       for (const field of [id, transport, host, connectionPort, origin]) field.input.addEventListener("input", () => refreshPositions());
-      block.append(this.button("Remove reader", () => { block.remove(); readerFields.splice(readerFields.indexOf(fields), 1); updateReferences(); })); readerCards.append(block); updateReferences();
+      const remove = this.button("Remove reader", () => { block.remove(); readerFields.splice(readerFields.indexOf(fields), 1); updateReferences(); });
+      remove.classList.add("danger"); block.append(remove); readerCards.append(block); updateReferences();
       return fields;
     };
     for (const reader of config.readers) addReader(reader);
@@ -814,25 +842,33 @@ export class TrackingController {
         required.input.disabled = enrollment || this.busy || Boolean(this.pending) || this.role() !== "owner";
       };
       role.input.addEventListener("change", updateRole); updateRole();
-      const connection = this.button("Connect a reader", () => {
-        const selected = readerFields.find((entry) => entry.id.input.id === reader.input.value);
-        const record = selected || addReader({ id: `reader-${crypto.randomUUID()}`, label: "", enabled: true, connection: { type: "impinj_llrp", credentials: { type: "none" } } });
-        reader.input.value = record.id.input.id; placeReaders(); refreshPositions(fields, !selected); editReader(record);
-      });
       const readerSettings = this.node("details", "tracking-reader-settings");
       readerSettings.append(this.node("summary", "", "Reader connection"));
       const advanced = advancedId("position", id);
       advanced.append(area.wrapper, role.wrapper, active.wrapper, required.wrapper, power.wrapper, dwell.wrapper);
-      block.append(reader.wrapper, connection, readerSettings, antenna.wrapper, hint, commissioned.wrapper, advanced);
-      const fields = { block, id, reader, antenna, hint, area, role, active, required, commissioned, power, dwell, editReader: connection, readerSettings }; portFields.push(fields);
+      block.append(reader.wrapper, readerSettings, antenna.wrapper, hint, commissioned.wrapper, advanced);
+      const fields = { block, id, reader, antenna, hint, area, role, active, required, commissioned, power, dwell, readerSettings }; portFields.push(fields);
       fields.coverageMapping = coverageMapping(fields);
       reader.input.addEventListener("change", () => {
-        if (reader.input.value === "new-reader") connection.click();
+        if (reader.input.value === "new-reader") {
+          const record = addReader({ id: `reader-${crypto.randomUUID()}`, label: "", enabled: true, connection: { type: "impinj_llrp", credentials: { type: "none" } } });
+          reader.input.value = record.id.input.id; placeReaders(); editReader(record, fields);
+        }
         placeReaders(); refreshPositions(fields, true);
+        if (readerSettings.open) {
+          const record = readerFields.find((entry) => entry.id.input.id === reader.input.value);
+          if (record) editReader(record, fields);
+        }
+      });
+      readerSettings.addEventListener("toggle", () => {
+        if (!readerSettings.open) return;
+        const record = readerFields.find((entry) => entry.id.input.id === reader.input.value);
+        if (record) editReader(record, fields);
       });
       antenna.input.addEventListener("input", () => refreshPositions());
       area.input.addEventListener("change", () => { placePosition(fields); refreshPositions(); });
-      block.append(this.button("Remove position", () => removePosition(fields))); placePosition(fields);
+      const remove = this.button("Remove position", () => removePosition(fields)); remove.classList.add("danger");
+      block.append(remove); placePosition(fields);
       placeReaders(); refreshPositions(fields, isNew);
     };
     for (const port of config.ports) addPort(port);
@@ -854,7 +890,16 @@ export class TrackingController {
       };
       void this.command({ type: "configure", config: next }, revision);
     }, false);
-    form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); }); form.append(save);
+    const saveActions = this.node("div", "tracking-settings-save");
+    const feedback = this.node("p", "notice tracking-save-feedback"); feedback.id = "tracking-save-feedback";
+    feedback.setAttribute("role", "status"); feedback.setAttribute("aria-live", "polite");
+    const previousNotice = document.getElementById("tracking-settings-notice");
+    feedback.textContent = previousNotice.textContent; feedback.hidden = previousNotice.hidden; feedback.dataset.tone = previousNotice.dataset.tone;
+    saveActions.append(save, feedback);
+    const clearSavedNotice = () => { if (previousNotice.dataset.tone === "ok") this.notice("", true); };
+    form.addEventListener("input", clearSavedNotice); form.addEventListener("change", clearSavedNotice);
+    form.addEventListener("click", (event) => { if (event.target.closest("button[data-tracking-mutation]")) clearSavedNotice(); });
+    form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); }); form.append(saveActions);
     if (this.role() !== "owner") { for (const input of form.querySelectorAll("input,select,button")) input.disabled = true; }
     root.append(form);
     const checklist = this.node("details", "tracking-settings-support"); checklist.append(this.node("summary", "", "Test reader coverage"), this.node("p", "muted", "Test each antenna with actual tags and garments before marking it commissioned. A connection alone does not prove an empty area was scanned."));
@@ -911,13 +956,13 @@ export class TrackingController {
     const requested = Boolean(this.openDiagnosticsRequested);
     const open = requested || root.querySelector("details")?.open || false;
     this.openDiagnosticsRequested = false;
-    const details = this.node("details", ""); details.open = open; details.append(this.node("summary", "", "Reader health and evidence diagnostics"));
+    const details = this.node("details", "tracking-settings-support"); details.open = open; details.append(this.node("summary", "", "Reader health and evidence diagnostics"));
     details.append(this.node("p", "muted", "Raw tag identifiers appear only in this diagnostic panel. Simulation is not physical commissioning evidence."));
     const list = this.node("ul", "");
     for (const port of this.snapshot.health.ports) {
       const config = this.snapshot.config.ports.find((entry) => entry.id === port.port_id);
       const reader = config && this.snapshot.config.readers.find((entry) => entry.id === config.reader_id);
-      list.append(this.node("li", "", `${reader?.label || port.port_id}${config ? ` · antenna ${config.antenna}` : ""}: ${port.state.replaceAll("_", " ")}${port.last_coverage_at ? ` · coverage last received ${new Date(port.last_coverage_at).toLocaleTimeString()}` : " · no verified coverage"}`));
+      list.append(this.node("li", "", `${reader?.label || port.port_id}${config ? ` · antenna ${config.antenna}` : ""}: ${port.state.replaceAll("_", " ")}${port.last_coverage_at ? ` · coverage last received ${this.time(port.last_coverage_at)}` : " · no verified coverage"}`));
     }
     details.append(list);
     for (const readback of this.snapshot.reader_readbacks) {
@@ -928,10 +973,10 @@ export class TrackingController {
       for (const port of readback.ports) details.append(this.node("p", "muted", `Antenna ${port.antenna}: ${port.enabled ? "enabled" : "disabled"}${port.transmit_power_cdbm !== null ? ` · ${port.transmit_power_cdbm / 100} dBm` : ""}${port.dwell_ms !== null ? ` · ${port.dwell_ms} ms dwell` : ""}`));
     }
     const recent = this.node("ol", "tracking-history");
-    for (const read of this.snapshot.diagnostics.recent_reads.slice(-30).reverse()) recent.append(this.node("li", "", `${new Date(read.received_at).toLocaleTimeString()} · ${read.data_source === "simulation" ? "SIMULATION" : "Live"} · ${read.purpose} · ${read.port_id} · EPC ${read.epc} · ${read.read_count} reads${read.peak_rssi_cdbm !== null ? ` · RSSI ${read.peak_rssi_cdbm / 100} dBm` : ""}`));
+    for (const read of this.snapshot.diagnostics.recent_reads.slice(-30).reverse()) recent.append(this.node("li", "", `${this.time(read.received_at)} · ${read.data_source === "simulation" ? "SIMULATION" : "Live"} · ${read.purpose} · ${read.port_id} · EPC ${read.epc} · ${read.read_count} reads${read.peak_rssi_cdbm !== null ? ` · RSSI ${read.peak_rssi_cdbm / 100} dBm` : ""}`));
     details.append(this.node("h4", "", "Recent reads"), recent);
-    for (const decision of this.snapshot.diagnostics.decisions.slice(-20).reverse()) details.append(this.node("p", "muted", `${new Date(decision.at).toLocaleTimeString()} · ${decision.reason.replaceAll("_", " ")}${decision.area_id ? ` · ${this.area(decision.area_id)?.label || decision.area_id}` : ""}`));
-    for (const fault of this.snapshot.diagnostics.faults.slice(-20).reverse()) details.append(this.node("p", "notice", `${new Date(fault.at).toLocaleTimeString()} · ${fault.code.replaceAll("_", " ")}`));
+    for (const decision of this.snapshot.diagnostics.decisions.slice(-20).reverse()) details.append(this.node("p", "muted", `${this.time(decision.at)} · ${decision.reason.replaceAll("_", " ")}${decision.area_id ? ` · ${this.area(decision.area_id)?.label || decision.area_id}` : ""}`));
+    for (const fault of this.snapshot.diagnostics.faults.slice(-20).reverse()) details.append(this.node("p", "notice", `${this.time(fault.at)} · ${fault.code.replaceAll("_", " ")}`));
     root.replaceChildren(details);
     if (requested) details.querySelector("summary").focus();
   }

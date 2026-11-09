@@ -91,6 +91,7 @@ async def test_shared_image_opens_all_copies_and_restores_group_bookmark(
             await expect(
                 group.get_by_text("All purchases shown", exact=True)
             ).to_have_count(0)
+            await group.locator(".photo").scroll_into_view_if_needed()
             photo = await group.locator(".photo").bounding_box()
             assert photo
             await page.mouse.click(

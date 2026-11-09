@@ -1032,6 +1032,7 @@ fn fixture(
 fn system() -> System {
     System {
         version: "0.1.0".into(),
+        timezone: "UTC".into(),
         role: AccessRole::Owner,
         catalog_revision: 0,
         item_count: 0,

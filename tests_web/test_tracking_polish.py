@@ -3,12 +3,157 @@
 import re
 
 import pytest
-from playwright.async_api import async_playwright, expect
+from playwright.async_api import Request, async_playwright, expect
 
 from tests_ha.conftest import RustBackend, catalog_item
 from tests_ha.tracking_fixture import ReaderEvidence, command, configure, snapshot
 from tests_web.test_app import login
 from tests_web.test_tracking import action
+
+
+async def test_lookup_omits_piece_filters_and_does_not_reload_the_catalog(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await configure(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            await expect(page.get_by_label("Find a piece", exact=True)).to_be_visible()
+            await page.get_by_role("button", name="Look up a tag", exact=True).click()
+            await expect(
+                page.get_by_role("heading", name="Scan a tag to find its garment")
+            ).to_be_visible()
+            await expect(page.locator("#tag-workspace form.filters")).to_have_count(0)
+            requests: list[str] = []
+
+            def catalog_request(request: Request) -> None:
+                if "/v1/items?" in request.url:
+                    requests.append(request.url)
+
+            page.on("request", catalog_request)
+            async with page.expect_response("**/v1/tracking"):
+                await page.get_by_role("button", name="Refresh", exact=True).click()
+            await page.wait_for_load_state("networkidle")
+            await expect(page.locator("#tag-workspace form.filters")).to_have_count(0)
+            assert requests == []
+            await page.get_by_role("button", name="Enroll", exact=True).click()
+            await expect(page.get_by_label("Find a piece", exact=True)).to_be_visible()
+        finally:
+            await browser.close()
+
+
+async def test_reader_connection_has_one_inline_editor_across_areas(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await populated_settings(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 390, "height": 844})
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await expect(
+                page.get_by_label("Area label", exact=True).first
+            ).to_be_visible()
+            await expect(
+                page.get_by_role("button", name="Edit reader connection", exact=True)
+            ).to_have_count(0)
+            areas = page.get_by_role("group", name="Area", exact=True)
+            first = areas.first.get_by_role(
+                "group", name="Antenna position", exact=True
+            ).first
+            other = (
+                areas.nth(1)
+                .get_by_role("group", name="Antenna position", exact=True)
+                .first
+            )
+            await first.get_by_text("Reader connection", exact=True).click()
+            await expect(first.get_by_label("Reader label", exact=True)).to_be_focused()
+            await first.get_by_label("Reader label", exact=True).fill(
+                "Example renamed shared reader"
+            )
+            await other.get_by_text("Reader connection", exact=True).click()
+            await expect(other.get_by_label("Reader label", exact=True)).to_be_focused()
+            await expect(other.get_by_label("Reader label", exact=True)).to_have_value(
+                "Example renamed shared reader"
+            )
+            await expect(page.get_by_label("Reader label", exact=True)).to_have_count(2)
+            await expect(
+                first.locator(".tracking-reader-settings")
+            ).not_to_have_attribute("open", "")
+            selected_reader = other.get_by_label("Reader for this position", exact=True)
+            await selected_reader.select_option(
+                label="Example shared reader b with several antenna connections"
+            )
+            await expect(other.get_by_label("Reader label", exact=True)).to_have_value(
+                "Example shared reader b with several antenna connections"
+            )
+            await selected_reader.select_option(label="Example renamed shared reader")
+            await expect(other.get_by_label("Reader label", exact=True)).to_be_focused()
+            await other.get_by_label("Antenna port", exact=True).fill("3")
+            await other.get_by_label("Reader label", exact=True).fill(
+                "Example shared final reader"
+            )
+            await action(page, "Save tracking settings")
+            saved = (await snapshot(rust_backend))["config"]
+            assert isinstance(saved, dict)
+            readers = saved["readers"]
+            assert isinstance(readers, list) and len(readers) == 2
+            assert isinstance(readers[0], dict)
+            assert readers[0]["label"] == "Example shared final reader"
+            positions = saved["ports"]
+            assert isinstance(positions, list) and len(positions) == 6
+            assert all(
+                isinstance(position, dict)
+                and position["reader_id"] == "example-reader-a"
+                for position in positions[:4]
+            )
+        finally:
+            await browser.close()
+
+
+async def test_settings_save_feedback_stays_near_save_and_clears_when_draft_changes(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await populated_settings(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 390, "height": 844})
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await action(page, "Save tracking settings")
+            feedback = page.locator("#tracking-save-feedback")
+            await expect(feedback).to_have_text("Tracking settings saved.")
+            await expect(feedback).to_have_attribute("role", "status")
+            save = page.get_by_role("button", name="Save tracking settings", exact=True)
+            bounds = await save.bounding_box()
+            status = await feedback.bounding_box()
+            assert bounds and status
+            assert status["y"] >= bounds["y"] + bounds["height"]
+            assert status["y"] + status["height"] <= 844
+            assert status["y"] - bounds["y"] - bounds["height"] <= 24
+            label = page.get_by_label("Area label", exact=True).first
+            await label.fill("Example unsaved change")
+            await expect(feedback).to_be_hidden()
+            await expect(page.locator("#tracking-settings-notice")).to_be_hidden()
+            await action(page, "Save tracking settings")
+            await expect(feedback).to_have_text("Tracking settings saved.")
+            await page.get_by_role("button", name="Add area", exact=True).click()
+            await expect(feedback).to_be_hidden()
+            await expect(page.locator("#tracking-settings-notice")).to_be_hidden()
+        finally:
+            await browser.close()
 
 
 async def test_count_review_identifies_each_acquisition_and_opens_its_record(
@@ -192,9 +337,7 @@ async def test_reader_change_requires_readback_or_explicit_port_and_keeps_row_id
             await position.get_by_label("Position role", exact=True).select_option(
                 "enrollment"
             )
-            await positions.first.get_by_role(
-                "button", name="Edit reader connection", exact=True
-            ).click()
+            await positions.first.get_by_text("Reader connection", exact=True).click()
             original = positions.first.locator(".tracking-reader-settings")
             await original.get_by_text("Advanced reader settings", exact=True).click()
             identifier = original.get_by_label("Reader ID", exact=True)
@@ -342,9 +485,9 @@ async def test_tracking_sections_have_space_in_empty_and_populated_settings(
                     await page.get_by_role(
                         "button", name="Add antenna", exact=True
                     ).click()
-                    await page.get_by_role(
-                        "button", name="Connect a reader", exact=True
-                    ).click()
+                    await page.get_by_label(
+                        "Reader for this position", exact=True
+                    ).select_option("new-reader")
                     await page.get_by_label("Reader label", exact=True).fill(
                         "Example reader"
                     )
@@ -396,9 +539,9 @@ async def test_areas_share_a_reader_and_keep_their_antenna_assignments(
             await first.get_by_label("Area label", exact=True).fill("Example wardrobe")
             first_id = await first.get_by_label("Area ID", exact=True).input_value()
             await first.get_by_role("button", name="Add antenna", exact=True).click()
-            await first.get_by_role(
-                "button", name="Connect a reader", exact=True
-            ).click()
+            await first.get_by_label(
+                "Reader for this position", exact=True
+            ).select_option("new-reader")
             await page.get_by_label("Reader label", exact=True).fill(
                 "Example shared reader"
             )
@@ -543,9 +686,7 @@ async def test_populated_settings_controls_fit_with_shared_readers_and_long_labe
             ).click()
             positions = page.get_by_role("group", name="Antenna position", exact=True)
             await expect(positions).to_have_count(6)
-            await positions.first.get_by_role(
-                "button", name="Edit reader connection", exact=True
-            ).click()
+            await positions.first.get_by_text("Reader connection", exact=True).click()
             await positions.first.get_by_text(
                 "Advanced reader settings", exact=True
             ).click()
@@ -631,9 +772,7 @@ async def test_hardware_mapping_changes_require_fresh_commissioning(
                 )
                 tested = position.get_by_label("Coverage tested", exact=True)
             else:
-                await position.get_by_role(
-                    "button", name="Edit reader connection", exact=True
-                ).click()
+                await position.get_by_text("Reader connection", exact=True).click()
                 connection = position.locator(".tracking-reader-settings")
                 if changed == "host":
                     await connection.get_by_label("Reader host", exact=True).fill(
@@ -716,9 +855,7 @@ async def test_label_edits_and_unhealthy_readers_keep_installation_confirmation(
             await page.get_by_label("Area label", exact=True).first.fill(
                 "Example renamed wardrobe"
             )
-            await position.get_by_role(
-                "button", name="Edit reader connection", exact=True
-            ).click()
+            await position.get_by_text("Reader connection", exact=True).click()
             await position.get_by_label("Reader label", exact=True).fill(
                 "Example renamed shared reader"
             )

@@ -667,11 +667,18 @@ pub enum AccessRole {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct System {
     pub version: String,
+    #[serde(default = "System::default_timezone")]
+    pub timezone: String,
     pub role: AccessRole,
     pub catalog_revision: i64,
     pub item_count: i64,
     pub archived_count: i64,
     pub today_configured: bool,
+}
+impl System {
+    fn default_timezone() -> String {
+        "UTC".into()
+    }
 }
 
 macro_rules! choice {

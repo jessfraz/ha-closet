@@ -2891,6 +2891,10 @@
           "role": {
             "$ref": "#/components/schemas/AccessRole"
           },
+          "timezone": {
+            "default": "UTC",
+            "type": "string"
+          },
           "today_configured": {
             "type": "boolean"
           },
@@ -4351,7 +4355,7 @@
   "info": {
     "description": "Inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.4.3"
+    "version": "0.4.4"
   },
   "openapi": "3.0.3",
   "paths": {

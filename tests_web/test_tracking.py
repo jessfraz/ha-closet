@@ -261,7 +261,7 @@ async def test_manual_status_filters_history(
                 )
             ).to_be_visible()
             await expect(page.locator(".tracking-history time").first).to_have_text(
-                re.compile(r".* (PST|PDT)$")
+                re.compile(r".* UTC$")
             )
             assert "00000001" not in await page.locator("body").inner_text()
             await page.get_by_role(
@@ -422,9 +422,9 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             area_id = await page.get_by_label("Area ID", exact=True).input_value()
             assert area_id.startswith("area-")
             await page.get_by_role("button", name="Add antenna", exact=True).click()
-            await page.get_by_role(
-                "button", name="Connect a reader", exact=True
-            ).click()
+            await page.get_by_label(
+                "Reader for this position", exact=True
+            ).select_option("new-reader")
             await page.get_by_label("Reader label", exact=True).fill("Fictional reader")
             reader_id = await page.get_by_label("Reader ID", exact=True).input_value()
             assert reader_id.startswith("reader-")
@@ -702,9 +702,7 @@ async def test_failed_duplicate_id_repair_keeps_each_position_reference(
             advanced = page.get_by_text(f"Advanced {kind} settings", exact=True).first
             identifier = page.get_by_label(f"{kind.title()} ID", exact=True).first
             if kind == "reader":
-                await page.get_by_role(
-                    "button", name="Edit reader connection", exact=True
-                ).first.click()
+                await page.get_by_text("Reader connection", exact=True).first.click()
             await advanced.click()
             await identifier.fill(conflicting)
             async with page.expect_response("**/v1/tracking/commands") as response:
@@ -727,9 +725,7 @@ async def test_failed_duplicate_id_repair_keeps_each_position_reference(
             ] == [("example-monitor-a", original), ("example-monitor-b", conflicting)]
             # A valid rename still updates only the position linked to that row.
             if kind == "reader":
-                await page.get_by_role(
-                    "button", name="Edit reader connection", exact=True
-                ).first.click()
+                await page.get_by_text("Reader connection", exact=True).first.click()
             await advanced.click()
             await identifier.fill(renamed)
             await action(page, "Save tracking settings")
@@ -798,6 +794,8 @@ async def test_queue_labels_distinguish_copies_and_mobile_photo_stays_compact(
             summary = page.locator("#selected-copy-details")
             await expect(summary).to_contain_text("Size L · Example atelier")
             await expect(chooser).to_have_accessible_description(
+                "Example label with a deliberately lengthy name · "
+                "Example shared shirt · "
                 "Size L · Example atelier · Cool white · Piece 1"
             )
             await expect(summary).to_be_visible()

@@ -299,6 +299,7 @@ async fn system(
         context.store.counts().await.map_err(store_error)?;
     Ok(private(System {
         version: env!("CARGO_PKG_VERSION").into(),
+        timezone: context.timezone().into(),
         role: principal.role,
         catalog_revision,
         item_count,
