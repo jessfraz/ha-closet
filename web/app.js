@@ -76,7 +76,7 @@ function restoreFilters(filters) {
   for (const [key, id] of filterFields) {
     const control = byId(id);
     if (id !== "search" && filters[key] && ![...control.options].some((option) => option.value === filters[key])) {
-      control.add(new Option(sourceLabels.get(filters[key]) || filters[key], filters[key]));
+      control.add(new Option(id === "category" ? categoryLabel(filters[key]) : sourceLabels.get(filters[key]) || filters[key], filters[key]));
     }
     control.value = filters[key];
   }
@@ -345,6 +345,10 @@ function sourceLabel(item) {
   return item.purchase_source || null;
 }
 
+function categoryLabel(value) {
+  return typeof value === "string" ? value.split(".").map((part) => part.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())).join(" / ") : "";
+}
+
 function filterFromBadge(field, value, label) {
   for (const [, id] of filterFields) byId(id).value = "";
   const select = byId(field);
@@ -512,11 +516,11 @@ function inventoryCard(item, group) {
   return card;
 }
 
-function fillOptions(select, values, allLabel) {
+function fillOptions(select, values, allLabel, label = (value) => value) {
   const selected = select.value;
   const options = [new Option(allLabel, "")];
-  for (const value of values) if (typeof value === "string") options.push(new Option(value, value));
-  if (selected && !values.includes(selected)) options.push(new Option(selected, selected));
+  for (const value of values) if (typeof value === "string") options.push(new Option(label(value), value));
+  if (selected && !values.includes(selected)) options.push(new Option(label(selected), selected));
   select.replaceChildren(...options);
   select.value = selected;
 }
@@ -622,7 +626,7 @@ async function loadInventory(append = false, { automatic = false } = {}) {
     byId("inventory-empty").querySelector("p").textContent = data.scope_total === 0 ? "Sync a TOML catalog to fill the closet." : "Try another search or clear the filters.";
     byId("inventory-count").textContent = `${data.total} ${data.total === 1 ? "item" : "items"}${data.total !== data.scope_total ? ` · ${data.scope_total} in inventory` : ""}`;
     fillOptions(byId("brand"), data.facets.brands || [], "All brands");
-    fillOptions(byId("category"), data.facets.categories || [], "All categories");
+    fillOptions(byId("category"), data.facets.categories || [], "All categories", categoryLabel);
     notice();
   } catch (error) {
     if (error.name !== "AbortError" && revision === listRevision) {
@@ -758,12 +762,8 @@ function gallery(item) {
 
 function purchaseFacts(item) {
   const values = [];
-  if (item.identity) {
-    values.push(["Source", sourceLabel(item)]);
-  } else {
-    if (item.purchase_source) values.push(["Purchase source", sourceLabel(item)]);
-    if (object(item.shop)) values.push(["Shop", item.shop.label]);
-  }
+  const source = sourceLabel(item);
+  if (source) values.push(["Source", source]);
   if (object(item.shop)) {
     if (item.shop.season) values.push(["Season", item.shop.season]);
     if (Array.isArray(item.shop.years) && item.shop.years.length) values.push(["Years", item.shop.years.join(", ")]);
@@ -789,7 +789,7 @@ function renderGroupDetail(group) {
   const copy = element("div", "group-detail");
   copy.append(element("p", "owned-count", `${pieceCount(group.quantity)} · ${purchaseCount(group.items.length)}`));
   const definition = element("dl");
-  for (const [label, value] of [["Category", item.category], ["Color", item.color], ["Material", item.material]]) {
+  for (const [label, value] of [["Category", categoryLabel(item.category)], ["Color", item.color], ["Material", item.material]]) {
     if (value !== null && value !== undefined && value !== "") definition.append(element("dt", "", label), element("dd", "", value));
   }
   copy.append(definition, element("h3", "copies-heading", "Purchases"));
@@ -805,7 +805,7 @@ function renderDetail(item) {
   const layout = element("div", "detail-layout");
   const imagePanel = gallery(item);
   const values = [
-    ["Category", item.category], ["Color", item.color], ["Size", item.size],
+    ["Category", categoryLabel(item.category)], ["Color", item.color], ["Size", item.size],
     ["Quantity", item.quantity], ["Material", item.material], ["SKU", item.sku],
   ];
   if (item.usage?.kind === "safety_work_only") {
@@ -1046,7 +1046,7 @@ function showView(next) {
 
 let knownTrackingRevision = null;
 const tracking = new TrackingController({
-  request, element, photo, getItem, openItem: openDetail, sourceLabel, errorMessage, role: () => system?.role,
+  request, element, photo, getItem, openItem: openDetail, sourceLabel, categoryLabel, errorMessage, role: () => system?.role,
   timezone: () => system?.timezone || "UTC",
   changed: () => {
     const revision = tracking.snapshot?.tracking_revision;

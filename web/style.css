@@ -83,7 +83,7 @@ select { width: 100%; }
 .photo-placeholder { padding: 18px; color: #6a6d71; font: 12px/1.6 var(--mono); text-align: center; }
 .item-name { display: block; font-size: 14px; line-height: 1.5; margin-top: 6px; }
 .photo + .item-name { margin-top: 12px; }
-.item-badges { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin-top: auto; padding-top: 8px; }
+.item-badges { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; margin-top: 0; padding-top: 8px; }
 .item-badge { position: relative; z-index: 1; display: block; min-width: 26px; max-width: 100%; min-height: 26px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 500; line-height: 1.45; text-align: left; overflow-wrap: anywhere; }
 .item-badge:hover { border-color: currentColor; opacity: 1; }
 .usage-badge { align-self: flex-start; max-width: 100%; margin-top: 7px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 11px; line-height: 1.4; }
@@ -94,7 +94,7 @@ select { width: 100%; }
 .size-purchases { list-style: none; margin: 0; padding: 0; }
 .item-copy { padding: 0 0 8px; }
 .item-copy + .item-copy { border-top: 1px dotted var(--line); }
-.copy-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 6px; }
+.copy-actions { display: grid; grid-template-columns: minmax(0,1fr); justify-items: start; }
 .copy-open { min-height: 44px; max-width: 100%; padding: 7px 0; border: 0; background: transparent; color: var(--ink); font-size: 12px; font-weight: 500; text-align: left; overflow-wrap: anywhere; }
 .copy-open:hover { color: var(--focus); opacity: 1; }
 .copy-quantity { color: var(--muted); font-weight: 400; }
@@ -142,7 +142,6 @@ select { width: 100%; }
 .pieces > .item-piece:only-child { max-width: 160px; }
 .pieces .item-name { font-size: 12px; }
 .pieces .qualifier, .pieces .image-note { font-size: 12px; }
-.pieces .item-badges { margin-top: 0; }
 .pieces .source-badge { border-radius: 12px; overflow-wrap: break-word; }
 .suggestion-copy .muted + .qualifier { margin-top: 10px; }
 .stale { border-color: var(--warning); }
@@ -195,6 +194,9 @@ dd { margin: 0; }
 .tracking-form .wide { grid-column: 1 / -1; }
 .tracking-form > button { align-self: end; justify-self: start; }
 .tracking-form input, .tracking-form select, .tracking-form textarea { width: 100%; max-width: none; }
+.tracking-baseline { display: flex; flex-wrap: wrap; align-items: flex-end; }
+.tracking-baseline > .field { flex: 1 1 150px; }
+.tracking-baseline > button { flex: 0 0 auto; }
 textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px; color: var(--ink); background: var(--paper); font: inherit; min-height: 80px; resize: vertical; }
 .tracking-history { padding-left: 20px; margin: 12px 0 0; font-size: 12px; line-height: 1.65; }
 .tracking-history li { margin-top: 10px; }
@@ -258,6 +260,7 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
   .today-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
   .today-controls .footwear-option, .today-controls #suggest { grid-column: 1 / -1; }
   .today-controls .footwear-option, .today-controls #suggest, .filters > button { margin-top: 0; }
+  .filters > button { flex-basis: 100%; width: 100%; }
   .page-heading { flex-wrap: wrap; }
   .suggestion { padding: 16px; }
   .detail-layout { grid-template-columns: minmax(0,1fr); }
@@ -304,7 +307,6 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
 .tracking-reader-settings { min-width: 0; }
 .tracking-reader-settings > .tracking-config-card { margin-top: 16px; padding: 0; border: 0; }
 .tracking-settings-form > details > .field { margin-top: 16px; }
-.tracking-settings-form > button { justify-self: start; }
 .tracking-settings-save { display: grid; justify-items: start; gap: 12px; }
 .tracking-save-feedback { margin: 0; }
 .tracking-readers > summary { color: var(--ink); font-size: 14px; }
@@ -356,7 +358,7 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
 .analytics-ranked .item-piece > :not(.photo) { grid-column: 2; }
 .analytics-ranked .brand-badge { justify-self: start; margin-top: 0; font-size: 10px; min-height: 24px; padding: 2px 7px; }
 .analytics-ranked .item-name { margin-top: 5px; font-size: 13px; }
-.analytics-ranked .item-badges { margin-top: 0; padding-top: 7px; }
+.analytics-ranked .item-badges { padding-top: 7px; }
 .analytics-ranked .tracking-pill { justify-self: start; }
 .analytics-item-note { color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 4px; }
 .analytics-pick { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 10px; }
@@ -380,7 +382,6 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
   .analytics-trend { padding: 16px 12px; }
   .analytics-controls > .field { flex-basis: 100%; }
   .analytics-controls select { max-width: none; }
-  .analytics-controls button { width: 100%; }
 }
 
 .tag-queue-card .tracking-form { grid-template-columns: minmax(0,1fr); }

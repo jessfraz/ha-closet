@@ -1,12 +1,25 @@
 """Readable native controls, compact photos and aligned outfit cards."""
 
 import pytest
-from playwright.async_api import async_playwright, expect
+from playwright.async_api import Locator, Route, async_playwright, expect
 
 from tests_ha.conftest import RustBackend, catalog_item
 from tests_ha.tracking_fixture import configure
 from tests_web.test_app import login
+from tests_web.test_group_detail import prepare_group
 from tests_web.test_inventory_ui import product_photo
+
+
+async def assert_mobile_search_action(form: Locator) -> None:
+    """A mobile search action gets its own row after every filter field."""
+    bounds = await form.bounding_box()
+    action = await form.get_by_role("button").bounding_box()
+    assert bounds and action
+    assert abs(action["x"] - bounds["x"]) <= 1
+    assert abs(action["width"] - bounds["width"]) <= 1
+    for control in await form.locator("input:visible, select:visible").all():
+        box = await control.bounding_box()
+        assert box and action["y"] >= box["y"] + box["height"] + 11
 
 
 @pytest.mark.parametrize("width", [320, 390, 1100])
@@ -30,6 +43,8 @@ async def test_filter_values_remain_readable_and_controls_align(
             assert abs(search["height"] - box["height"]) <= 1
             if width == 1100:
                 assert abs(search["y"] - box["y"]) <= 1
+            else:
+                await assert_mobile_search_action(page.locator("#filters"))
             await select.select_option(brand)
             await expect(
                 select.locator("..").get_by_text(brand, exact=True).last
@@ -45,6 +60,10 @@ async def test_filter_values_remain_readable_and_controls_align(
             await expect(category).to_be_visible()
             box = await category.bounding_box()
             assert box and box["width"] >= 170
+            if width < 620:
+                await assert_mobile_search_action(
+                    page.locator("#tag-workspace .filters")
+                )
             assert not await page.evaluate(
                 "document.documentElement.scrollWidth > innerWidth"
             )
@@ -52,15 +71,73 @@ async def test_filter_values_remain_readable_and_controls_align(
             await browser.close()
 
 
+@pytest.mark.parametrize("width", [320, 390, 1440])
+async def test_copy_source_rows_keep_the_same_layout_in_cards_and_details(
+    rust_backend: RustBackend, width: int
+) -> None:
+    await prepare_group(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": width, "height": 900})
+            await page.route("https://images.example.invalid/**", product_photo)
+            await login(page, rust_backend, manual_paging=True)
+            group = page.locator('[data-variant-id="example-variant"]')
+            await expect(group.locator(".item-copy")).to_have_count(3)
+            dialog = page.get_by_role("dialog", name="Example grouped tee")
+            for expanded in (False, True):
+                root = dialog if expanded else group
+                if expanded:
+                    await group.get_by_role(
+                        "button", name="View all copies of Example grouped tee"
+                    ).click()
+                await expect(root.locator(".copy-actions")).to_have_count(3)
+                for row in await root.locator(".copy-actions").all():
+                    action = await row.locator(".copy-open").bounding_box()
+                    source = await row.locator(".source-badge").bounding_box()
+                    assert action and source
+                    assert source["y"] >= action["y"] + action["height"]
+                    assert abs(source["x"] - action["x"]) <= 1
+            await dialog.locator('[data-copy-id="example-998"] .copy-open').click()
+            await expect(page).to_have_url(
+                f"{rust_backend.origin}/?closet_item=example-998"
+            )
+            await expect(dialog.get_by_text("$64.00", exact=True)).to_be_visible()
+            await expect(dialog.get_by_text("S", exact=True)).to_be_visible()
+            await dialog.get_by_role("button", name="‹ All copies").click()
+            await expect(dialog.locator(".item-copy")).to_have_count(3)
+            assert not await page.evaluate(
+                "document.documentElement.scrollWidth > innerWidth"
+            )
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize(
+    ("width", "wide_font"), [(1280, False), (1280, True), (760, True), (390, True)]
+)
 async def test_detail_uses_readable_source_compact_fallback_and_control_height(
-    rust_backend: RustBackend,
+    rust_backend: RustBackend, width: int, wide_font: bool
 ) -> None:
     await rust_backend.sync([catalog_item()])
     await configure(rust_backend)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
-            page = await browser.new_page()
+            page = await browser.new_page(viewport={"width": width, "height": 900})
+            if wide_font:
+                # Linux's system font needs more room for this action than the
+                # macOS font. Exercise the same constraint on either platform.
+                async def wider_controls(route: Route) -> None:
+                    response = await route.fetch()
+                    stylesheet = await response.text()
+                    await route.fulfill(
+                        response=response,
+                        body=stylesheet
+                        + "\n.tracking-form button { font-family: monospace; }",
+                    )
+
+                await page.route("**/style.css", wider_controls)
             await login(page, rust_backend)
             await page.get_by_role("button", name="View Example cotton tee").click()
             detail = page.get_by_role("dialog")
@@ -72,8 +149,29 @@ async def test_detail_uses_readable_source_compact_fallback_and_control_height(
                 "button", name="Set area baseline", exact=True
             ).bounding_box()
             assert area and baseline
-            assert abs(area["height"] - baseline["height"]) <= 1
-            assert abs(area["y"] - baseline["y"]) <= 1
+            assert area["height"] == baseline["height"] == 44
+            if abs(area["y"] - baseline["y"]) <= 1:
+                assert baseline["x"] >= area["x"] + area["width"] + 11
+            else:
+                assert abs(baseline["x"] - area["x"]) <= 1
+                assert baseline["y"] >= area["y"] + area["height"] + 11
+            text = await detail.get_by_role(
+                "button", name="Set area baseline", exact=True
+            ).evaluate("""button => {
+                const range = document.createRange();
+                range.selectNodeContents(button);
+                const text = range.getBoundingClientRect();
+                const bounds = button.getBoundingClientRect();
+                return {
+                    lines: range.getClientRects().length,
+                    left: text.left - bounds.left,
+                    right: bounds.right - text.right,
+                    top: text.top - bounds.top,
+                    bottom: bounds.bottom - text.bottom,
+                };
+            }""")
+            assert text["lines"] == 1
+            assert min(text["left"], text["right"], text["top"], text["bottom"]) >= 0
         finally:
             await browser.close()
 

@@ -126,6 +126,13 @@ async def test_photo_queue_pair_skip_resume_lookup_and_exceptions(
                 page.get_by_label("Initial area (optional)", exact=True)
             ).to_have_value("")
             await expect(confirm).to_be_disabled()
+            await page.get_by_role(
+                "button", name="Installation queue", exact=True
+            ).tap()
+            await expect(page.locator("#tag-notice")).to_be_hidden()
+            await page.get_by_role("button", name="Look up a tag", exact=True).tap()
+            await expect(page.locator("#tag-notice")).to_be_hidden()
+            await page.get_by_role("button", name="Enroll", exact=True).tap()
             # All detected tags include a previously-bound ambient tag.
             await reader.observe(("00000001", "00000003"), session_id)
             await page.get_by_role("button", name="Refresh", exact=True).tap()
@@ -361,6 +368,17 @@ async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
             await expect(page.locator("#tag-notice")).to_have_css(
                 "color", "rgb(135, 85, 6)"
             )
+            await page.get_by_role("button", name="Look up a tag", exact=True).click()
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "data-tone", "warning"
+            )
+            await expect(
+                page.get_by_role("button", name="Retry same action", exact=True)
+            ).to_be_visible()
+            await page.get_by_role("button", name="Enroll", exact=True).click()
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "data-tone", "warning"
+            )
             await page.get_by_role(
                 "button", name="Retry same action", exact=True
             ).click()
@@ -487,10 +505,10 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             assert positions[0]["id"] == position_id
             assert positions[0]["area_id"] == area_id
             assert positions[0]["reader_id"] == reader_id
-            await expect(page.locator("#tracking-settings-notice")).to_have_text(
+            await expect(page.locator("#tracking-save-feedback")).to_have_text(
                 "Tracking settings saved."
             )
-            await expect(page.locator("#tracking-settings-notice")).to_have_attribute(
+            await expect(page.locator("#tracking-save-feedback")).to_have_attribute(
                 "data-tone", "ok"
             )
             assert await page.locator("body").evaluate(
@@ -792,11 +810,12 @@ async def test_queue_labels_distinguish_copies_and_mobile_photo_stays_compact(
             await chooser.select_option(selected_id)
             await expect(chooser).to_have_value(selected_id)
             summary = page.locator("#selected-copy-details")
-            await expect(summary).to_contain_text("Size L · Example atelier")
+            selected_label = await chooser.locator("option:checked").inner_text()
+            await expect(summary).to_have_text(selected_label)
             await expect(chooser).to_have_accessible_description(
                 "Example label with a deliberately lengthy name · "
                 "Example shared shirt · "
-                "Size L · Example atelier · Cool white · Piece 1"
+                "size L · Cool white · Example atelier · piece 1"
             )
             await expect(summary).to_be_visible()
             assert await summary.evaluate(
@@ -1059,9 +1078,17 @@ async def test_replace_unbind_and_undo_keep_physical_piece_identity(
             await page.get_by_role(
                 "button", name="View Example cotton tee", exact=True
             ).click()
-            await page.get_by_role(
-                "button", name="Unbind mistaken tag", exact=True
-            ).click()
+            neutral_color = await page.get_by_role(
+                "button", name="Replace tag", exact=True
+            ).evaluate("node => getComputedStyle(node).color")
+            unbind = page.get_by_role("button", name="Unbind mistaken tag", exact=True)
+            retire = page.get_by_role("button", name="Retire tracking unit", exact=True)
+            await expect(unbind).not_to_have_css("color", neutral_color)
+            await expect(retire).not_to_have_css("color", neutral_color)
+            await unbind.click()
+            await expect(
+                page.get_by_role("button", name="Confirm unbind", exact=True)
+            ).not_to_have_css("color", neutral_color)
             await page.get_by_label("Reason for this change", exact=True).fill(
                 "Fictional mistaken pairing"
             )
@@ -1095,6 +1122,10 @@ async def test_replace_unbind_and_undo_keep_physical_piece_identity(
                 and restored[0]["id"] == unit_id
                 and restored[0]["has_binding"] is True
             )
+            await retire.click()
+            await expect(
+                page.get_by_role("button", name="Confirm retirement", exact=True)
+            ).not_to_have_css("color", neutral_color)
         finally:
             await browser.close()
 
@@ -1137,6 +1168,9 @@ async def test_quantity_reconciliation_restores_units_without_overriding_source(
             await expect(
                 page.get_by_role("heading", name="More pieces need review", exact=True)
             ).to_be_visible()
+            await expect(
+                page.get_by_label("Choose a physical piece", exact=True)
+            ).to_have_count(0)
             await expect(
                 page.get_by_role("heading", name="The queue is complete", exact=True)
             ).to_have_count(0)

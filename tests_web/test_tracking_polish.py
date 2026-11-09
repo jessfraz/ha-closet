@@ -46,6 +46,31 @@ async def test_lookup_omits_piece_filters_and_does_not_reload_the_catalog(
             await browser.close()
 
 
+async def test_diagnostics_explain_when_no_reads_have_arrived(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await page.get_by_text(
+                "Reader health and evidence diagnostics", exact=True
+            ).click()
+            await expect(
+                page.get_by_role("heading", name="Recent reads")
+            ).to_be_visible()
+            await expect(
+                page.get_by_text("No recent reads.", exact=True)
+            ).to_be_visible()
+        finally:
+            await browser.close()
+
+
 async def test_reader_connection_has_one_inline_editor_across_areas(
     rust_backend: RustBackend,
 ) -> None:
@@ -136,6 +161,9 @@ async def test_settings_save_feedback_stays_near_save_and_clears_when_draft_chan
             feedback = page.locator("#tracking-save-feedback")
             await expect(feedback).to_have_text("Tracking settings saved.")
             await expect(feedback).to_have_attribute("role", "status")
+            await expect(
+                page.get_by_role("status").filter(has_text="Tracking settings saved.")
+            ).to_have_count(1)
             save = page.get_by_role("button", name="Save tracking settings", exact=True)
             bounds = await save.bounding_box()
             status = await feedback.bounding_box()

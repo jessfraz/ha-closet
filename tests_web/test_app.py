@@ -227,7 +227,7 @@ async def test_optional_item_facts_are_omitted_when_absent(
             await button.click()
             detail = page.get_by_role("dialog", name="Example minimal item")
             await expect(detail.locator("dt")).to_have_text(
-                ["Category", "Quantity", "Purchase source"]
+                ["Category", "Quantity", "Source"]
             )
             await detail.get_by_role("button", name="Close item details").click()
             sized_button = page.get_by_role(
@@ -239,7 +239,7 @@ async def test_optional_item_facts_are_omitted_when_absent(
             await sized_button.click()
             detail = page.get_by_role("dialog", name="Example sized item")
             await expect(detail.locator("dt")).to_have_text(
-                ["Category", "Color", "Size", "Quantity", "Purchase source"]
+                ["Category", "Color", "Size", "Quantity", "Source"]
             )
             await expect(detail.get_by_text("M", exact=True)).to_be_visible()
             await expect(detail.get_by_text("2", exact=True)).to_be_visible()

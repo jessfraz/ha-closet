@@ -7,6 +7,7 @@ import pytest
 from playwright.async_api import Route, async_playwright, expect
 
 from tests_ha.conftest import HAProtocol, RustBackend, catalog_item
+from tests_ha.tracking_fixture import configure
 from tests_web.test_app import login
 from tests_web.test_sources import source_records
 
@@ -25,7 +26,7 @@ async def product_photo(route: Route) -> None:
     ("width", "theme"),
     [(320, "dark"), (390, "light"), (390, "dark"), (1100, "light")],
 )
-async def test_cards_read_image_brand_name_then_bottom_source(
+async def test_cards_read_image_brand_name_then_source_without_a_status_gap(
     rust_backend: RustBackend,
     width: int,
     theme: str,
@@ -52,6 +53,7 @@ async def test_cards_read_image_brand_name_then_bottom_source(
             }
         ]
     await rust_backend.sync([short, long])
+    await configure(rust_backend)
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
@@ -63,9 +65,8 @@ async def test_cards_read_image_brand_name_then_bottom_source(
             await login(page, rust_backend)
             cards = page.locator(".item-card")
             await expect(cards).to_have_count(2)
-            bottoms: list[float] = []
-            tops: list[float] = []
             for card in await cards.all():
+                await expect(card.locator(".tracking-pill")).to_be_visible()
                 photo = await card.locator(".photo").bounding_box()
                 brand = await card.locator(".brand-badge").bounding_box()
                 name = await card.locator(".item-name").bounding_box()
@@ -75,10 +76,13 @@ async def test_cards_read_image_brand_name_then_bottom_source(
                 assert photo["y"] + photo["height"] <= brand["y"]
                 assert brand["y"] + brand["height"] <= name["y"]
                 assert name["y"] + name["height"] <= source["y"]
-                bottom = source["y"] + source["height"]
-                assert abs(bottom - (box["y"] + box["height"])) <= 1
-                bottoms.append(bottom)
-                tops.append(box["y"])
+                gap = await card.locator(".source-badge").evaluate("""badge => {
+                    const holder = badge.parentElement;
+                    const prior = holder.previousElementSibling;
+                    return holder.getBoundingClientRect().top
+                        - prior.getBoundingClientRect().bottom;
+                }""")
+                assert abs(gap) <= 1, "source badge must follow its garment status"
                 assert source["height"] >= 24 and brand["height"] >= 26
                 assert (
                     await card.locator(".source-badge").evaluate(
@@ -94,8 +98,6 @@ async def test_cards_read_image_brand_name_then_bottom_source(
                 )
                 await expect(card.locator("button")).to_have_count(3)
                 await expect(card.locator("button button, button a")).to_have_count(0)
-            if abs(tops[0] - tops[1]) <= 1:
-                assert abs(bottoms[0] - bottoms[1]) <= 1
             assert not await page.evaluate(
                 "document.documentElement.scrollWidth > window.innerWidth"
             )
@@ -113,6 +115,7 @@ async def test_cards_read_image_brand_name_then_bottom_source(
             await expect(page.get_by_role("dialog")).to_be_visible()
             await page.get_by_role("button", name="Close item details").click()
             await expect(detail).to_be_focused()
+            await card.locator(".photo").scroll_into_view_if_needed()
             photo = await card.locator(".photo").bounding_box()
             assert photo
             await page.mouse.click(

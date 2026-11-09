@@ -18,8 +18,8 @@ const exceptionLabels = {
 const installationLabels = { needs_tag: "Needs a tag", queued: "Queued for installation", installed: "Tag installed", exempt: "No-tag exception" };
 
 export class TrackingController {
-  constructor({ request, element, photo, getItem, openItem, sourceLabel, errorMessage, role, timezone, changed }) {
-    Object.assign(this, { request, element, photo, getItem, openItem, sourceLabel, errorMessage, role, timezone, changed });
+  constructor({ request, element, photo, getItem, openItem, sourceLabel, categoryLabel, errorMessage, role, timezone, changed }) {
+    Object.assign(this, { request, element, photo, getItem, openItem, sourceLabel, categoryLabel, errorMessage, role, timezone, changed });
     this.snapshot = null;
     this.online = false;
     this.view = "inventory";
@@ -40,8 +40,14 @@ export class TrackingController {
     this.queueLimit = 12;
     this.audio = null;
     this.fieldSequence = 0;
+    this.settingsNotice = { text: "", tone: "warning" };
+    const settingsNotice = document.getElementById("tracking-settings-notice");
+    settingsNotice.removeAttribute("role"); settingsNotice.removeAttribute("aria-live");
     for (const [id, mode] of [["enroll-mode", "enroll"], ["installation-mode", "installation"], ["lookup-mode", "lookup"]]) {
-      document.getElementById(id).addEventListener("click", () => { this.mode = mode; this.renderWorkspace(); });
+      document.getElementById(id).addEventListener("click", () => {
+        if (this.mode !== mode && !this.pending && !this.busy && document.getElementById("tag-notice").dataset.tone === "ok") this.notice();
+        this.mode = mode; this.renderWorkspace();
+      });
     }
     this.keyHandler = (event) => {
       if (this.view !== "tags" || event.altKey || event.ctrlKey || event.metaKey || /INPUT|SELECT|TEXTAREA|BUTTON/.test(event.target.tagName)) return;
@@ -55,8 +61,9 @@ export class TrackingController {
   node(tag, className, text) { return this.element(tag, className, text); }
   notice(text = "", settings = false, tone = "warning") {
     const node = document.getElementById(settings ? "tracking-settings-notice" : "tag-notice");
-    node.textContent = text; node.hidden = !text; node.dataset.tone = tone;
+    node.textContent = settings && tone === "ok" ? "" : text; node.hidden = !node.textContent; node.dataset.tone = tone;
     if (settings) {
+      this.settingsNotice = { text, tone };
       const feedback = document.getElementById("tracking-save-feedback");
       if (feedback) { feedback.textContent = text; feedback.hidden = !text; feedback.dataset.tone = tone; }
     }
@@ -340,10 +347,14 @@ export class TrackingController {
     form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); });
     form.append(status.wrapper, note.wrapper, save); manual.append(form); root.append(manual);
     const area = this.field("Confirm current area", this.snapshot.config.areas.filter((area) => area.enabled).map((area) => [area.id, area.label]), unit.current_area || unit.last_confirmed_area);
-    if (area.input.options.length) { const group = this.node("div", "tracking-form"); group.append(area.wrapper, this.button("Set area baseline", () => this.command({ type: "baseline", unit_id: unit.id, area_id: area.input.value }, revision))); root.append(group); }
+    if (area.input.options.length) { const group = this.node("div", "tracking-form tracking-baseline"); group.append(area.wrapper, this.button("Set area baseline", () => this.command({ type: "baseline", unit_id: unit.id, area_id: area.input.value }, revision))); root.append(group); }
     actions.append(this.button(unit.paused ? "Resume automation" : "Pause automation", () => this.command({ type: "pause", unit_id: unit.id, paused: !unit.paused }, revision)));
-    if (unit.has_binding) actions.append(this.button("Unbind mistaken tag", () => this.reasonAction(root, "unbind", unit, revision)));
-    actions.append(this.button("Retire tracking unit", () => this.reasonAction(root, "retire", unit, revision)));
+    if (unit.has_binding) {
+      const unbind = this.button("Unbind mistaken tag", () => this.reasonAction(root, "unbind", unit, revision));
+      unbind.classList.add("danger"); actions.append(unbind);
+    }
+    const retire = this.button("Retire tracking unit", () => this.reasonAction(root, "retire", unit, revision));
+    retire.classList.add("danger"); actions.append(retire);
     if (unit.last_event_id !== null) actions.append(this.button("Undo last change", () => this.reasonAction(root, "undo", unit, revision)));
     root.append(actions);
   }
@@ -355,6 +366,7 @@ export class TrackingController {
       if (!form.reportValidity()) return;
       void this.command({ type, ...(type === "undo" ? { event_id: unit.last_event_id } : { unit_id: unit.id }), ...(type === "unbind" ? { mistaken: true } : {}), note: reason.input.value }, revision);
     });
+    if (type !== "undo") save.classList.add("danger");
     form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); }); form.append(reason.wrapper, save); root.append(form); reason.input.focus();
   }
 
@@ -382,7 +394,7 @@ export class TrackingController {
     const fields = {
       q: this.field("Find a piece", null, this.queueQuery?.q || ""),
       brand: this.field("Brand", [["", "All brands"], ...facets.brands.map((value) => [value, value])], this.queueQuery?.brand),
-      category: this.field("Category", [["", "All categories"], ...facets.categories.map((value) => [value, value])], this.queueQuery?.category),
+      category: this.field("Category", [["", "All categories"], ...facets.categories.map((value) => [value, this.categoryLabel(value)])], this.queueQuery?.category),
       source: this.field("Source", [["", "All sources"], ...facets.sources.map((value) => [value.source, value.label])], this.queueQuery?.source),
     };
     fields.q.input.type = "search"; fields.q.input.maxLength = 200;
@@ -451,24 +463,27 @@ export class TrackingController {
     if (revision !== this.workspaceRevision) return;
     if (this.mode === "enroll" && session?.state !== "active") {
       const choices = this.replacementId === unit?.id ? [unit, ...this.filteredQueue().filter((piece) => piece.id !== unit.id)] : this.filteredQueue();
-      const select = this.field("Choose a physical piece", choices.map((piece) => {
-        const item = this.catalog.get(piece.catalog_id);
-        return [piece.id, item ? this.pieceLabel(item, piece) : `Piece ${piece.ordinal} · garment details unavailable`];
-      }), this.selectedId);
-      select.input.dataset.fullValue = "described";
-      select.input.addEventListener("change", () => { this.invalidateConfirmation(); this.selectedId = select.input.value; this.replacementId = null; this.workspaceKey = null; void this.renderWorkspace(); });
-      fragment.append(select.wrapper);
-      if (unit) {
-        const item = await this.item(unit.catalog_id);
-        if (revision !== this.workspaceRevision) return;
-        const summary = this.node("p", "muted selected-copy-details", [item.brand, item.name, item.size ? `Size ${item.size}` : null, this.sourceLabel(item), item.color, `Piece ${unit.ordinal}`].filter(Boolean).join(" · "));
-        summary.id = "selected-copy-details"; summary.setAttribute("role", "status");
-        select.input.setAttribute("aria-describedby", summary.id); fragment.append(summary);
+      if (choices.length) {
+        const label = (piece, item) => `${piece.id === this.replacementId ? "Replacement · " : ""}${this.pieceLabel(item, piece)}`;
+        const select = this.field("Choose a physical piece", choices.map((piece) => {
+          const item = this.catalog.get(piece.catalog_id);
+          return [piece.id, item ? label(piece, item) : `Piece ${piece.ordinal} · garment details unavailable`];
+        }), this.selectedId);
+        select.input.dataset.fullValue = "described";
+        select.input.addEventListener("change", () => { this.invalidateConfirmation(); this.selectedId = select.input.value; this.replacementId = null; this.workspaceKey = null; void this.renderWorkspace(); });
+        fragment.append(select.wrapper);
+        if (unit) {
+          const item = await this.item(unit.catalog_id);
+          if (revision !== this.workspaceRevision) return;
+          const summary = this.node("p", "muted selected-copy-details", label(unit, item));
+          summary.id = "selected-copy-details"; summary.setAttribute("role", "status");
+          select.input.setAttribute("aria-describedby", summary.id); fragment.append(summary);
+        }
+        // Resolve names for the queue without an N+1 request on each poll.
+        void Promise.all(choices.map(async (piece, index) => {
+          try { const item = await this.item(piece.catalog_id); select.input.options[index].textContent = label(piece, item); } catch { /* The selected piece keeps its accessible details when available. */ }
+        }));
       }
-      // Resolve names for the queue without an N+1 request on each poll.
-      void Promise.all(choices.map(async (piece, index) => {
-        try { const item = await this.item(piece.catalog_id); select.input.options[index].textContent = `${piece.id === this.replacementId ? "Replacement · " : ""}${this.pieceLabel(item, piece)}`; } catch { /* The selected piece keeps its accessible details when available. */ }
-      }));
     }
     if (this.mode === "installation") {
       await this.installationQueue(fragment, revision);
@@ -893,10 +908,9 @@ export class TrackingController {
     const saveActions = this.node("div", "tracking-settings-save");
     const feedback = this.node("p", "notice tracking-save-feedback"); feedback.id = "tracking-save-feedback";
     feedback.setAttribute("role", "status"); feedback.setAttribute("aria-live", "polite");
-    const previousNotice = document.getElementById("tracking-settings-notice");
-    feedback.textContent = previousNotice.textContent; feedback.hidden = previousNotice.hidden; feedback.dataset.tone = previousNotice.dataset.tone;
+    feedback.textContent = this.settingsNotice.text; feedback.hidden = !this.settingsNotice.text; feedback.dataset.tone = this.settingsNotice.tone;
     saveActions.append(save, feedback);
-    const clearSavedNotice = () => { if (previousNotice.dataset.tone === "ok") this.notice("", true); };
+    const clearSavedNotice = () => { if (this.settingsNotice.tone === "ok") this.notice("", true); };
     form.addEventListener("input", clearSavedNotice); form.addEventListener("change", clearSavedNotice);
     form.addEventListener("click", (event) => { if (event.target.closest("button[data-tracking-mutation]")) clearSavedNotice(); });
     form.addEventListener("submit", (event) => { event.preventDefault(); save.click(); }); form.append(saveActions);
@@ -974,7 +988,7 @@ export class TrackingController {
     }
     const recent = this.node("ol", "tracking-history");
     for (const read of this.snapshot.diagnostics.recent_reads.slice(-30).reverse()) recent.append(this.node("li", "", `${this.time(read.received_at)} · ${read.data_source === "simulation" ? "SIMULATION" : "Live"} · ${read.purpose} · ${read.port_id} · EPC ${read.epc} · ${read.read_count} reads${read.peak_rssi_cdbm !== null ? ` · RSSI ${read.peak_rssi_cdbm / 100} dBm` : ""}`));
-    details.append(this.node("h4", "", "Recent reads"), recent);
+    details.append(this.node("h4", "", "Recent reads"), recent.childElementCount ? recent : this.node("p", "muted", "No recent reads."));
     for (const decision of this.snapshot.diagnostics.decisions.slice(-20).reverse()) details.append(this.node("p", "muted", `${this.time(decision.at)} · ${decision.reason.replaceAll("_", " ")}${decision.area_id ? ` · ${this.area(decision.area_id)?.label || decision.area_id}` : ""}`));
     for (const fault of this.snapshot.diagnostics.faults.slice(-20).reverse()) details.append(this.node("p", "notice", `${this.time(fault.at)} · ${fault.code.replaceAll("_", " ")}`));
     root.replaceChildren(details);
