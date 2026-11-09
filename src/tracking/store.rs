@@ -3227,6 +3227,8 @@ mod tests {
             color: Some("Blue".into()),
             size: Some("M".into()),
             quantity: Some(1),
+            usage: crate::models::Usage::Everyday,
+            identity: None,
             material: Some("Cotton".into()),
             sku: None,
             purchase_source: Some("fixture".into()),
@@ -3820,6 +3822,7 @@ mod tests {
         let inputs = crate::models::TodayRequest {
             occasion: crate::models::Occasion::Everyday,
             weather_mode: crate::models::WeatherMode::Ignored,
+            footwear_requirement: None,
         };
         let generation = crate::models::Generation {
             id: "fictional-saved-generation".into(),

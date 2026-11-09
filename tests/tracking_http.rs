@@ -593,7 +593,7 @@ async fn today_rechecks_availability_at_publication_and_marks_saved_results_stal
         .unwrap();
     let today = app
         .store
-        .today(&date, "UTC", "example-config", now)
+        .today(&date, "UTC", "example-config", now, None)
         .await
         .unwrap();
     let generation = today.generation.unwrap();

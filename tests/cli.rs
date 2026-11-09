@@ -100,6 +100,8 @@ fn catalog() -> Vec<CatalogItem> {
         color: Some("Blue".into()),
         size: None,
         quantity: Some(1),
+        usage: closet::models::Usage::Everyday,
+        identity: None,
         material: Some("Cotton".into()),
         sku: None,
         purchase_source: Some("direct".into()),

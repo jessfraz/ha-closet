@@ -1,6 +1,10 @@
 //! The catalog file and HTTP/CLI contracts share these owned types.
 
-use std::{collections::BTreeSet, fmt, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    str::FromStr,
+};
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
@@ -32,6 +36,57 @@ pub struct CatalogItem {
     pub price: Option<Price>,
     #[serde(default)]
     pub shop: Option<Shop>,
+    #[serde(default, skip_serializing_if = "Usage::is_everyday")]
+    pub usage: Usage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<CatalogIdentity>,
+}
+
+/// Stable authoring IDs identify shared variants without combining purchases.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogIdentity {
+    pub style_id: String,
+    pub variant_id: String,
+}
+
+/// User-defined use, not a certification or a guarantee of protective performance.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Usage {
+    #[default]
+    Everyday,
+    SafetyWorkOnly {
+        requirement: SafetyRequirement,
+    },
+}
+impl Usage {
+    /// Whether ordinary, unrestricted wardrobe use is permitted.
+    pub fn is_everyday(&self) -> bool {
+        matches!(self, Self::Everyday)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyRequirement {
+    SteelToe,
+}
+impl FromStr for SafetyRequirement {
+    type Err = &'static str;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "steel_toe" => Ok(Self::SteelToe),
+            _ => Err("invalid_safety_requirement"),
+        }
+    }
+}
+impl fmt::Display for SafetyRequirement {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        output.write_str(match self {
+            Self::SteelToe => "steel_toe",
+        })
+    }
 }
 impl CatalogItem {
     pub fn source(&self) -> Option<Source> {
@@ -266,6 +321,7 @@ pub fn validate_catalog(mut items: Vec<CatalogItem>) -> Result<ValidatedCatalog,
     }
     let mut errors = Vec::new();
     let mut ids = BTreeSet::new();
+    let mut variants = BTreeMap::<&str, &CatalogItem>::new();
     for (index, item) in items.iter().enumerate() {
         let mut check = |field: &str, valid: bool, code: &str| {
             if !valid && errors.len() < 100 {
@@ -278,6 +334,36 @@ pub fn validate_catalog(mut items: Vec<CatalogItem>) -> Result<ValidatedCatalog,
         };
         check("id", valid_id(&item.id), "invalid_id");
         check("id", ids.insert(item.id.clone()), "duplicate_id");
+        if let Some(identity) = &item.identity {
+            let previous = variants.insert(&identity.variant_id, item);
+            check(
+                "identity.style_id",
+                valid_id(&identity.style_id),
+                "invalid_id",
+            );
+            check(
+                "identity.variant_id",
+                valid_id(&identity.variant_id),
+                "invalid_id",
+            );
+            check(
+                "identity",
+                previous.is_none_or(|previous| {
+                    previous.identity.as_ref().map(|id| &id.style_id) == Some(&identity.style_id)
+                }),
+                "conflicting_variant_style",
+            );
+            check(
+                "identity",
+                previous.is_none_or(|previous| {
+                    previous.brand == item.brand
+                        && previous.category == item.category
+                        && previous.color == item.color
+                        && previous.material == item.material
+                }),
+                "conflicting_variant_metadata",
+            );
+        }
         check("name", valid_text(&item.name, 512), "invalid_text");
         check(
             "category",
@@ -497,6 +583,9 @@ pub struct Facets {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ItemsPage {
     pub items: Vec<Item>,
+    /// Complete active copies for variants visible on this flat page.
+    #[serde(default)]
+    pub variant_groups: Vec<VariantGroup>,
     pub next_page: Option<String>,
     pub total: i64,
     pub scope_total: i64,
@@ -504,6 +593,24 @@ pub struct ItemsPage {
     pub catalog_revision: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracking_revision: Option<i64>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct VariantGroup {
+    pub identity: CatalogIdentity,
+    /// Sum of physical copies, unknown if any historical quantity is unknown.
+    pub quantity: Option<u64>,
+    pub copies: Vec<InventoryCopy>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InventoryCopy {
+    pub id: String,
+    pub size: Option<String>,
+    pub quantity: Option<u32>,
+    pub purchase_source: Option<String>,
+    pub shop: Option<Shop>,
+    #[serde(default, skip_serializing_if = "Usage::is_everyday")]
+    pub usage: Usage,
+    pub revision: i64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -586,6 +693,17 @@ pub struct TodayRequest {
     pub occasion: Occasion,
     #[serde(default)]
     pub weather_mode: WeatherMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footwear_requirement: Option<SafetyRequirement>,
+}
+impl TodayRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.occasion == Occasion::Bedtime && self.footwear_requirement.is_some() {
+            Err("footwear_requirement_not_applicable")
+        } else {
+            Ok(())
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

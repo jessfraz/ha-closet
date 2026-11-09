@@ -25,6 +25,8 @@ fn catalog(quantity: u32) -> CatalogItem {
         color: Some("Blue".into()),
         size: Some("M".into()),
         quantity: Some(quantity),
+        usage: closet::models::Usage::Everyday,
+        identity: None,
         material: Some("Cotton".into()),
         sku: None,
         purchase_source: Some("self_bought".into()),

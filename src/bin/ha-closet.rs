@@ -10,8 +10,8 @@ use std::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use closet::client::{ApiClient, Failure, Output, Transport, response};
 use closet::models::{
-    Freshness, Generation, GenerationStatus, Item, ItemsPage, Occasion, Source, System,
-    TodayRequest, TodayResponse, WeatherMode, parse_catalog, valid_id,
+    Freshness, Generation, GenerationStatus, Item, ItemsPage, Occasion, SafetyRequirement, Source,
+    System, TodayRequest, TodayResponse, WeatherMode, parse_catalog, valid_id,
 };
 use reqwest::{Method, RequestBuilder, Url};
 use serde::{Serialize, de::DeserializeOwned};
@@ -128,6 +128,8 @@ enum Today {
     Get {
         #[arg(long, value_enum, default_value = "json")]
         format: Format,
+        #[arg(long, value_parser = parse_safety_requirement)]
+        footwear_requirement: Option<SafetyRequirement>,
     },
     /// Request one attempt. A 202 result means accepted, not completed.
     Generate {
@@ -135,6 +137,8 @@ enum Today {
         occasion: Occasion,
         #[arg(long, default_value = "required", value_parser = parse_weather_mode)]
         weather_mode: WeatherMode,
+        #[arg(long, value_parser = parse_safety_requirement)]
+        footwear_requirement: Option<SafetyRequirement>,
         #[arg(long, value_parser = parse_key)]
         idempotency_key: String,
     },
@@ -246,6 +250,9 @@ fn parse_occasion(value: &str) -> std::result::Result<Occasion, &'static str> {
 }
 fn parse_weather_mode(value: &str) -> std::result::Result<WeatherMode, &'static str> {
     value.parse().map_err(|_| "expected required or ignored")
+}
+fn parse_safety_requirement(value: &str) -> std::result::Result<SafetyRequirement, &'static str> {
+    value.parse()
 }
 
 fn configure_api(cli: &Cli) -> Result<ApiClient> {
@@ -439,8 +446,17 @@ async fn run(cli: Cli) -> Result<()> {
                 Format::Table => write_items_table(&result.data),
             }
         }
-        Command::Today(Today::Get { format }) => {
-            let result = response::<TodayResponse>(api.request(Method::GET, "/today")?).await?;
+        Command::Today(Today::Get {
+            format,
+            footwear_requirement,
+        }) => {
+            let query: Vec<_> = footwear_requirement
+                .into_iter()
+                .map(|requirement| ("footwear_requirement", requirement.to_string()))
+                .collect();
+            let result =
+                response::<TodayResponse>(api.request(Method::GET, "/today")?.query(&query))
+                    .await?;
             match format {
                 Format::Json => write_json(std::io::stdout().lock(), &result),
                 Format::Table => write_today_table(&result.data),
@@ -449,6 +465,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Today(Today::Generate {
             occasion,
             weather_mode,
+            footwear_requirement,
             idempotency_key,
         }) => {
             send::<Generation>(
@@ -457,6 +474,7 @@ async fn run(cli: Cli) -> Result<()> {
                     .json(&TodayRequest {
                         occasion,
                         weather_mode,
+                        footwear_requirement,
                     }),
             )
             .await
@@ -535,6 +553,10 @@ fn write_today_table(today: &TodayResponse) -> Result<()> {
             result.inputs.occasion, result.inputs.weather_mode
         )
         .map_err(|_| Failure::local("output_failed"))?;
+        if let Some(requirement) = result.inputs.footwear_requirement {
+            writeln!(writer, "Footwear requirement: {requirement}")
+                .map_err(|_| Failure::local("output_failed"))?;
+        }
         if !result.stale_reasons.is_empty() {
             writeln!(
                 writer,

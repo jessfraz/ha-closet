@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+import re
 import sqlite3
 from pathlib import Path
 
+import pytest
 from homeassistant.util.json import JsonObjectType
 from playwright.async_api import Page, Route, async_playwright, expect
 
@@ -18,6 +20,7 @@ from tests_ha.tracking_fixture import (
 )
 
 from .test_app import login
+from .test_inventory_ui import product_photo
 
 
 async def action(page: Page, name: str, *, touch: bool = False) -> None:
@@ -76,6 +79,9 @@ async def test_photo_queue_pair_skip_resume_lookup_and_exceptions(
                 "Optional confirmation sound"
             ).is_checked()
             await action(page, "Start enrollment session", touch=True)
+            await expect(page.locator("#tag-notice")).to_have_text(
+                "Enrollment session started."
+            )
             current = await snapshot(rust_backend)
             sessions = current["sessions"]
             assert isinstance(sessions, list) and isinstance(sessions[0], dict)
@@ -100,10 +106,17 @@ async def test_photo_queue_pair_skip_resume_lookup_and_exceptions(
             await reader.observe(("00000001",), session_id)
             await page.get_by_role("button", name="Refresh", exact=True).tap()
             await expect(confirm).to_be_enabled()
+            await page.get_by_label(
+                "Initial area (optional)", exact=True
+            ).select_option("example-closet")
             await confirm.tap()
             await expect(
                 page.get_by_text("1 tagged · 3 remaining · 0 no-tag exceptions")
             ).to_be_visible()
+            await expect(page.locator("#tag-notice")).to_have_text("Tag paired.")
+            await expect(
+                page.get_by_label("Initial area (optional)", exact=True)
+            ).to_have_value("")
             await expect(confirm).to_be_disabled()
             # All detected tags include a previously-bound ambient tag.
             await reader.observe(("00000001", "00000003"), session_id)
@@ -153,6 +166,15 @@ async def test_photo_queue_pair_skip_resume_lookup_and_exceptions(
             await expect(
                 page.get_by_role("button", name="Confirm pairing & next", exact=True)
             ).to_have_count(0)
+            await expect(page.locator(".capture-state")).to_have_text(
+                "Garment found. Open its details below."
+            )
+            await page.get_by_role(
+                "button", name="View matched Example garment 0", exact=True
+            ).click()
+            await expect(page.get_by_role("dialog")).to_be_visible()
+            await expect(page).to_have_url(re.compile("closet_item=example-0"))
+            await page.get_by_role("button", name="Close item details").click()
             await action(page, "End lookup")
             await page.get_by_role(
                 "button", name="Installation queue", exact=True
@@ -309,7 +331,7 @@ async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
                 page.get_by_text("1 tagged · 0 remaining · 0 no-tag exceptions")
             ).to_be_visible()
             assert len(requests) == 2 and requests[0] == requests[1]
-            await page.unroute("**/v1/tracking/commands", lose_first_reply)
+            await page.unroute_all(behavior="wait")
             result = await snapshot(rust_backend)
             assert sum(unit["has_binding"] is True for unit in units(result)) == 1
         finally:
@@ -330,11 +352,13 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             ).click()
             await page.get_by_label("Enable area tracking", exact=True).check()
             await page.get_by_role("button", name="Add area", exact=True).click()
-            await page.get_by_label("Area ID", exact=True).fill("fictional-rack")
             await page.get_by_label("Area label", exact=True).fill("Fictional rack")
+            area_id = await page.get_by_label("Area ID", exact=True).input_value()
+            assert area_id.startswith("area-")
             await page.get_by_role("button", name="Add reader", exact=True).click()
-            await page.get_by_label("Reader ID", exact=True).fill("fictional-reader")
             await page.get_by_label("Reader label", exact=True).fill("Fictional reader")
+            reader_id = await page.get_by_label("Reader ID", exact=True).input_value()
+            assert reader_id.startswith("reader-")
             await page.get_by_label("Reader enabled", exact=True).uncheck()
             await page.get_by_label("Reader host", exact=True).fill(
                 "reader.example.invalid"
@@ -343,15 +367,39 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             await page.get_by_role(
                 "button", name="Add reading position", exact=True
             ).click()
-            await page.get_by_label("Position ID", exact=True).fill(
-                "fictional-position"
+            position_id = await page.get_by_label(
+                "Position ID", exact=True
+            ).input_value()
+            assert position_id.startswith("position-")
+            await page.get_by_label(
+                "Reader for this position", exact=True
+            ).select_option(label="Fictional reader")
+            await page.get_by_label("Area for this position", exact=True).select_option(
+                label="Fictional rack"
             )
-            await page.get_by_label("Reader ID for this position", exact=True).fill(
-                "fictional-reader"
+            await page.get_by_label("Position role", exact=True).select_option(
+                "enrollment"
             )
-            await page.get_by_label("Area ID (blank for enrollment)", exact=True).fill(
-                "fictional-rack"
+            await expect(
+                page.get_by_label("Required for confirmed absence", exact=True)
+            ).not_to_be_checked()
+            await expect(
+                page.get_by_label("Required for confirmed absence", exact=True)
+            ).to_be_disabled()
+            await page.get_by_label("Position role", exact=True).select_option(
+                "monitor"
             )
+            await page.get_by_label(
+                "Required for confirmed absence", exact=True
+            ).check()
+            await page.get_by_label("Reader label", exact=True).fill(
+                "Fictional renamed reader"
+            )
+            await expect(
+                page.get_by_label("Reader for this position", exact=True).locator(
+                    "option:checked"
+                )
+            ).to_have_text("Fictional renamed reader")
             await action(page, "Save tracking settings")
             await expect(page.get_by_label("Area label", exact=True)).to_have_value(
                 "Fictional rack"
@@ -367,6 +415,15 @@ async def test_reader_settings_save_and_optional_installation_metadata(
                 "port": 5084,
                 "owned_rospec_id": 123,
             }
+            assert readers[0]["id"] == reader_id
+            positions = config["ports"]
+            assert isinstance(positions, list) and isinstance(positions[0], dict)
+            assert positions[0]["id"] == position_id
+            assert positions[0]["area_id"] == area_id
+            assert positions[0]["reader_id"] == reader_id
+            await expect(page.locator("#tracking-settings-notice")).to_have_text(
+                "Tracking settings saved."
+            )
             assert await page.locator("body").evaluate(
                 "node => node.scrollWidth <= innerWidth"
             )
@@ -391,6 +448,342 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             await browser.close()
 
 
+async def test_enrollment_conflict_restores_start_without_refresh(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await configure(rust_backend)
+    reader = ReaderEvidence(rust_backend)
+    await reader.observe()
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page()
+        try:
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            start = page.get_by_role(
+                "button", name="Start enrollment session", exact=True
+            )
+            await expect(start).to_be_enabled()
+
+            async def change_revision(route: Route) -> None:
+                current = await snapshot(rust_backend)
+                await command(
+                    rust_backend,
+                    {
+                        "type": "correct",
+                        "unit_id": units(current)[0]["id"],
+                        "status": "clean_ready",
+                        "note": "Fictional concurrent correction.",
+                    },
+                )
+                await route.continue_()
+
+            await page.route("**/v1/tracking/commands", change_revision)
+            async with page.expect_response("**/v1/tracking/commands") as response:
+                await start.click()
+            assert (await response.value).status == 412
+            await expect(page.locator("#tag-notice")).to_be_visible()
+            await expect(page.locator('[aria-busy="true"]')).to_have_count(0)
+            await expect(start).to_be_enabled()
+            await page.unroute_all(behavior="wait")
+            await reader.observe()
+            await action(page, "Start enrollment session")
+            await expect(
+                page.get_by_role("button", name="End session", exact=True)
+            ).to_be_enabled()
+            await action(page, "End session")
+        finally:
+            await page.unroute_all(behavior="wait")
+            await browser.close()
+
+
+async def test_settings_can_save_twice_without_refresh(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await configure(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            label = page.get_by_label("Area label", exact=True).first
+            save = page.get_by_role("button", name="Save tracking settings", exact=True)
+            for value in ("Example rail", "Example updated rail"):
+                await label.fill(value)
+                await action(page, "Save tracking settings")
+                await expect(save).to_be_enabled()
+                await expect(label).to_be_enabled()
+                await expect(label).to_have_value(value)
+                config = (await snapshot(rust_backend))["config"]
+                assert isinstance(config, dict)
+                areas = config["areas"]
+                assert isinstance(areas, list) and isinstance(areas[0], dict)
+                assert areas[0]["label"] == value
+            # Native form validation accepts the text; the real API rejects a
+            # duplicate area ID. Retain the draft and unlock it for correction.
+            await page.get_by_text("Advanced area settings", exact=True).first.click()
+            area_id = page.get_by_label("Area ID", exact=True).first
+            await area_id.fill("example-hamper")
+            async with page.expect_response("**/v1/tracking/commands") as response:
+                await save.click()
+            assert (await response.value).status == 400
+            await expect(page.locator('[aria-busy="true"]')).to_have_count(0)
+            await expect(save).to_be_enabled()
+            await expect(area_id).to_have_value("example-hamper")
+            await area_id.fill("example-closet")
+            await action(page, "Save tracking settings")
+            await label.fill("Example pending draft")
+            await command(
+                rust_backend,
+                {
+                    "type": "correct",
+                    "unit_id": units(await snapshot(rust_backend))[0]["id"],
+                    "status": "clean_ready",
+                    "note": "Fictional concurrent update while editing settings.",
+                },
+            )
+            async with page.expect_response("**/v1/tracking/commands") as response:
+                await save.click()
+            assert (await response.value).status == 412
+            await expect(page.locator('[aria-busy="true"]')).to_have_count(0)
+            await expect(save).to_be_enabled()
+            await expect(label).to_have_value("Example pending draft")
+            # Explicit readback replaces the draft and renews the revision guard.
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await expect(label).to_have_value("Example updated rail")
+            await label.fill("Example pending draft")
+            await action(page, "Save tracking settings")
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("kind", ["area", "reader"])
+async def test_failed_duplicate_id_repair_keeps_each_position_reference(
+    rust_backend: RustBackend, kind: str
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    config = (await snapshot(rust_backend))["config"]
+    assert isinstance(config, dict)
+    config.update(
+        enabled=False,
+        areas=[
+            {
+                "id": "example-closet",
+                "label": "Example closet",
+                "kind": "closet",
+                "enabled": True,
+            },
+            {
+                "id": "example-hamper",
+                "label": "Example hamper",
+                "kind": "hamper",
+                "enabled": True,
+            },
+        ],
+        readers=[
+            {
+                "id": f"example-reader-{suffix}",
+                "label": f"Example reader {suffix}",
+                "enabled": False,
+                "connection": {
+                    "type": "impinj_llrp",
+                    "host": f"reader-{suffix}.example.invalid",
+                    "port": 5084,
+                    "owned_rospec_id": 1,
+                },
+            }
+            for suffix in ("a", "b")
+        ],
+        ports=[
+            {
+                "id": f"example-monitor-{suffix}",
+                "reader_id": f"example-reader-{suffix}",
+                "antenna": 1 if suffix == "a" else 2,
+                "area_id": area,
+                "role": "monitor",
+                "enabled": True,
+                "required_for_absence": False,
+                "commissioned": False,
+                "transmit_power_cdbm": None,
+                "dwell_ms": None,
+            }
+            for suffix, area in (("a", "example-closet"), ("b", "example-hamper"))
+        ],
+    )
+    await command(rust_backend, {"type": "configure", "config": config})
+    original = "example-closet" if kind == "area" else "example-reader-a"
+    conflicting = "example-hamper" if kind == "area" else "example-reader-b"
+    renamed = f"example-renamed-{kind}"
+    reference = "area_id" if kind == "area" else "reader_id"
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            advanced = page.get_by_text(f"Advanced {kind} settings", exact=True).first
+            identifier = page.get_by_label(f"{kind.title()} ID", exact=True).first
+            await advanced.click()
+            await identifier.fill(conflicting)
+            async with page.expect_response("**/v1/tracking/commands") as response:
+                await page.get_by_role(
+                    "button", name="Save tracking settings", exact=True
+                ).click()
+            assert (await response.value).status == 400
+            await expect(page.locator('[aria-busy="true"]')).to_have_count(0)
+            await expect(identifier).to_have_value(conflicting)
+            await identifier.fill(original)
+            await action(page, "Save tracking settings")
+            saved = (await snapshot(rust_backend))["config"]
+            assert isinstance(saved, dict)
+            positions = saved["ports"]
+            assert isinstance(positions, list)
+            assert [
+                (port["id"], port[reference])
+                for port in positions
+                if isinstance(port, dict)
+            ] == [("example-monitor-a", original), ("example-monitor-b", conflicting)]
+            # A valid rename still updates only the position linked to that row.
+            await advanced.click()
+            await identifier.fill(renamed)
+            await action(page, "Save tracking settings")
+            saved = (await snapshot(rust_backend))["config"]
+            assert isinstance(saved, dict)
+            positions = saved["ports"]
+            assert isinstance(positions, list)
+            assert [
+                (port["id"], port[reference])
+                for port in positions
+                if isinstance(port, dict)
+            ] == [("example-monitor-a", renamed), ("example-monitor-b", conflicting)]
+        finally:
+            await browser.close()
+
+
+async def test_queue_labels_distinguish_copies_and_mobile_photo_stays_compact(
+    rust_backend: RustBackend,
+) -> None:
+    first = catalog_item("example-copy-a", name="Example shared shirt")
+    second = catalog_item("example-copy-b", name="Example shared shirt")
+    first["size"], second["size"] = "M", "L"
+    second["shop"] = {
+        "id": "example-atelier",
+        "label": "Example atelier",
+        "season": None,
+        "years": [],
+    }
+    for record in (first, second):
+        record["images"] = [
+            {
+                "url": "https://images.example.invalid/garment.svg",
+                "kind": "retailer_product_reference",
+                "confidence": "high",
+            }
+        ]
+    await rust_backend.sync([first, second])
+    await configure(rust_backend)
+    reader = ReaderEvidence(rust_backend)
+    await reader.observe()
+    physical = units(await snapshot(rust_backend))
+    second_unit = next(unit for unit in physical if unit["catalog_id"] == second["id"])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(
+                viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True
+            )
+            await page.route("https://images.example.invalid/**", product_photo)
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).tap()
+            chooser = page.get_by_label("Choose a physical piece", exact=True)
+            await expect(chooser.locator("option").first).to_contain_text("size M")
+            await expect(chooser.locator("option").last).to_contain_text("size L")
+            await expect(chooser.locator("option").last).to_contain_text(
+                "Example atelier"
+            )
+            selected_id = second_unit["id"]
+            assert isinstance(selected_id, str)
+            await chooser.select_option(selected_id)
+            await expect(chooser).to_have_value(selected_id)
+            await expect(page.locator(".enroll-copy > .muted").first).to_contain_text(
+                "size L"
+            )
+            image = await page.locator(".enroll-photo").bounding_box()
+            layout = await page.locator(".enroll-layout").bounding_box()
+            start = await page.get_by_role(
+                "button", name="Start enrollment session", exact=True
+            ).bounding_box()
+            assert image and layout and start
+            assert image["height"] <= 140
+            assert start["y"] - layout["y"] < 400
+            assert not await page.evaluate(
+                "document.documentElement.scrollWidth > innerWidth"
+            )
+            await action(page, "Start enrollment session", touch=True)
+            sessions = (await snapshot(rust_backend))["sessions"]
+            assert isinstance(sessions, list) and isinstance(sessions[0], dict)
+            queue = sessions[0]["queue"]
+            assert isinstance(queue, list) and queue[0] == selected_id
+        finally:
+            await browser.close()
+
+
+async def test_unsupported_borrowed_position_requires_dedicated_enrollment(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await configure(rust_backend)
+    config = (await snapshot(rust_backend))["config"]
+    assert isinstance(config, dict)
+    ports = config["ports"]
+    assert isinstance(ports, list) and isinstance(ports[0], dict)
+    ports[0].update(role="monitor", area_id="example-closet")
+    await command(rust_backend, {"type": "configure", "config": config})
+    reader = ReaderEvidence(rust_backend)
+    await reader.observe()
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            position = page.get_by_label("Reading position", exact=True)
+            await expect(position.locator("option")).to_have_count(0)
+            await expect(
+                page.get_by_role("button", name="Start enrollment session", exact=True)
+            ).to_be_disabled()
+            await expect(
+                page.get_by_text(
+                    "A dedicated enrollment position is needed.", exact=False
+                )
+            ).to_be_visible()
+            await page.get_by_role(
+                "button", name="Open tracking settings", exact=True
+            ).click()
+            await expect(
+                page.get_by_role("heading", name="Tracking settings", exact=True)
+            ).to_be_visible()
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            ports[0].update(role="enrollment", area_id=None)
+            await command(rust_backend, {"type": "configure", "config": config})
+            await reader.observe()
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await expect(position.locator("option")).to_have_count(1)
+            await action(page, "Start enrollment session")
+            await expect(
+                page.get_by_role("button", name="End session", exact=True)
+            ).to_be_enabled()
+        finally:
+            await browser.close()
+
+
 async def test_replace_unbind_and_undo_keep_physical_piece_identity(
     rust_backend: RustBackend,
 ) -> None:
@@ -399,6 +792,7 @@ async def test_replace_unbind_and_undo_keep_physical_piece_identity(
     reader = ReaderEvidence(rust_backend)
     await reader.observe()
     unit_id = units(await snapshot(rust_backend))[0]["id"]
+    assert isinstance(unit_id, str)
     enrolled = await command(
         rust_backend,
         {
@@ -433,6 +827,9 @@ async def test_replace_unbind_and_undo_keep_physical_piece_identity(
                 "button", name="View Example cotton tee", exact=True
             ).click()
             await page.get_by_role("button", name="Replace tag", exact=True).click()
+            await expect(
+                page.get_by_label("Choose a physical piece", exact=True)
+            ).to_have_value(unit_id)
             await action(page, "Scan replacement tag")
             sessions = (await snapshot(rust_backend))["sessions"]
             assert isinstance(sessions, list)
@@ -446,6 +843,9 @@ async def test_replace_unbind_and_undo_keep_physical_piece_identity(
             await reader.observe(("00000012",), session_id)
             await page.get_by_role("button", name="Refresh", exact=True).click()
             await action(page, "Confirm replacement")
+            await expect(page.locator("#tag-notice")).to_have_text(
+                "Replacement tag saved."
+            )
             await expect(
                 page.get_by_text("1 tagged · 0 remaining · 0 no-tag exceptions")
             ).to_be_visible()

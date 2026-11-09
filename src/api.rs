@@ -30,9 +30,9 @@ use crate::{
         FenceToken, FenceUpload, UploadClaimStatus,
     },
     models::{
-        AccessRole, CatalogItem, Generation, Item, ItemsPage, ListQuery, SyncReport, SyncRequest,
-        System, TodayRequest, TodayResponse, ValidationReport, catalog_items_schema, valid_id,
-        validate_catalog,
+        AccessRole, CatalogItem, Generation, Item, ItemsPage, ListQuery, SafetyRequirement,
+        SyncReport, SyncRequest, System, TodayRequest, TodayResponse, ValidationReport,
+        catalog_items_schema, valid_id, validate_catalog,
     },
     store::{GenerationBasis, Store, StoreError},
     today::TodayConfig,
@@ -464,9 +464,15 @@ async fn fence_release(
     Ok(private(FenceReleased { released: true }))
 }
 /// Read Today's saved result and latest attempt; never calls the model.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TodayQuery {
+    footwear_requirement: Option<SafetyRequirement>,
+}
 #[endpoint {method=GET,path="/v1/today",tags=["today"]}]
 async fn today_get(
     request: RequestContext<Arc<Context>>,
+    query: Query<TodayQuery>,
 ) -> Result<HttpResponseHeaders<HttpResponseOk<TodayResponse>, PrivateHeaders>, HttpError> {
     authenticate(&request)?;
     let context = request.context();
@@ -478,6 +484,7 @@ async fn today_get(
                 context.timezone(),
                 context.fingerprint(),
                 Utc::now(),
+                query.into_inner().footwear_requirement,
             )
             .await
             .map_err(store_error)?,
@@ -553,10 +560,18 @@ async fn today_generate(
             }
         }));
     }
+    let location = reservation
+        .generation
+        .inputs
+        .footwear_requirement
+        .map_or_else(
+            || "/v1/today".to_owned(),
+            |requirement| format!("/v1/today?footwear_requirement={requirement}"),
+        );
     Ok(HttpResponseHeaders::new(
         HttpResponseAccepted(reservation.generation),
         AcceptedHeaders {
-            location: "/v1/today".into(),
+            location,
             cache_control: "no-store".into(),
         },
     ))

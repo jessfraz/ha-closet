@@ -55,18 +55,33 @@ fn code(error: &SourceError, expected: &str) {
         "{error:?}"
     );
 }
+#[test]
+fn safety_usage_survives_the_real_toml_compiler_and_json_projection() {
+    let (_directory, path) = fixture();
+    edit(
+        &path,
+        "quantity = 2",
+        "quantity = 2\nusage = { kind = \"safety_work_only\", requirement = \"steel_toe\" }",
+    );
+    let source = CompiledCatalog::load(&path).unwrap();
+    let projected = source.materialize(&urls(&source)).unwrap();
+    let wire = serde_json::to_string(projected.items()).unwrap();
+    assert!(wire.contains(r#""usage":{"kind":"safety_work_only","requirement":"steel_toe"}"#));
+    let decoded = closet::models::parse_catalog(wire.as_bytes()).unwrap();
+    assert_eq!(decoded.items(), projected.items());
+}
 #[tokio::test]
 async fn real_producer_preserves_purchases_gallery_facts_and_service_retry_history() {
     let (directory, path) = fixture();
     let mut authored = document(&path);
     authored.inventory[0].sku = Some("FICTIONAL-SKU".to_owned().try_into().unwrap());
     authored.inventory[0].notes = vec!["Fictional purchase note".to_owned().try_into().unwrap()];
-    authored.inventory[0].price = SourcePrice {
+    authored.inventory[0].price = Some(SourcePrice {
         amount: 42.5.try_into().unwrap(),
         currency: "USD".to_owned().try_into().unwrap(),
         basis: "receipt".to_owned().try_into().unwrap(),
         quantity_basis: "per_item".to_owned().try_into().unwrap(),
-    };
+    });
     produce(&path, &authored);
     fs::write(
         directory.path().join("fittings.toml"),
@@ -92,6 +107,10 @@ async fn real_producer_preserves_purchases_gallery_facts_and_service_retry_histo
     assert_eq!(items[0].id, "example-purchase-a");
     assert_eq!(items[0].quantity, Some(2));
     assert_eq!(items[1].quantity, Some(1));
+    assert_eq!(items[0].identity, items[1].identity);
+    let identity = items[0].identity.as_ref().unwrap();
+    assert_eq!(identity.style_id, "example_tee");
+    assert_eq!(identity.variant_id, "example_navy");
     assert_eq!(items[0].size.as_deref(), Some("00"));
     assert_eq!(items[1].size.as_deref(), Some("0"));
     assert_eq!(items[0].color.as_deref(), Some("Navy"));
@@ -271,6 +290,77 @@ fn category_labels_are_parent_scoped_and_global_aliases_are_unambiguous() {
     );
     assert!(CompiledCatalog::load(&path).is_err());
 }
+#[test]
+fn footwear_thirds_roundtrip_as_exact_labels_and_compare_in_sixths() {
+    let (directory, path) = fixture();
+    edit(
+        &path,
+        "category = \"clothing.top.tshirt\"",
+        "category = \"footwear.shoes\"",
+    );
+    fs::write(
+        directory.path().join("categories.toml"),
+        "schema=1\n[categories.'footwear.shoes']\nlabel='Shoes'\nsizing_kind='footwear'\n",
+    )
+    .unwrap();
+    let brands = directory.path().join("brands.toml");
+    fs::write(&brands, fs::read_to_string(&brands).unwrap() + "\n[size_profiles.mens_us]\nsystem='us'\nkind='footwear'\nscope='men'\n[size_profiles.uk_shoe]\nsystem='uk'\nkind='footwear'\n[size_profiles.eu_shoe]\nsystem='eu'\nkind='footwear'\nmin='41.5'\nmax='41 2/3'\n").unwrap();
+    let label = |profile: &str, value: &str| SizedLabel {
+        profile: profile.to_owned().try_into().unwrap(),
+        value: SizeValue::Numeric {
+            label: value.to_owned().try_into().unwrap(),
+        },
+    };
+    let mut authored = document(&path);
+    for entry in &mut authored.inventory {
+        entry.size = ReportedSize {
+            primary: label("mens_us", "8.5"),
+            also_reported: vec![label("uk_shoe", "8"), label("eu_shoe", "41 2/3")],
+        };
+    }
+    produce(&path, &authored);
+    let source = CompiledCatalog::load(&path).unwrap();
+    assert_eq!(source.items()[0].size, "Men's US 8.5 / UK 8 / EU 41 2/3");
+    let projected = source.materialize(&urls(&source)).unwrap();
+    let wire = serde_json::to_vec(projected.items()).unwrap();
+    assert_eq!(
+        closet::models::parse_catalog(&wire).unwrap().items(),
+        projected.items()
+    );
+    assert!(matches!(
+        NativeNumber::try_from("41 1/3".to_owned()).unwrap(),
+        NativeNumber::OneThird(41)
+    ));
+    assert!(matches!(
+        NativeNumber::try_from("41 2/3".to_owned()).unwrap(),
+        NativeNumber::TwoThirds(41)
+    ));
+    edit(&brands, "max='41 2/3'", "max='41.5'");
+    code(
+        &CompiledCatalog::load(&path).unwrap_err(),
+        "size_out_of_bounds",
+    );
+    edit(&brands, "max='41.5'", "max='41 2/3'");
+    authored.inventory[0].size.also_reported[1] = label("eu_shoe", "41 1/3");
+    produce(&path, &authored);
+    code(
+        &CompiledCatalog::load(&path).unwrap_err(),
+        "size_out_of_bounds",
+    );
+    authored.inventory[0].size.also_reported[1] = label("north_native", "41 1/3");
+    produce(&path, &authored);
+    code(
+        &CompiledCatalog::load(&path).unwrap_err(),
+        "size_thirds_not_allowed",
+    );
+    for invalid in ["41.67", "41 3/3", "41 1/2", "041 2/3", "41⅔"] {
+        assert!(
+            NativeNumber::try_from(invalid.to_owned()).is_err(),
+            "accepted {invalid}"
+        );
+    }
+}
+
 #[test]
 fn sizes_keep_zeroes_units_scopes_and_reported_labels_without_conversion() {
     let (directory, path) = fixture();
@@ -513,6 +603,29 @@ fn leather_nouns_survive_percentages_and_separate_components() {
         "50% Pebbled leather; Lining: Suede; Trim: Smooth Calfskin; Sole: Bovine leather"
     );
 }
+#[test]
+fn evidenced_pvc_and_eva_keep_their_exact_material_names() {
+    let (_directory, path) = fixture();
+    let mut authored = document(&path);
+    for (polymer, label) in [(Polymer::Pvc, "PVC"), (Polymer::Eva, "EVA")] {
+        authored.variants[0].materials = vec![component(listed(vec![Constituent::Polymer {
+            polymer,
+            recycled: false,
+        }]))]
+        .try_into()
+        .unwrap();
+        produce(&path, &authored);
+        let source = CompiledCatalog::load(&path).unwrap();
+        let projected = source.materialize(&urls(&source)).unwrap();
+        assert_eq!(projected.items()[0].material.as_deref(), Some(label));
+        let wire = serde_json::to_vec(projected.items()).unwrap();
+        assert_eq!(
+            closet::models::parse_catalog(&wire).unwrap().items(),
+            projected.items()
+        );
+    }
+}
+
 #[test]
 fn compositions_preserve_unknown_amounts_component_totals_and_real_qualifiers() {
     let (_directory, path) = fixture();
@@ -761,7 +874,6 @@ fn strict_authoring_requires_every_complete_core_fact_without_fallbacks() {
         "color",
         "materials",
         "size",
-        "price",
         "quantity",
         "source",
         "images",

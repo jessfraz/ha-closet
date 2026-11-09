@@ -256,6 +256,14 @@ and does not require shoes. Weather is `required` unless explicitly set to
 `ignored`. These settings are supplied to the server-owned request type; there
 is no arbitrary prompt or model credential in the CLI.
 
+`--footwear-requirement steel_toe` is optional and off by default. When enabled,
+only catalog footwear explicitly marked for steel-toe safety work is eligible;
+unavailable or ordinary shoes are never a fallback. All then offers only its
+daywear groups. Bedtime with this requirement is rejected before generation.
+Use the same flag on `today get` to read that mode's saved result and attempt.
+Checked and unchecked requests have separate retry identities and never read
+each other's cached results.
+
 Bedtime accepts `clothing.sleepwear.nightgown` or `clothing.sleepwear.set`, or a
 `clothing.sleepwear.top` with a `clothing.sleepwear.bottom`. A
 `clothing.sleepwear.robe` is an optional layer. Daytime suggestions exclude

@@ -26,10 +26,32 @@ Styles reference brand and category IDs. Variants reference styles. Purchases
 reference variants and either a fitting ID or `self_bought`. Unknown references,
 duplicate IDs and unknown fields fail validation.
 
-Every purchase requires size, positive quantity and price. Its effective variant
+Every purchase requires size and positive quantity. Its effective variant
 requires color, materials and at least one photo. Nothing defaults to quantity
 1. Use `one_size` only when that is the reported size, not as a missing-size
-placeholder. Manufacturer SKUs and extra provenance may be omitted.
+placeholder. An unknown purchase price is omitted, never replaced with zero or a
+retail reference. Manufacturer SKUs and extra provenance may be omitted.
+
+For an individual purchase reserved for safety work, set:
+
+```toml
+usage = { kind = "safety_work_only", requirement = "steel_toe" }
+```
+
+This user-defined restriction stays visible in the inventory. Normal Today
+requests, including casual Work, exclude the item. An explicit steel-toe
+footwear requirement admits matching, available safety footwear and excludes
+ordinary shoes. It records intended use and the steel-toe requirement, not a
+certification or a suitability guarantee.
+Omitting `usage` preserves everyday use and the existing JSON representation.
+
+The API projects stable authoring IDs as `identity = { style_id, variant_id }`.
+Inventory cards can group purchases sharing a variant while preserving each
+purchase ID, quantity, size, source and physical-unit identity. Legacy JSON
+items without these IDs stay independent; names and photos never define groups.
+Shared variant IDs require matching brand, category, color and material.
+Purchase-specific names, photos, sizes, sources, prices and use restrictions
+can still differ.
 
 Use one brand entry for every spelling of that brand. Aliases support imports
 and search; author references with canonical IDs. Unicode-normalized name and
@@ -44,7 +66,9 @@ Slash-joined guesses are not a substitute for a known color.
 
 Sizes have an explicit sizing profile and value kind. Quote numeric labels:
 `"00"` is different from `"0"`. A reported UK/US pair keeps both labels; the
-compiler does not calculate conversions or guess who wears an item. A missing
+compiler does not calculate conversions or guess who wears an item. Footwear
+labels also support exact thirds, such as `"41 1/3"` and `"41 2/3"`; these
+remain fractions, and profile bounds compare them without rounding. A missing
 size fails validation; do not invent a size to satisfy the check.
 
 Materials are structured per component, such as shell, lining or sole. A listed

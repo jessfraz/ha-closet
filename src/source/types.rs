@@ -1,7 +1,7 @@
 //! Versioned private authoring types. Canonical tokens are not display labels.
 use crate::{
     images::ImageSha,
-    models::{ImageConfidence, ImageCrop, ShopSeason},
+    models::{ImageConfidence, ImageCrop, ShopSeason, Usage},
 };
 use icu_normalizer::ComposingNormalizer;
 use serde::{Deserialize, Serialize};
@@ -359,6 +359,8 @@ choices!(Polymer {
     Acrylic => "acrylic" => "Acrylic",
     Resin => "resin" => "Resin",
     Plastic => "plastic" => "Plastic",
+    Pvc => "pvc" => "PVC",
+    Eva => "eva" => "EVA",
 });
 choices!(MaterialProperty {
     Stretch => "stretch" => "Stretch",
@@ -449,13 +451,17 @@ pub enum NativeNumber {
     DoubleZero,
     Whole(u16),
     Half(u16),
+    OneThird(u16),
+    TwoThirds(u16),
 }
 impl NativeNumber {
-    pub fn twice(&self) -> u32 {
+    pub fn sixths(&self) -> u32 {
         match self {
             Self::DoubleZero => 0,
-            Self::Whole(n) => u32::from(*n) * 2,
-            Self::Half(n) => u32::from(*n) * 2 + 1,
+            Self::Whole(n) => u32::from(*n) * 6,
+            Self::Half(n) => u32::from(*n) * 6 + 3,
+            Self::OneThird(n) => u32::from(*n) * 6 + 2,
+            Self::TwoThirds(n) => u32::from(*n) * 6 + 4,
         }
     }
 }
@@ -465,17 +471,24 @@ impl TryFrom<String> for NativeNumber {
         if s == "00" {
             return Ok(Self::DoubleZero);
         }
-        let (n, half) = s
-            .strip_suffix(".5")
-            .map_or((s.as_str(), false), |n| (n, true));
+        let (n, fraction) = if let Some(n) = s.strip_suffix(" 1/3") {
+            (n, 2)
+        } else if let Some(n) = s.strip_suffix(" 2/3") {
+            (n, 4)
+        } else if let Some(n) = s.strip_suffix(".5") {
+            (n, 3)
+        } else {
+            (s.as_str(), 0)
+        };
         let value = n.parse::<u16>().map_err(|_| "invalid_native_number")?;
         if value > 1000 || n != value.to_string() {
             return Err("invalid_native_number");
         }
-        Ok(if half {
-            Self::Half(value)
-        } else {
-            Self::Whole(value)
+        Ok(match fraction {
+            2 => Self::OneThird(value),
+            4 => Self::TwoThirds(value),
+            3 => Self::Half(value),
+            _ => Self::Whole(value),
         })
     }
 }
@@ -485,6 +498,8 @@ impl From<NativeNumber> for String {
             NativeNumber::DoubleZero => "00".into(),
             NativeNumber::Whole(n) => n.to_string(),
             NativeNumber::Half(n) => format!("{n}.5"),
+            NativeNumber::OneThird(n) => format!("{n} 1/3"),
+            NativeNumber::TwoThirds(n) => format!("{n} 2/3"),
         }
     }
 }
@@ -800,8 +815,10 @@ pub struct InventoryEntry {
     pub source: PurchaseSource,
     pub size: ReportedSize,
     pub quantity: NonZeroU32,
+    #[serde(default, skip_serializing_if = "Usage::is_everyday")]
+    pub usage: Usage,
     pub sku: Option<MakerSku>,
-    pub price: SourcePrice,
+    pub price: Option<SourcePrice>,
     pub display_name: Option<NfcText>,
     #[serde(default)]
     pub notes: Vec<PrivateNote>,

@@ -120,6 +120,7 @@ impl TodayConfig {
         let candidates: Vec<Candidate<'_>> = basis
             .items
             .iter()
+            .filter(|item| eligible(item, &generation.inputs))
             .filter_map(|item| {
                 role(&item.category, generation.inputs.occasion).map(|role| Candidate {
                     id: &item.id,
@@ -133,6 +134,13 @@ impl TodayConfig {
             .collect();
         if candidates.len() > 500 {
             return Err("catalog_too_large");
+        }
+        if generation.inputs.footwear_requirement.is_some()
+            && !candidates
+                .iter()
+                .any(|candidate| candidate.role == Role::Footwear)
+        {
+            return Err("no_eligible_footwear");
         }
         let groups: Vec<CandidateGroup<'_>> = occasions(generation.inputs.occasion)
             .iter()
@@ -166,6 +174,7 @@ impl TodayConfig {
             date: &basis.date,
             timezone: &basis.timezone,
             occasion: &generation.inputs.occasion,
+            footwear_requirement: generation.inputs.footwear_requirement,
             weather: weather.as_ref(),
             items: &candidates,
             groups: (generation.inputs.occasion == Occasion::All)
@@ -478,6 +487,26 @@ pub fn role(category: &str, occasion: Occasion) -> Option<Role> {
         None
     }
 }
+/// Apply use restrictions independently of the model and RFID availability.
+/// Casual Work never opts into safety gear; only an explicit request does.
+pub fn eligible(item: &CatalogItem, inputs: &TodayRequest) -> bool {
+    if inputs.footwear_requirement.is_some()
+        && inputs.occasion == Occasion::All
+        && role(&item.category, Occasion::Bedtime).is_some()
+    {
+        return false;
+    }
+    match (
+        role(&item.category, inputs.occasion),
+        inputs.footwear_requirement,
+    ) {
+        (Some(Role::Footwear), Some(required)) => matches!(
+            item.usage,
+            crate::models::Usage::SafetyWorkOnly { requirement } if requirement == required
+        ),
+        _ => item.usage.is_everyday(),
+    }
+}
 fn complete(roles: &BTreeSet<Role>, occasion: Occasion) -> bool {
     (occasion == Occasion::Bedtime || roles.contains(&Role::Footwear))
         && (roles.contains(&Role::OnePiece)
@@ -489,6 +518,7 @@ pub fn validate_suggestions(
     items: &[CatalogItem],
     inputs: &TodayRequest,
 ) -> Result<Vec<Suggestion>, &'static str> {
+    inputs.validate().map_err(|_| "invalid_model_output")?;
     if suggestions.is_empty() {
         return Err("no_outfit_suggested");
     }
@@ -519,6 +549,9 @@ pub fn validate_suggestions(
                 return Err("invalid_model_output");
             }
             let item = lookup.get(id.as_str()).ok_or("invalid_model_output")?;
+            if !eligible(item, inputs) {
+                return Err("invalid_model_output");
+            }
             let role = role(&item.category, inputs.occasion).ok_or("invalid_model_output")?;
             roles.insert(role);
             if matches!(
@@ -571,6 +604,8 @@ struct PromptContext<'a> {
     date: &'a str,
     timezone: &'a str,
     occasion: &'a crate::models::Occasion,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    footwear_requirement: Option<crate::models::SafetyRequirement>,
     weather: Option<&'a WeatherContext>,
     items: &'a [Candidate<'a>],
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -915,6 +950,7 @@ impl ProviderOutput {
                             &TodayRequest {
                                 occasion,
                                 weather_mode: inputs.weather_mode,
+                                footwear_requirement: inputs.footwear_requirement,
                             },
                         )?);
                     }
@@ -1062,6 +1098,8 @@ mod tests {
             color: Some("Blue".into()),
             size: None,
             quantity: None,
+            usage: crate::models::Usage::Everyday,
+            identity: None,
             material: None,
             sku: None,
             purchase_source: Some("example-source-not-for-model".into()),
@@ -1088,6 +1126,7 @@ mod tests {
     fn server_validates_real_roles_ids_and_uncertainty_not_model_claims() {
         let inputs = TodayRequest {
             weather_mode: WeatherMode::Ignored,
+            footwear_requirement: None,
             occasion: Occasion::Everyday,
         };
         let pieces = example();
@@ -1106,6 +1145,142 @@ mod tests {
         ] {
             assert!(validate_suggestions(vec![suggestion(ids)], &pieces, &inputs).is_err());
         }
+    }
+
+    #[test]
+    fn typed_footwear_requirement_is_enforced_for_every_current_occasion() {
+        let mut items = example();
+        let mut boots = item("example-safety-boots", "footwear.boots");
+        boots.usage = crate::models::Usage::SafetyWorkOnly {
+            requirement: crate::models::SafetyRequirement::SteelToe,
+        };
+        items.push(boots);
+        for occasion in [Occasion::Everyday, Occasion::Work, Occasion::Dinner] {
+            let mut inputs = TodayRequest {
+                occasion,
+                weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
+            };
+            for (footwear, allowed) in [("example-footwear", true), ("example-safety-boots", false)]
+            {
+                assert_eq!(
+                    validate_suggestions(
+                        vec![suggestion(&["example-one-piece", footwear])],
+                        &items,
+                        &inputs
+                    )
+                    .is_ok(),
+                    allowed
+                );
+            }
+            inputs.footwear_requirement = Some(crate::models::SafetyRequirement::SteelToe);
+            for (footwear, allowed) in [("example-footwear", false), ("example-safety-boots", true)]
+            {
+                assert_eq!(
+                    validate_suggestions(
+                        vec![suggestion(&["example-one-piece", footwear])],
+                        &items,
+                        &inputs
+                    )
+                    .is_ok(),
+                    allowed
+                );
+            }
+        }
+        let bedtime = TodayRequest {
+            occasion: Occasion::Bedtime,
+            weather_mode: WeatherMode::Ignored,
+            footwear_requirement: Some(crate::models::SafetyRequirement::SteelToe),
+        };
+        assert!(bedtime.validate().is_err());
+        assert_eq!(
+            validate_suggestions(
+                vec![suggestion(&["example-safety-boots"])],
+                &items,
+                &bedtime
+            )
+            .unwrap_err(),
+            "invalid_model_output"
+        );
+    }
+
+    #[tokio::test]
+    async fn requirement_filters_prompt_and_schema_before_rejecting_incompatible_model_ids() {
+        for required in [None, Some(crate::models::SafetyRequirement::SteelToe)] {
+            let mut chosen = one_piece();
+            let (offered, rejected) = if required.is_some() {
+                ("example-safety-boots", "example-footwear")
+            } else {
+                ("example-footwear", "example-safety-boots")
+            };
+            chosen.footwear_id = rejected.into();
+            let (origin, received, release, worker) = provider(response_with(Output {
+                one_piece_suggestions: Some(vec![chosen]),
+                separates_suggestions: None,
+            }));
+            let config = TodayConfig::new(
+                origin,
+                Some("example-ha-credential".into()),
+                "UTC",
+                None,
+                None,
+            )
+            .unwrap();
+            let mut items = example();
+            let mut boots = item("example-safety-boots", "footwear.boots");
+            boots.usage = crate::models::Usage::SafetyWorkOnly {
+                requirement: crate::models::SafetyRequirement::SteelToe,
+            };
+            items.push(boots);
+            let basis = config.basis(items);
+            let generation = attempt(TodayRequest {
+                occasion: Occasion::Work,
+                weather_mode: WeatherMode::Ignored,
+                footwear_requirement: required,
+            });
+            let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
+            let body: TaskProbe = serde_json::from_slice(&received.await.unwrap().body).unwrap();
+            assert!(body.instructions.contains(offered));
+            assert!(!body.instructions.contains(rejected));
+            let fields = body
+                .structure
+                .one_piece_suggestions
+                .unwrap()
+                .selector
+                .object
+                .fields;
+            assert_choices(
+                fields.footwear_id.as_ref().unwrap(),
+                true,
+                false,
+                &[offered],
+            );
+            release.send(()).unwrap();
+            assert_eq!(task.await.unwrap().unwrap_err(), "invalid_model_output");
+            worker.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn required_footwear_has_no_ordinary_shoe_fallback_or_model_call() {
+        let config = TodayConfig::new(
+            "http://127.0.0.1:1".into(),
+            Some("example-ha-credential".into()),
+            "UTC",
+            None,
+            None,
+        )
+        .unwrap();
+        let basis = config.basis(example());
+        let generation = attempt(TodayRequest {
+            occasion: Occasion::All,
+            weather_mode: WeatherMode::Ignored,
+            footwear_requirement: Some(crate::models::SafetyRequirement::SteelToe),
+        });
+        assert_eq!(
+            config.generate(&generation, &basis).await.unwrap_err(),
+            "no_eligible_footwear"
+        );
     }
 
     #[test]
@@ -1448,6 +1623,7 @@ mod tests {
             status: GenerationStatus::Running,
             inputs: TodayRequest {
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
                 occasion: Occasion::Everyday,
             },
             started_at: Utc::now(),
@@ -1532,6 +1708,7 @@ mod tests {
         let basis = config.basis(items);
         let generation = attempt(TodayRequest {
             weather_mode: WeatherMode::Ignored,
+            footwear_requirement: None,
             occasion: Occasion::Everyday,
         });
         let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
@@ -1639,6 +1816,7 @@ mod tests {
             let basis = config.basis(items);
             let generation = attempt(TodayRequest {
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
                 occasion: Occasion::Everyday,
             });
             let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
@@ -1676,6 +1854,7 @@ mod tests {
         let basis = config.basis(all_roles());
         let generation = attempt(TodayRequest {
             weather_mode: WeatherMode::Ignored,
+            footwear_requirement: None,
             occasion: Occasion::Everyday,
         });
         let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
@@ -1839,6 +2018,7 @@ mod tests {
             status: GenerationStatus::Running,
             inputs: TodayRequest {
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
                 occasion: Occasion::Everyday,
             },
             started_at: Utc::now(),
@@ -1867,6 +2047,7 @@ mod tests {
         let bedtime = TodayRequest {
             occasion: Occasion::Bedtime,
             weather_mode: WeatherMode::Ignored,
+            footwear_requirement: None,
         };
         for ids in [
             &["example-nightgown"][..],
@@ -1898,6 +2079,7 @@ mod tests {
             let inputs = TodayRequest {
                 occasion,
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
             };
             for ids in [
                 &["example-nightgown", "example-footwear"][..],
@@ -1998,6 +2180,7 @@ mod tests {
             let generation = attempt(TodayRequest {
                 occasion: Occasion::Bedtime,
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
             });
             let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
             let request = received.await.unwrap();
@@ -2111,6 +2294,7 @@ mod tests {
             let generation = attempt(TodayRequest {
                 occasion,
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
             });
             let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
             received.await.unwrap();
@@ -2147,6 +2331,7 @@ mod tests {
             let generation = attempt(TodayRequest {
                 occasion,
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
             });
             assert_eq!(
                 config.generate(&generation, &basis).await.unwrap_err(),
@@ -2228,6 +2413,7 @@ mod tests {
             let generation = attempt(TodayRequest {
                 occasion: Occasion::All,
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
             });
             let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
             let captured = received.await.unwrap();
@@ -2359,6 +2545,7 @@ mod tests {
             let generation = attempt(TodayRequest {
                 occasion: Occasion::All,
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
             });
             let task = tokio::spawn(async move { config.generate(&generation, &basis).await });
             received.await.unwrap();

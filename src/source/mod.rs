@@ -8,7 +8,10 @@ use crate::{
         ImageSha, ImageSlot, LocalImage, MAX_IMAGE_BYTES, MAX_IMAGE_TOTAL_BYTES, MAX_IMAGES,
         PreparedImage, prepare_images,
     },
-    models::{CatalogItem, ImageReference, Price, Shop, ValidatedCatalog, validate_catalog},
+    models::{
+        CatalogIdentity, CatalogItem, ImageReference, Price, Shop, Usage, ValidatedCatalog,
+        validate_catalog,
+    },
 };
 use icu_casemap::CaseMapper;
 use icu_normalizer::{ComposingNormalizer, DecomposingNormalizer};
@@ -268,18 +271,21 @@ fn parse<T: DeserializeOwned>(bytes: &[u8], field: &str, errors: &mut Diagnostic
 #[derive(Clone, Debug)]
 pub struct CompiledItem {
     pub id: InventoryId,
+    pub style_id: StyleId,
+    pub variant_id: VariantId,
     pub brand: NfcText,
     pub name: NfcText,
     pub category: CategoryId,
     pub color: String,
     pub size: String,
     pub quantity: std::num::NonZeroU32,
+    pub usage: Usage,
     pub material: String,
     pub sku: Option<MakerSku>,
     pub purchase_source: Option<NfcText>,
     pub images: Vec<SourceImage>,
     pub notes: Vec<PrivateNote>,
-    pub price: SourcePrice,
+    pub price: Option<SourcePrice>,
     pub shop: Option<Shop>,
 }
 impl CompiledItem {
@@ -292,16 +298,21 @@ impl CompiledItem {
             color: Some(self.color.clone()),
             size: Some(self.size.clone()),
             quantity: Some(self.quantity.get()),
+            usage: self.usage,
+            identity: Some(CatalogIdentity {
+                style_id: self.style_id.to_string(),
+                variant_id: self.variant_id.to_string(),
+            }),
             material: Some(self.material.clone()),
             sku: self.sku.as_ref().map(ToString::to_string),
             purchase_source: self.purchase_source.as_ref().map(ToString::to_string),
             images,
             notes: self.notes.iter().map(ToString::to_string).collect(),
-            price: Some(Price {
-                amount: self.price.amount.get(),
-                currency: self.price.currency.to_string(),
-                basis: self.price.basis.to_string(),
-                quantity_basis: self.price.quantity_basis.to_string(),
+            price: self.price.as_ref().map(|price| Price {
+                amount: price.amount.get(),
+                currency: price.currency.to_string(),
+                basis: price.basis.to_string(),
+                quantity_basis: price.quantity_basis.to_string(),
             }),
             shop: self.shop.clone(),
         }
@@ -968,8 +979,7 @@ fn compile(
                 "projection_text_too_long",
             );
         }
-        {
-            let price = &entry.price;
+        if let Some(price) = &entry.price {
             errors.check(
                 price.basis.as_str().len() <= 200,
                 format!("{path}.price.basis"),
@@ -1038,6 +1048,8 @@ fn compile(
         );
         let item = CompiledItem {
             id: entry.id.clone(),
+            style_id: style.id.clone(),
+            variant_id: variant.id.clone(),
             brand: brand.name.clone(),
             name: entry
                 .display_name
@@ -1047,6 +1059,7 @@ fn compile(
             color: color.clone(),
             size,
             quantity: entry.quantity,
+            usage: entry.usage,
             material: material.clone(),
             sku: entry.sku.clone(),
             purchase_source,
@@ -1178,23 +1191,26 @@ mod tests {
                 .to_vec();
             let item = CompiledItem {
                 id: "fictional-purchase".to_owned().try_into().unwrap(),
+                style_id: "fictional-style".to_owned().try_into().unwrap(),
+                variant_id: "fictional-variant".to_owned().try_into().unwrap(),
                 brand: "Fictional \"Studio\"".to_owned().try_into().unwrap(),
                 name: "Crew tee".to_owned().try_into().unwrap(),
                 category: "clothing.top.tshirt".to_owned().try_into().unwrap(),
                 color: "Blue".into(),
                 size: "00".into(),
                 quantity: std::num::NonZeroU32::new(2).unwrap(),
+                usage: crate::models::Usage::Everyday,
                 material: "Cotton".into(),
                 sku: None,
                 purchase_source: Some("self_bought".to_owned().try_into().unwrap()),
                 images,
                 notes: vec![],
-                price: SourcePrice {
+                price: Some(SourcePrice {
                     amount: 42.5.try_into().unwrap(),
                     currency: "USD".to_owned().try_into().unwrap(),
                     basis: "receipt".to_owned().try_into().unwrap(),
                     quantity_basis: "per_item".to_owned().try_into().unwrap(),
-                },
+                }),
                 shop: None,
             };
             let references = item

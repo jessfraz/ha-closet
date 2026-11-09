@@ -10,6 +10,8 @@ Select a brand or source badge to see its inventory. The filters can also be
 combined to narrow things down.
 You can bookmark a filtered view or an item. Items with multiple photos have
 a thumbnail gallery.
+Multiple copies of the same color share one card, with sizes and sources shown
+for each copy. Open a copy to see its details and tracking history.
 
 ![Closet inventory](docs/screenshots/inventory.png)
 
@@ -116,6 +118,8 @@ The inventory, validation, and sync are deterministic. Today is an optional
 outfit lottery. It can ask Home Assistant's configured AI Task for a few
 combinations from the catalog; whether anyone wears them is another question.
 Choose All for Everyday, casual Work, Evening, and Bedtime groups.
+The steel-toe footwear checkbox starts off. Safety-work boots stay out of regular
+suggestions; checking it uses only matching, available safety footwear.
 
 It runs only when requested. The model gets item descriptions and, optionally,
 the weather, not your photos or purchase evidence. The app checks that the

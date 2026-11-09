@@ -24,6 +24,8 @@ fn piece(id: &str, name: &str, category: &str) -> CatalogItem {
         color: Some("Navy".into()),
         size: None,
         quantity: Some(1),
+        usage: closet::models::Usage::Everyday,
+        identity: None,
         material: None,
         sku: None,
         purchase_source: Some("example".into()),
@@ -1092,6 +1094,7 @@ async fn today_keeps_the_last_result_and_rechecks_only_referenced_facts() {
     let date = now.date_naive().to_string();
     let inputs = TodayRequest {
         weather_mode: WeatherMode::Ignored,
+        footwear_requirement: None,
         ..Default::default()
     };
     let basis = GenerationBasis {
@@ -1133,7 +1136,7 @@ async fn today_keeps_the_last_result_and_rechecks_only_referenced_facts() {
         .await
         .unwrap();
     let current = store
-        .today(&date, "UTC", "example-config", now)
+        .today(&date, "UTC", "example-config", now, None)
         .await
         .unwrap();
     assert_eq!(current.result.unwrap().generation_id, first.generation.id);
@@ -1151,7 +1154,7 @@ async fn today_keeps_the_last_result_and_rechecks_only_referenced_facts() {
         .unwrap();
     assert!(matches!(
         store
-            .today(&date, "UTC", "example-config", now)
+            .today(&date, "UTC", "example-config", now, None)
             .await
             .unwrap()
             .result
@@ -1180,7 +1183,7 @@ async fn today_keeps_the_last_result_and_rechecks_only_referenced_facts() {
         .await
         .unwrap();
     let current = store
-        .today(&date, "UTC", "example-config", now)
+        .today(&date, "UTC", "example-config", now, None)
         .await
         .unwrap();
     assert_eq!(
@@ -1197,7 +1200,7 @@ async fn today_keeps_the_last_result_and_rechecks_only_referenced_facts() {
     );
     assert!(
         store
-            .today("2099-01-01", "UTC", "example-config", now)
+            .today("2099-01-01", "UTC", "example-config", now, None)
             .await
             .unwrap()
             .result

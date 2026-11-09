@@ -22,6 +22,9 @@ let todayDraft = false;
 let lastToday = null;
 let pendingGeneration = null;
 const items = new Map();
+const inventoryCards = new Map();
+// Complete groups carry partial purchases; they must not satisfy getItem's cache.
+const inventoryCopies = new Map();
 const sourceLabels = new Map();
 const filterFields = [["q", "search"], ["brand", "brand"], ["category", "category"], ["source", "source"], ["ready_to_wear", "ready"], ["status", "tracking-status"], ["area", "tracking-area"]];
 let appliedFilters = Object.fromEntries(filterFields.map(([key]) => [key, ""]));
@@ -207,8 +210,9 @@ function errorMessage(error) {
   if (error instanceof APIError) {
     if (error.status === 401) return "The connection is no longer authorized. Reload Closet to reconnect.";
     if (error.status === 403) return "This action needs owner or Home Assistant administrator access.";
-    if (error.code === "tracking_revision_conflict") return "Tracking changed elsewhere. Review the refreshed state and make the change again.";
+    if (error.code === "tracking_revision_conflict") return "Tracking changed elsewhere. Refresh and review the current state before trying again.";
     if (error.code === "reader_capabilities_unavailable") return "Connect this reader and read its supported settings before requesting power or dwell changes.";
+    if (error.code === "borrow_unsupported") return "This reader cannot pause a monitored position for enrollment. Add a dedicated enrollment position in Tracking settings.";
     if (error.code === "reader_cleanup_required") return "Disable the reader and wait for its settings to be restored before removing it or importing tracking data.";
     if (["history_would_be_lost", "history_conflict", "coverage_history_conflict"].includes(error.code)) return "This backup would erase newer history. Use a current export or restore it to an empty installation.";
     if (error.code === "simulation_isolation") return "Simulator evidence cannot be used for live tracking.";
@@ -303,20 +307,21 @@ function sourceTone(source) {
   return hash % 6;
 }
 
+function filterBadge(field, value, label, accessibleLabel) {
+  const button = element("button", `item-badge ${field}-badge`, label);
+  button.type = "button";
+  button.setAttribute("aria-label", accessibleLabel);
+  button.title = accessibleLabel;
+  if (field === "source") button.classList.add(`source-tone-${sourceTone(value)}`);
+  button.addEventListener("click", () => filterFromBadge(field, value, label));
+  return button;
+}
+
 function itemCard(item, compact = false, presentation = "card") {
   const card = element("article", compact ? "item-piece" : "item-card");
   card.dataset.catalogId = item.id;
-  const badge = (field, value, label, accessibleLabel) => {
-    const button = element("button", `item-badge ${field}-badge`, label);
-    button.type = "button";
-    button.setAttribute("aria-label", accessibleLabel);
-    button.title = accessibleLabel;
-    if (field === "source") button.classList.add(`source-tone-${sourceTone(value)}`);
-    button.addEventListener("click", () => filterFromBadge(field, value, label));
-    return button;
-  };
   card.append(photo(item, 0, presentation));
-  if (item.brand) card.append(badge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
+  if (item.brand) card.append(filterBadge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
   const button = element("button", "item-open item-name", item.name);
   button.type = "button";
   button.setAttribute("aria-label", `View ${item.name}`);
@@ -330,6 +335,7 @@ function itemCard(item, compact = false, presentation = "card") {
   card.append(button);
   if (!compact && metadata.length) card.append(element("span", "item-meta", metadata.join(" · ")));
   if (object(reference) && reference.notes) card.append(element("span", "image-note", reference.notes));
+  if (item.usage?.kind === "safety_work_only") card.append(element("span", "usage-badge", "Safety work only"));
   const trackingBadge = tracking.badge(item);
   if (trackingBadge) card.append(trackingBadge);
   const source = sourceOf(item);
@@ -337,9 +343,71 @@ function itemCard(item, compact = false, presentation = "card") {
   if (source !== null && label !== null) {
     sourceLabels.set(source, label);
     const badges = element("div", "item-badges");
-    badges.append(badge("source", source, label, `Show all items from ${label}`));
+    badges.append(filterBadge("source", source, label, `Show all items from ${label}`));
     card.append(badges);
   }
+  return card;
+}
+
+function renderCopies(card, item, group) {
+  card.querySelector(":scope > .owned-count")?.remove();
+  card.querySelector(":scope > .item-copies")?.remove();
+  card.querySelector(":scope > .usage-badge")?.remove();
+  const safetyOnly = group.copies.every((copy) => copy.usage?.kind === "safety_work_only");
+  if (safetyOnly) card.append(element("span", "usage-badge", "Safety work only"));
+  const count = Number.isInteger(group.quantity) ? `${group.quantity} owned` : "Quantity not recorded";
+  card.append(element("p", "owned-count", count));
+  const copies = element("ol", "item-copies");
+  copies.setAttribute("aria-label", `Owned copies of ${item.name}`);
+  for (const [index, copy] of group.copies.entries()) {
+    inventoryCopies.set(copy.id, copy);
+    const row = element("li", "item-copy");
+    row.dataset.catalogId = copy.id;
+    row.dataset.copyId = copy.id;
+    const actions = element("div", "copy-actions");
+    const open = element("button", "copy-open", copy.size ? `Size ${copy.size}` : "View copy");
+    open.type = "button";
+    open.setAttribute("aria-label", `View ${item.name}, purchase ${index + 1}`);
+    open.addEventListener("click", () => openDetail(copy));
+    if (copy.quantity !== 1) open.append(element("span", "copy-quantity", copy.quantity === null ? " · quantity unknown" : ` · ×${copy.quantity}`));
+    actions.append(open);
+    const source = sourceOf(copy), label = sourceLabel(copy);
+    open.setAttribute("aria-description", [copy.size ? `Size ${copy.size}` : null, copy.quantity === null ? "Quantity unknown" : `Quantity ${copy.quantity}`, label].filter(Boolean).join(" · "));
+    if (source !== null && label !== null) actions.append(filterBadge("source", source, label, `Show all items from ${label}`));
+    row.append(actions);
+    if (!safetyOnly && copy.usage?.kind === "safety_work_only") row.append(element("span", "usage-badge", "Safety work only"));
+    const badge = tracking.badge(copy);
+    if (badge) row.append(badge);
+    copies.append(row);
+  }
+  card.append(copies);
+}
+
+function inventoryCard(item, group) {
+  const key = group ? `variant:${group.identity.variant_id}` : `item:${item.id}`;
+  const grouped = group && (group.copies.length > 1 || group.quantity > 1);
+  const existing = inventoryCards.get(key);
+  if (existing) {
+    // Group summaries contain every active purchase, including later pages.
+    // Repeated rows must not replace a focused card or count its copies twice.
+    if (grouped && existing.summary !== JSON.stringify(group)) {
+      renderCopies(existing.card, existing.item, group);
+      existing.summary = JSON.stringify(group);
+    }
+    return existing.card;
+  }
+  const card = itemCard(item);
+  if (group) card.dataset.variantId = group.identity.variant_id;
+  if (grouped) {
+    card.querySelector(":scope > .tracking-pill")?.remove();
+    card.querySelector(":scope > .item-badges")?.remove();
+    const metadata = card.querySelector(":scope > .item-meta");
+    if (metadata) { metadata.textContent = item.color || ""; metadata.hidden = !item.color; }
+    const reference = Array.isArray(item.images) ? item.images[0] : null;
+    card.querySelector(".item-open").setAttribute("aria-description", [item.brand, item.color, object(reference) ? reference.notes : null].filter(Boolean).join(" · "));
+    renderCopies(card, item, group);
+  }
+  inventoryCards.set(key, { card, item, summary: group ? JSON.stringify(group) : null });
   return card;
 }
 
@@ -419,12 +487,23 @@ async function loadInventory(append = false, { automatic = false } = {}) {
     if (revision !== listRevision) return;
     if (!object(data) || !Array.isArray(data.items) || !object(data.facets) || !Array.isArray(data.facets.sources) || !Number.isInteger(data.total)) throw new APIError(200, "invalid_response");
     fillSources(data.facets.sources);
-    if (!append) byId("item-grid").replaceChildren();
+    const groups = new Map();
+    if (data.variant_groups !== undefined && !Array.isArray(data.variant_groups)) throw new APIError(200, "invalid_response");
+    for (const group of data.variant_groups || []) {
+      if (!object(group) || !object(group.identity) || typeof group.identity.variant_id !== "string" || !Array.isArray(group.copies) || !group.copies.length || !(group.quantity === null || Number.isInteger(group.quantity))) throw new APIError(200, "invalid_response");
+      for (const copy of group.copies) if (!object(copy) || typeof copy.id !== "string") throw new APIError(200, "invalid_response");
+      groups.set(group.identity.variant_id, group);
+    }
+    if (!append) { byId("item-grid").replaceChildren(); inventoryCards.clear(); inventoryCopies.clear(); }
     let firstAddedButton = null;
+    let existingButton = null;
     for (const item of data.items) {
       if (!object(item) || typeof item.id !== "string" || typeof item.name !== "string") throw new APIError(200, "invalid_response");
       items.set(item.id, item);
-      const card = itemCard(item);
+      const group = typeof item.identity?.variant_id === "string" ? groups.get(item.identity.variant_id) : null;
+      if (item.identity && !group) throw new APIError(200, "invalid_response");
+      const card = inventoryCard(item, group);
+      if (card.isConnected) { existingButton ||= card.querySelector(".item-open"); continue; }
       if (!append && firstAddedButton === null) {
         const image = card.querySelector("img");
         if (image) { image.loading = "eager"; image.fetchPriority = "high"; }
@@ -436,7 +515,7 @@ async function loadInventory(append = false, { automatic = false } = {}) {
     autoPagingPaused = false;
     more.hidden = nextPage === null;
     byId("page-sentinel").hidden = nextPage === null;
-    if (moveFocus && nextPage === null && document.activeElement === document.body) firstAddedButton?.focus();
+    if (moveFocus && nextPage === null && [document.body, more].includes(document.activeElement)) (firstAddedButton || existingButton)?.focus();
     byId("inventory-empty").hidden = data.total !== 0;
     byId("inventory-empty").querySelector("h2").textContent = data.scope_total === 0 ? "No items yet" : "No matching items";
     byId("inventory-empty").querySelector("p").textContent = data.scope_total === 0 ? "Validate and sync a JSON catalog to fill the closet." : "Try another search or clear the filters.";
@@ -569,6 +648,10 @@ function renderDetail(item) {
     ["Category", item.category], ["Color", item.color], ["Size", item.size],
     ["Quantity", item.quantity], ["Material", item.material], ["SKU", item.sku],
   ];
+  if (item.usage?.kind === "safety_work_only") {
+    values.push(["Use", "Safety work only"]);
+    if (item.usage.requirement === "steel_toe") values.push(["Requirement", "Steel toe"]);
+  }
   if (item.purchase_source) values.push(["Purchase source", item.purchase_source]);
   if (object(item.shop)) {
     values.push(["Shop", item.shop.label]);
@@ -600,14 +683,21 @@ function renderDetail(item) {
 }
 
 function inputValues() {
-  return { occasion: byId("occasion").value, weather_mode: byId("weather-mode").value };
+  return { occasion: byId("occasion").value, weather_mode: byId("weather-mode").value, ...(byId("steel-toe").checked && byId("occasion").value !== "bedtime" ? { footwear_requirement: "steel_toe" } : {}) };
+}
+
+function todayControls(locked = false) {
+  for (const id of ["occasion", "weather-mode"]) byId(id).disabled = locked;
+  const bedtime = byId("occasion").value === "bedtime";
+  if (bedtime) byId("steel-toe").checked = false;
+  byId("steel-toe").disabled = locked || bedtime;
 }
 
 const occasionLabels = { all: "All occasions", everyday: "Everyday", work: "Work", dinner: "Evening", bedtime: "Bedtime" };
 
 function inputLabel(inputs) {
   const occasion = occasionLabels[inputs.occasion] || "Unknown occasion";
-  return `${occasion} · ${inputs.weather_mode === "ignored" ? "Weather ignored" : "Uses forecast"}`;
+  return `${occasion} · ${inputs.weather_mode === "ignored" ? "Weather ignored" : "Uses forecast"}${inputs.footwear_requirement === "steel_toe" ? " · Steel-toe footwear required" : ""}`;
 }
 
 function generationMessage(generation) {
@@ -624,6 +714,7 @@ function generationMessage(generation) {
     catalog_changed: "Referenced inventory changed while the suggestion was being made. Refresh before requesting another.",
     generation_context_changed: "The day, configuration or inventory changed during the request. No result was published as current.",
     insufficient_inventory: "There are not enough eligible pieces for a complete outfit.",
+    no_eligible_footwear: "The last attempt found no available steel-toe footwear. Try again after availability changes.",
     invalid_model_output: "The assistant returned a combination that did not pass validation.",
   };
   return messages[generation.error_code] || "The last attempt did not complete. A new request is a deliberate new attempt.";
@@ -668,16 +759,17 @@ async function renderToday(data, revision) {
   if (!object(data) || typeof data.date !== "string" || typeof data.timezone !== "string") throw new APIError(200, "invalid_response");
   lastToday = data;
   byId("today-date").textContent = `${data.date} · ${data.timezone}`;
-  const result = object(data.result) ? data.result : null;
   const generation = object(data.generation) ? data.generation : null;
+  const result = generation?.error_code === "no_eligible_footwear" ? null : object(data.result) ? data.result : null;
   if (!todayDraft && !pendingGeneration) {
     const inputs = result?.inputs || generation?.inputs;
     if (object(inputs)) {
       byId("weather-mode").value = inputs.weather_mode;
+      byId("steel-toe").checked = inputs.footwear_requirement === "steel_toe";
     }
   }
   const running = generation?.status === "running";
-  for (const id of ["occasion", "weather-mode"]) byId(id).disabled = running || pendingGeneration !== null;
+  todayControls(running || pendingGeneration !== null);
   byId("suggest").disabled = running || system?.role !== "owner";
   byId("suggest").textContent = pendingGeneration ? "Retry same request" : result ? "Suggest again" : "Suggest outfits";
   const message = pendingGeneration ? "The last request was not acknowledged. Retry the same request to recover it before changing the controls." : system?.role !== "owner" ? "Owner access is needed to request suggestions. Reading existing results is available." : generationMessage(generation);
@@ -690,7 +782,7 @@ async function renderToday(data, revision) {
   const cards = document.createDocumentFragment();
   if (result && Array.isArray(result.suggestions)) {
     const groups = result.inputs.occasion === "all"
-      ? ["everyday", "work", "dinner", "bedtime"]
+      ? ["everyday", "work", "dinner", ...(result.inputs.footwear_requirement === "steel_toe" ? [] : ["bedtime"])]
       : [result.inputs.occasion];
     for (const occasion of groups) {
       const suggestions = result.suggestions.filter((suggestion) => object(suggestion) && (suggestion.occasion || result.inputs.occasion) === occasion).slice(0, 3);
@@ -729,7 +821,8 @@ async function renderToday(data, revision) {
 async function loadToday() {
   const revision = ++todayRevision;
   try {
-    const data = await request("v1/today");
+    const requirement = inputValues().footwear_requirement;
+    const data = await request(`v1/today${requirement ? `?footwear_requirement=${requirement}` : ""}`);
     if (revision === todayRevision && view === "today") await renderToday(data, revision);
   } catch (error) {
     if (revision === todayRevision && view === "today") { notice(errorMessage(error)); clearTimeout(pollTimer); }
@@ -744,7 +837,7 @@ async function generate(event) {
     pendingGeneration = { key, inputs: inputValues() };
   }
   byId("suggest").disabled = true;
-  for (const id of ["occasion", "weather-mode"]) byId(id).disabled = true;
+  todayControls(true);
   try {
     await request("v1/today/generate", { method: "POST", headers: { "Idempotency-Key": pendingGeneration.key }, body: JSON.stringify(pendingGeneration.inputs) });
     pendingGeneration = null; todayDraft = false; notice(); pollDeadline = 0;
@@ -756,7 +849,7 @@ async function generate(event) {
     notice(pendingGeneration ? "The request was not acknowledged. Retry the same request to recover its result without starting another attempt." : errorMessage(error));
     byId("suggest").disabled = false;
     byId("suggest").textContent = pendingGeneration ? "Retry same request" : "Suggest outfits";
-    if (!pendingGeneration) for (const id of ["occasion", "weather-mode"]) byId(id).disabled = false;
+    if (!pendingGeneration) todayControls();
   }
 }
 
@@ -799,7 +892,7 @@ function showView(next) {
 
 let knownTrackingRevision = null;
 const tracking = new TrackingController({
-  request, element, photo, getItem, openItem: openDetail, errorMessage, role: () => system?.role,
+  request, element, photo, getItem, openItem: openDetail, sourceLabel, errorMessage, role: () => system?.role,
   changed: () => {
     const revision = tracking.snapshot?.tracking_revision;
     const changed = knownTrackingRevision !== null && revision !== knownTrackingRevision;
@@ -807,8 +900,9 @@ const tracking = new TrackingController({
     if (changed && view === "inventory" && ["ready_to_wear", "status", "area"].some((key) => appliedFilters[key])) void loadInventory();
     for (const card of document.querySelectorAll("[data-catalog-id]")) {
       if (card.closest(".analytics-ranked")) continue;
+      if (card.dataset.variantId && card.querySelector(":scope > .item-copies")) continue;
       card.querySelector(":scope > .tracking-pill")?.remove();
-      const item = items.get(card.dataset.catalogId);
+      const item = items.get(card.dataset.catalogId) || inventoryCopies.get(card.dataset.catalogId);
       const badge = item && tracking.badge(item);
       if (badge) card.insertBefore(badge, card.querySelector(".item-badges"));
     }
@@ -833,7 +927,7 @@ byId("refresh").addEventListener("click", async () => {
   if (view === "today") { pollDeadline = 0; await loadToday(); }
   else if (view === "analytics") await analytics.load();
   else if (view === "inventory") await loadInventory();
-  else { tracking.catalogFacets = null; tracking.workspaceKey = null; await tracking.refresh(); }
+  else { tracking.catalogFacets = null; tracking.workspaceKey = null; if (view === "tracking-settings") tracking.settingsKey = null; await tracking.refresh(); }
   if (selectedItemId) void loadDetail(selectedItemId);
 });
 byId("filters").addEventListener("submit", (event) => { event.preventDefault(); applyFilters(); });
@@ -849,7 +943,17 @@ for (const name of ["tags", "tracking-settings"]) byId(`${name}-tab`).addEventLi
 byId("close-detail").addEventListener("click", closeDetail);
 byId("detail").addEventListener("cancel", (event) => { event.preventDefault(); closeDetail(); });
 byId("generate").addEventListener("submit", generate);
-byId("generate").addEventListener("change", () => { todayDraft = true; byId("today-input-note").hidden = !lastToday?.result || JSON.stringify(inputValues()) === JSON.stringify(lastToday.result.inputs); });
+byId("generate").addEventListener("change", (event) => {
+  const wasRequired = byId("steel-toe").checked;
+  todayControls();
+  todayDraft = true;
+  byId("today-input-note").hidden = !lastToday?.result || JSON.stringify(inputValues()) === JSON.stringify(lastToday.result.inputs);
+  if (event.target === byId("steel-toe") || wasRequired !== byId("steel-toe").checked) {
+    byId("suggestions").replaceChildren();
+    byId("today-result-label").textContent = "";
+    void loadToday();
+  }
+});
 document.addEventListener("visibilitychange", () => {
   clearTimeout(pollTimer);
   stopAutoPaging();

@@ -1,6 +1,9 @@
 //! SQLite owns the projection and durable operations, never a second catalog.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
@@ -15,9 +18,10 @@ use crate::fence::{
     UploadClaimAction, UploadClaimStatus, referenced_image_id,
 };
 use crate::models::{
-    CatalogItem, Facets, Freshness, Generation, GenerationStatus, Item, ItemFilters, ItemsPage,
-    ListQuery, Source, SourceFacet, SyncReport, SyncRequest, TodayRequest, TodayResponse,
-    TodayResult, ValidationError, digest, validate_catalog,
+    CatalogIdentity, CatalogItem, Facets, Freshness, Generation, GenerationStatus, InventoryCopy,
+    Item, ItemFilters, ItemsPage, ListQuery, MAX_CATALOG_ITEMS, SafetyRequirement, Source,
+    SourceFacet, SyncReport, SyncRequest, TodayRequest, TodayResponse, TodayResult, Usage,
+    ValidationError, VariantGroup, digest, validate_catalog,
 };
 
 const COUNTS_SQL: &str = "SELECT (SELECT COUNT(*) FROM items WHERE archived=0) AS active, (SELECT COUNT(*) FROM items WHERE archived=1) AS archived";
@@ -144,6 +148,8 @@ struct StylingFacts<'a> {
     material: &'a Option<String>,
     quantity_known: bool,
     qualified_image: bool,
+    #[serde(skip_serializing_if = "Usage::is_everyday")]
+    usage: Usage,
 }
 
 pub fn styling_hash(item: &CatalogItem) -> Result<String> {
@@ -158,6 +164,7 @@ pub fn styling_hash(item: &CatalogItem) -> Result<String> {
         qualified_image: item.images.iter().any(|image| {
             image.confidence != crate::models::ImageConfidence::High || image.notes.is_some()
         }),
+        usage: item.usage,
     })?))
 }
 fn hash(bytes: &[u8]) -> String {
@@ -715,6 +722,16 @@ impl Store {
             None
         };
         let items = rows.iter().map(decode_item).collect::<Result<Vec<_>>>()?;
+        let variant_ids: BTreeSet<&str> = items
+            .iter()
+            .filter_map(|item| {
+                item.catalog
+                    .identity
+                    .as_ref()
+                    .map(|identity| identity.variant_id.as_str())
+            })
+            .collect();
+        let variant_groups = variant_groups(&mut tx, &variant_ids).await?;
         let brands = sqlx::query_scalar(BRANDS_SQL).fetch_all(&mut *tx).await?;
         let categories = sqlx::query_scalar(CATEGORIES_SQL)
             .fetch_all(&mut *tx)
@@ -747,6 +764,7 @@ impl Store {
         tx.commit().await?;
         Ok(ItemsPage {
             items,
+            variant_groups,
             next_page,
             total,
             scope_total,
@@ -924,6 +942,7 @@ impl Store {
         actor: &str,
         key: &str,
     ) -> Result<Reservation> {
+        inputs.validate().map_err(StoreError::Invalid)?;
         let input_hash = hash(&serde_json::to_vec(&inputs)?);
         let mut tx = self.pool.begin().await?;
         if let Some(row) = operation(&mut tx, "today", actor, key).await? {
@@ -981,25 +1000,35 @@ impl Store {
             .await?;
         let basis: GenerationBasis = serde_json::from_str(row.try_get("basis")?)?;
         let outcome = match result {
-            Ok(result) => {
-                let signatures = referenced_signatures(&basis.items, &result)?;
-                let availability = crate::tracking::store::availability(&mut tx)
-                    .await
-                    .map_err(StoreError::from)?;
-                if !signatures
-                    .keys()
-                    .all(|id| availability.eligible_catalog_ids.binary_search(id).is_ok())
-                {
-                    Err("referenced_items_unavailable")
-                } else if signatures_current(&mut tx, &signatures).await? {
-                    sqlx::query("INSERT INTO today_results (local_date,timezone,config_hash,body,signatures) VALUES (?,?,?,?,?) ON CONFLICT(local_date) DO UPDATE SET timezone=excluded.timezone, config_hash=excluded.config_hash, body=excluded.body, signatures=excluded.signatures")
+            Ok(result)
+                if result.inputs != operation.inputs || result.generation_id != operation.id =>
+            {
+                Err("invalid_model_output")
+            }
+            Ok(result) => match referenced_signatures(&basis.items, &result) {
+                Err(StoreError::Invalid(code)) => Err(code),
+                Err(error) => return Err(error),
+                Ok(signatures) => {
+                    let availability = crate::tracking::store::availability(&mut tx)
+                        .await
+                        .map_err(StoreError::from)?;
+                    if !signatures
+                        .keys()
+                        .all(|id| availability.eligible_catalog_ids.binary_search(id).is_ok())
+                    {
+                        Err("referenced_items_unavailable")
+                    } else if signatures_current(&mut tx, &signatures, &result.inputs).await?
+                        == ReferencedItems::Current
+                    {
+                        sqlx::query("INSERT INTO today_results (local_date,timezone,config_hash,body,signatures) VALUES (?,?,?,?,?) ON CONFLICT(local_date) DO UPDATE SET timezone=excluded.timezone, config_hash=excluded.config_hash, body=excluded.body, signatures=excluded.signatures")
                         .bind(&basis.date).bind(&basis.timezone).bind(&basis.config_hash).bind(serde_json::to_string(&result)?)
                         .bind(serde_json::to_string(&signatures)?).execute(&mut *tx).await?;
-                    Ok(())
-                } else {
-                    Err("referenced_items_changed")
+                        Ok(())
+                    } else {
+                        Err("referenced_items_changed")
+                    }
                 }
-            }
+            },
             Err(code) => Err(code),
         };
         operation.status = if outcome.is_ok() {
@@ -1020,51 +1049,62 @@ impl Store {
         timezone: &str,
         config_hash: &str,
         now: DateTime<Utc>,
+        footwear_requirement: Option<SafetyRequirement>,
     ) -> Result<TodayResponse> {
         let mut tx = self.pool.begin().await?;
-        let generation = sqlx::query_scalar::<_, String>(CURRENT_GENERATION_SQL)
-            .bind(date)
-            .bind(timezone)
-            .fetch_optional(&mut *tx)
-            .await?
-            .map(|body| serde_json::from_str(&body))
-            .transpose()?;
+        let generation: Option<Generation> =
+            sqlx::query_scalar::<_, String>(CURRENT_GENERATION_SQL)
+                .bind(date)
+                .bind(timezone)
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(|body| serde_json::from_str(&body))
+                .transpose()?;
+        let generation = generation
+            .filter(|generation| generation.inputs.footwear_requirement == footwear_requirement);
         let row = sqlx::query(TODAY_RESULT_SQL)
             .bind(date)
             .fetch_optional(&mut *tx)
             .await?;
         let result = if let Some(row) = row {
             let mut result: TodayResult = serde_json::from_str(row.try_get("body")?)?;
-            let signatures: BTreeMap<String, String> =
-                serde_json::from_str(row.try_get("signatures")?)?;
-            if row.try_get::<String, _>("config_hash")? != config_hash
-                || row.try_get::<String, _>("timezone")? != timezone
-            {
-                result.stale_reasons.push("configuration_changed".into());
+            if result.inputs.footwear_requirement != footwear_requirement {
+                None
+            } else {
+                let signatures: BTreeMap<String, String> =
+                    serde_json::from_str(row.try_get("signatures")?)?;
+                if row.try_get::<String, _>("config_hash")? != config_hash
+                    || row.try_get::<String, _>("timezone")? != timezone
+                {
+                    result.stale_reasons.push("configuration_changed".into());
+                }
+                if result.expires_at <= now {
+                    result.stale_reasons.push("expired".into());
+                }
+                let referenced = signatures_current(&mut tx, &signatures, &result.inputs).await?;
+                if referenced != ReferencedItems::Current {
+                    result.stale_reasons.push("referenced_items_changed".into());
+                }
+                let availability = crate::tracking::store::availability(&mut tx)
+                    .await
+                    .map_err(StoreError::from)?;
+                if !signatures
+                    .keys()
+                    .all(|id| availability.eligible_catalog_ids.binary_search(id).is_ok())
+                {
+                    result
+                        .stale_reasons
+                        .push("referenced_items_unavailable".into());
+                }
+                result.stale_reasons.sort();
+                result.stale_reasons.dedup();
+                if !result.stale_reasons.is_empty() {
+                    result.freshness = Freshness::Stale;
+                }
+                // A stale styling choice may still be useful, but safety-work items
+                // must never remain offered through an older cached outfit.
+                (referenced != ReferencedItems::Restricted).then_some(result)
             }
-            if result.expires_at <= now {
-                result.stale_reasons.push("expired".into());
-            }
-            if !signatures_current(&mut tx, &signatures).await? {
-                result.stale_reasons.push("referenced_items_changed".into());
-            }
-            let availability = crate::tracking::store::availability(&mut tx)
-                .await
-                .map_err(StoreError::from)?;
-            if !signatures
-                .keys()
-                .all(|id| availability.eligible_catalog_ids.binary_search(id).is_ok())
-            {
-                result
-                    .stale_reasons
-                    .push("referenced_items_unavailable".into());
-            }
-            result.stale_reasons.sort();
-            result.stale_reasons.dedup();
-            if !result.stale_reasons.is_empty() {
-                result.freshness = Freshness::Stale;
-            }
-            Some(result)
         } else {
             None
         };
@@ -1551,41 +1591,125 @@ fn referenced_signatures(
         let item = candidates
             .get(id.as_str())
             .ok_or(StoreError::Invalid("invalid_model_output"))?;
+        if !crate::today::eligible(item, &result.inputs) {
+            return Err(StoreError::Invalid("invalid_model_output"));
+        }
         signatures.insert(id.clone(), styling_hash(item)?);
     }
     Ok(signatures)
 }
+#[derive(PartialEq, Eq)]
+enum ReferencedItems {
+    Current,
+    Changed,
+    Restricted,
+}
 async fn signatures_current(
     connection: &mut SqliteConnection,
     signatures: &BTreeMap<String, String>,
-) -> Result<bool> {
+    inputs: &TodayRequest,
+) -> Result<ReferencedItems> {
     if signatures.is_empty() {
-        return Ok(true);
+        return Ok(ReferencedItems::Current);
     }
     let mut select = signature_selection(signatures);
     let rows = select.build().fetch_all(connection).await?;
-    if rows.len() != signatures.len() {
-        return Ok(false);
-    }
+    let mut current = rows.len() == signatures.len();
     for row in rows {
+        let item: CatalogItem = serde_json::from_str(row.try_get("body")?)?;
+        if !crate::today::eligible(&item, inputs) {
+            return Ok(ReferencedItems::Restricted);
+        }
         let id: String = row.try_get("id")?;
         if signatures.get(&id) != Some(&row.try_get::<String, _>("styling_hash")?)
             || row.try_get::<bool, _>("archived")?
         {
-            return Ok(false);
+            current = false;
         }
     }
-    Ok(true)
+    Ok(if current {
+        ReferencedItems::Current
+    } else {
+        ReferencedItems::Changed
+    })
 }
 fn signature_selection(signatures: &BTreeMap<String, String>) -> QueryBuilder<Sqlite> {
-    let mut select =
-        QueryBuilder::<Sqlite>::new("SELECT id, styling_hash, archived FROM items WHERE id IN (");
+    let mut select = QueryBuilder::<Sqlite>::new(
+        "SELECT id, body, styling_hash, archived FROM items WHERE id IN (",
+    );
     let mut values = select.separated(", ");
     for id in signatures.keys() {
         values.push_bind(id.clone());
     }
     values.push_unseparated(")");
     select
+}
+
+fn variant_copy_selection(variant_ids: &BTreeSet<&str>) -> QueryBuilder<Sqlite> {
+    let mut select = QueryBuilder::<Sqlite>::new(
+        "SELECT id, revision, json_extract(body, '$.identity') AS identity, json_extract(body, '$.size') AS size, json_extract(body, '$.quantity') AS quantity, json_extract(body, '$.purchase_source') AS purchase_source, json_extract(body, '$.shop') AS shop, json_extract(body, '$.usage') AS usage FROM items WHERE archived=0 AND json_extract(body, '$.identity.variant_id') IN (",
+    );
+    let mut values = select.separated(", ");
+    for id in variant_ids {
+        values.push_bind((*id).to_owned());
+    }
+    values.push_unseparated(
+        ") ORDER BY json_extract(body, '$.identity.variant_id'), sort_brand, sort_name, id LIMIT ",
+    );
+    select.push((MAX_CATALOG_ITEMS + 1).to_string());
+    select
+}
+
+async fn variant_groups(
+    connection: &mut SqliteConnection,
+    variant_ids: &BTreeSet<&str>,
+) -> Result<Vec<VariantGroup>> {
+    if variant_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The page chooses variants; one bounded read fills every active purchase
+    // under the same revision. Source/readiness filters never truncate a group.
+    let mut query = variant_copy_selection(variant_ids);
+    let rows = query.build().fetch_all(connection).await?;
+    if rows.len() > MAX_CATALOG_ITEMS {
+        return Err(StoreError::Invalid("catalog_too_large"));
+    }
+    let mut groups = BTreeMap::<String, VariantGroup>::new();
+    for row in rows {
+        let identity: CatalogIdentity = serde_json::from_str(row.try_get("identity")?)?;
+        let group = groups
+            .entry(identity.variant_id.clone())
+            .or_insert_with(|| VariantGroup {
+                identity,
+                quantity: Some(0),
+                copies: Vec::new(),
+            });
+        let quantity: Option<i64> = row.try_get("quantity")?;
+        let quantity = quantity
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
+        let shop: Option<String> = row.try_get("shop")?;
+        let usage: Option<String> = row.try_get("usage")?;
+        group.quantity = group
+            .quantity
+            .zip(quantity)
+            .map(|(total, quantity)| total + u64::from(quantity));
+        group.copies.push(InventoryCopy {
+            id: row.try_get("id")?,
+            size: row.try_get("size")?,
+            quantity,
+            purchase_source: row.try_get("purchase_source")?,
+            shop: shop.as_deref().map(serde_json::from_str).transpose()?,
+            usage: usage
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
+            revision: row.try_get("revision")?,
+        });
+    }
+    Ok(groups.into_values().collect())
 }
 
 #[cfg(test)]
@@ -1626,6 +1750,8 @@ mod tests {
             color: None,
             size: None,
             quantity: Some(1),
+            usage: crate::models::Usage::Everyday,
+            identity: None,
             material: None,
             sku: None,
             purchase_source: match index % 4 {
@@ -1750,6 +1876,7 @@ mod tests {
                 inputs: TodayRequest {
                     occasion: inputs.occasion,
                     weather_mode: weather,
+                    footwear_requirement: None,
                 },
                 started_at: now + Duration::seconds(offset),
                 finished_at: (status == GenerationStatus::Succeeded).then_some(now),
@@ -1792,6 +1919,7 @@ mod tests {
             inputs: TodayRequest {
                 occasion: Occasion::Everyday,
                 weather_mode: WeatherMode::Ignored,
+                footwear_requirement: None,
             },
             generated_at: now,
             expires_at: now + Duration::hours(6),
@@ -1967,6 +2095,7 @@ mod tests {
         let inputs = TodayRequest {
             occasion: Occasion::Everyday,
             weather_mode: WeatherMode::Ignored,
+            footwear_requirement: None,
         };
         let generation = store
             .reserve_generation(inputs.clone(), basis.clone(), "example-owner", "saved")
@@ -2153,7 +2282,13 @@ mod tests {
         assert_eq!(today_operations_before, today_operations_after);
         let now = Utc::now();
         let today = store
-            .today(&now.date_naive().to_string(), "UTC", "example-config", now)
+            .today(
+                &now.date_naive().to_string(),
+                "UTC",
+                "example-config",
+                now,
+                None,
+            )
             .await
             .unwrap();
         assert!(matches!(today.result.unwrap().freshness, Freshness::Ready));
@@ -2167,6 +2302,7 @@ mod tests {
                     TodayRequest {
                         occasion: Occasion::Everyday,
                         weather_mode: WeatherMode::Ignored,
+                        footwear_requirement: None,
                     },
                     GenerationBasis {
                         date: now.date_naive().to_string(),
@@ -2333,7 +2469,7 @@ mod tests {
         let now = Utc::now();
         let date = now.date_naive().to_string();
         let current = store
-            .today(&date, "UTC", "example-config", now)
+            .today(&date, "UTC", "example-config", now, None)
             .await
             .unwrap();
         let result = current.result.unwrap();
@@ -2349,6 +2485,7 @@ mod tests {
                 "UTC",
                 "example-config",
                 now,
+                None,
             )
             .await
             .unwrap()
@@ -2377,6 +2514,7 @@ mod tests {
                     TodayRequest {
                         occasion: Occasion::Everyday,
                         weather_mode: weather,
+                        footwear_requirement: None,
                     },
                     GenerationBasis {
                         date: date.clone(),
@@ -2469,10 +2607,24 @@ mod tests {
         let store = Store::open(directory.path().join("plans.sqlite3"))
             .await
             .unwrap();
+        let grouped_example = |index| {
+            let mut item = example(index);
+            item.brand = Some(format!("Label {}", (index / 2) % 20));
+            item.category = if (index / 2).is_multiple_of(2) {
+                "clothing.top".into()
+            } else {
+                "footwear.shoes".into()
+            };
+            item.identity = Some(crate::models::CatalogIdentity {
+                style_id: format!("example-style-{}", index / 20),
+                variant_id: format!("example-variant-{}", index / 2),
+            });
+            item
+        };
         store
             .sync(
                 SyncRequest {
-                    items: (0..1250).map(example).collect(),
+                    items: (0..1250).map(grouped_example).collect(),
                     dry_run: false,
                     allow_empty: false,
                 },
@@ -2485,7 +2637,7 @@ mod tests {
         store
             .sync(
                 SyncRequest {
-                    items: (0..1000).map(example).collect(),
+                    items: (0..1000).map(grouped_example).collect(),
                     dry_run: false,
                     allow_empty: false,
                 },
@@ -2502,7 +2654,7 @@ mod tests {
             let report = store
                 .sync(
                     SyncRequest {
-                        items: (start..start + 1000).map(example).collect(),
+                        items: (start..start + 1000).map(grouped_example).collect(),
                         dry_run: false,
                         allow_empty: false,
                     },
@@ -2888,10 +3040,96 @@ mod tests {
                 started.elapsed()
             );
         }
+        let ids =
+            std::collections::BTreeSet::from(["example-variant-2150", "example-variant-2600"]);
+        // Compare the same production lookup on the same representative data
+        // before and after adding its expression index.
+        sqlx::query("DROP INDEX items_active_variant")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut before_query = crate::store::variant_copy_selection(&ids);
+        let mut query = before_query.build();
+        let arguments = query.take_arguments().unwrap().unwrap();
+        let mut explain = QueryBuilder::<sqlx::Sqlite>::new("EXPLAIN QUERY PLAN ");
+        explain.push(query.sql().as_str());
+        let before = sqlx::query_with::<sqlx::Sqlite, _>(explain.into_sql(), arguments)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        let before_plans: Vec<String> = before
+            .iter()
+            .map(|row| sqlx::Row::get(row, "detail"))
+            .collect();
+        println!(
+            "variant copies before expression index: {}",
+            before_plans.join("; ")
+        );
+        let mut before_query = crate::store::variant_copy_selection(&ids);
+        let started = std::time::Instant::now();
+        let before_rows = before_query.build().fetch_all(&store.pool).await.unwrap();
+        assert_eq!(before_rows.len(), 4);
+        println!(
+            "variant copies before expression index: {} returned, {:?}",
+            before_rows.len(),
+            started.elapsed()
+        );
+        sqlx::raw_sql(include_str!("../migrations/0007_variant_groups.sql"))
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut group_query = crate::store::variant_copy_selection(&ids);
+        let mut query = group_query.build();
+        let arguments = query.take_arguments().unwrap().unwrap();
+        let mut explain = QueryBuilder::<sqlx::Sqlite>::new("EXPLAIN QUERY PLAN ");
+        explain.push(query.sql().as_str());
+        let rows = sqlx::query_with::<sqlx::Sqlite, _>(explain.into_sql(), arguments)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        let group_plans: Vec<String> = rows
+            .iter()
+            .map(|row| sqlx::Row::get(row, "detail"))
+            .collect();
+        println!(
+            "complete visible variant copies: {}",
+            group_plans.join("; ")
+        );
+        assert!(
+            group_plans
+                .iter()
+                .any(|plan| plan.contains("items_active_variant"))
+        );
+        assert!(!group_plans.iter().any(|plan| plan.contains("TEMP B-TREE")));
+        let mut group_query = crate::store::variant_copy_selection(&ids);
+        let started = std::time::Instant::now();
+        let matched = group_query.build().fetch_all(&store.pool).await.unwrap();
+        assert_eq!(matched.len(), 4);
+        println!(
+            "variant copies: {} returned / 1000 active / 4250 archived, {:?}",
+            matched.len(),
+            started.elapsed()
+        );
         let signatures = BTreeMap::from([
             ("example-4300".into(), "example-hash".into()),
             ("example-4301".into(), "example-hash".into()),
         ]);
+        let previous = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT id, styling_hash, archived FROM items WHERE id IN (?, ?)",
+        )
+        .bind("example-4300")
+        .bind("example-4301")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let previous_plans: Vec<String> = previous
+            .iter()
+            .map(|row| sqlx::Row::get(row, "detail"))
+            .collect();
+        println!(
+            "previous referenced fact validation: {}",
+            previous_plans.join("; ")
+        );
         let mut builder = signature_selection(&signatures);
         let mut query = builder.build();
         let arguments = query.take_arguments().unwrap().unwrap();
@@ -2906,7 +3144,8 @@ mod tests {
             .map(|row| sqlx::Row::get(row, "detail"))
             .collect();
         println!("referenced fact validation: {}", plans.join("; "));
-        let subset: Vec<_> = [5, 4995, 9000].into_iter().map(example).collect();
+        assert_eq!(plans, previous_plans);
+        let subset: Vec<_> = [5, 4995, 9000].into_iter().map(grouped_example).collect();
         let previous =
             sqlx::query("EXPLAIN QUERY PLAN SELECT id, body, archived, revision FROM items")
                 .fetch_all(&store.pool)
@@ -2958,6 +3197,7 @@ mod tests {
         let inputs = TodayRequest {
             occasion: Occasion::Everyday,
             weather_mode: WeatherMode::Ignored,
+            footwear_requirement: None,
         };
         let generation = store
             .reserve_generation(
@@ -3077,7 +3317,7 @@ mod tests {
                 .unwrap()
         );
         let today = store
-            .today(&date, "UTC", "example-config", now)
+            .today(&date, "UTC", "example-config", now, None)
             .await
             .unwrap()
             .result

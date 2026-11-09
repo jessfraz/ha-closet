@@ -82,6 +82,8 @@ class ClosetView(HomeAssistantView):
             if path.endswith("/history") or path == "tracking/coverage"
             else {"days", "pick_seed"}
             if path == "tracking/analytics"
+            else {"footwear_requirement"}
+            if path == "today"
             else set()
         )
         if (

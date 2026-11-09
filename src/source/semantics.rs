@@ -377,6 +377,20 @@ fn default_form(kind: SizeKind, form: SizeForm) -> bool {
     }
 }
 pub(crate) fn validate_profile(profile: &SizingProfile, path: &str, errors: &mut Diagnostics) {
+    errors.check(
+        profile.kind == SizeKind::Footwear
+            || [&profile.min, &profile.max]
+                .into_iter()
+                .flatten()
+                .all(|number| {
+                    !matches!(
+                        number,
+                        NativeNumber::OneThird(_) | NativeNumber::TwoThirds(_)
+                    )
+                }),
+        path,
+        "size_thirds_not_allowed",
+    );
     let ceiling = if profile.kind == SizeKind::Belt {
         500
     } else {
@@ -386,16 +400,16 @@ pub(crate) fn validate_profile(profile: &SizingProfile, path: &str, errors: &mut
         profile
             .min
             .as_ref()
-            .is_none_or(|n| n.twice() <= ceiling * 2)
+            .is_none_or(|n| n.sixths() <= ceiling * 6)
             && profile
                 .max
                 .as_ref()
-                .is_none_or(|n| n.twice() <= ceiling * 2),
+                .is_none_or(|n| n.sixths() <= ceiling * 6),
         path,
         "invalid_profile_bounds",
     );
     if let (Some(min), Some(max)) = (&profile.min, &profile.max) {
-        errors.check(min.twice() <= max.twice(), path, "invalid_profile_bounds");
+        errors.check(min.sixths() <= max.sixths(), path, "invalid_profile_bounds");
     }
     if let Some(forms) = &profile.forms {
         for form in forms.iter() {
@@ -474,15 +488,15 @@ pub(crate) fn size(
             SizeValue::Numeric { label } | SizeValue::Petite { label } => {
                 let max = profile.max.as_ref().map_or(
                     if profile.kind == SizeKind::Belt {
-                        1000
+                        3000
                     } else {
-                        200
+                        600
                     },
-                    NativeNumber::twice,
+                    NativeNumber::sixths,
                 );
-                let min = profile.min.as_ref().map_or(0, NativeNumber::twice);
+                let min = profile.min.as_ref().map_or(0, NativeNumber::sixths);
                 errors.check(
-                    (min..=max).contains(&label.twice()),
+                    (min..=max).contains(&label.sixths()),
                     format!("{path}.value.label"),
                     "size_out_of_bounds",
                 );
@@ -490,6 +504,15 @@ pub(crate) fn size(
                     profile.allow_half || !matches!(label, NativeNumber::Half(_)),
                     format!("{path}.value.label"),
                     "size_half_not_allowed",
+                );
+                errors.check(
+                    profile.kind == SizeKind::Footwear
+                        || !matches!(
+                            label,
+                            NativeNumber::OneThird(_) | NativeNumber::TwoThirds(_)
+                        ),
+                    format!("{path}.value.label"),
+                    "size_thirds_not_allowed",
                 );
                 errors.check(
                     !matches!(label, NativeNumber::DoubleZero)
