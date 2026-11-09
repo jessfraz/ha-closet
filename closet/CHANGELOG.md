@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Honor the request timeout when verifying native photos, including large old
+  originals before cleanup. Sync still checks exact bytes before deleting them.
+
 ## 0.3.1
 
 - Give large Home Assistant photo syncs a one-hour network budget and a bounded

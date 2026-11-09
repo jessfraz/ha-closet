@@ -3,7 +3,7 @@ use base64::Engine;
 use closet::{
     api,
     client::{ApiClient, Transport},
-    ha_images::NativeImage,
+    ha_images::{HaImages, NativeImage},
     images::{
         DeliveryFormat, ImageManifest, ImageSha, LocalImage, LocalImages, ManifestImage,
         NativeImageId, PreparedImage, prepare_images,
@@ -80,6 +80,9 @@ struct Protocol {
     readback_release: Notify,
     delete_entered: Notify,
     delete_release: Notify,
+    hold_original: AtomicBool,
+    original_entered: Notify,
+    original_release: Notify,
     connections: AtomicUsize,
 }
 #[derive(Deserialize, JsonSchema)]
@@ -239,9 +242,14 @@ async fn original(
 ) -> Result<Response<Body>, dropshot::HttpError> {
     assert!(!ctx.request.headers().contains_key("authorization"));
     let id = NativeImageId::try_from(path.into_inner().id).unwrap();
-    let state = ctx.context().state.lock().await;
-    Ok(match state.images.get(&id) {
-        Some(image) => raw(200, image.bytes.clone(), &image.record.content_type),
+    let protocol = ctx.context();
+    let image = protocol.state.lock().await.images.get(&id).cloned();
+    if protocol.hold_original.load(Ordering::SeqCst) {
+        protocol.original_entered.notify_one();
+        protocol.original_release.notified().await;
+    }
+    Ok(match image {
+        Some(image) => raw(200, image.bytes, &image.record.content_type),
         None => raw(404, Vec::new(), "image/png"),
     })
 }
@@ -373,6 +381,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_request_timeout(Duration::from_secs(10)).await
+    }
+    async fn with_request_timeout(request_timeout: Duration) -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default(); // Dropshot's test TLS listener requires its documented process default. Production clients use explicit context.
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path().join("closet.sqlite3"))
@@ -401,6 +412,9 @@ impl Fixture {
             readback_release: Notify::new(),
             delete_entered: Notify::new(),
             delete_release: Notify::new(),
+            hold_original: AtomicBool::new(false),
+            original_entered: Notify::new(),
+            original_release: Notify::new(),
             connections: AtomicUsize::new(0),
         });
         let description = native_api();
@@ -432,7 +446,7 @@ impl Fixture {
             format!("https://{}", native.local_addr()).parse().unwrap(),
             TOKEN,
             Transport::HomeAssistant,
-            Duration::from_secs(10),
+            request_timeout,
             Some(reqwest::Certificate::from_der(include_bytes!("fixtures/tls/ca.der")).unwrap()),
             Some(tokio_tungstenite::Connector::Rustls(Arc::new(tls))),
         )
@@ -1420,6 +1434,135 @@ async fn cancelled_toml_upload_reconciles_real_object_without_another_post() {
     assert_eq!(output.data.images.unwrap().uploaded, 0);
     assert_eq!(fixture.protocol.state.lock().await.posts, 1);
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_original_reads_use_the_configured_short_request_deadline() {
+    let fixture = Fixture::with_request_timeout(Duration::from_secs(1)).await;
+    let id = fixture.add_delivery(1).await;
+    let record = fixture.protocol.state.lock().await.images[&id]
+        .record
+        .clone();
+    let sha = ImageSha::digest(fixture.delivery().bytes());
+    fixture.protocol.hold_original.store(true, Ordering::SeqCst);
+    let started = tokio::time::Instant::now();
+    let result = {
+        let images = HaImages::new(&fixture.api).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), images.verify(&record, &sha)).await
+    };
+    let elapsed = started.elapsed();
+    fixture
+        .protocol
+        .hold_original
+        .store(false, Ordering::SeqCst);
+    fixture.protocol.original_release.notify_one();
+    let state = fixture.protocol.state.lock().await;
+    let mutations = (state.posts, state.deletes.clone());
+    drop(state);
+    fixture.close().await;
+
+    assert_eq!(
+        result.unwrap().unwrap_err().error_code,
+        "native_image_read_failed"
+    );
+    assert!(elapsed >= Duration::from_millis(900));
+    assert_eq!(mutations, (0, Vec::new()));
+}
+
+#[tokio::test]
+async fn native_original_read_can_finish_after_fifteen_seconds_with_a_longer_client_budget() {
+    let fixture = Fixture::with_request_timeout(Duration::from_secs(30)).await;
+    let id = fixture.add_delivery(1).await;
+    let record = fixture.protocol.state.lock().await.images[&id]
+        .record
+        .clone();
+    let sha = ImageSha::digest(fixture.delivery().bytes());
+    fixture.protocol.hold_original.store(true, Ordering::SeqCst);
+    let started = tokio::time::Instant::now();
+    let result = {
+        let images = HaImages::new(&fixture.api).unwrap();
+        let verification = images.verify(&record, &sha);
+        tokio::pin!(verification);
+        let release = async {
+            fixture.protocol.original_entered.notified().await;
+            tokio::time::sleep(Duration::from_secs(16)).await;
+            fixture.protocol.original_release.notify_one();
+        };
+        tokio::pin!(release);
+        tokio::select! {
+            result = &mut verification => result,
+            _ = &mut release => verification.await,
+        }
+    };
+    let elapsed = started.elapsed();
+    fixture
+        .protocol
+        .hold_original
+        .store(false, Ordering::SeqCst);
+    fixture.protocol.original_release.notify_one();
+    let state = fixture.protocol.state.lock().await;
+    let mutations = (state.posts, state.deletes.clone());
+    drop(state);
+    fixture.close().await;
+
+    assert!(
+        result.is_ok(),
+        "configured thirty-second read failed: {result:?}"
+    );
+    assert!(elapsed >= Duration::from_secs(16));
+    assert_eq!(mutations, (0, Vec::new()));
+}
+
+#[tokio::test]
+async fn cancelled_native_original_read_preserves_inventory_images_and_owner_recovery() {
+    let fixture = Fixture::new().await;
+    let source = fixture.source();
+    let kept = fixture.add_delivery(1).await;
+    let obsolete = fixture
+        .add(2, ImageSha::digest(&png()).upload_name(), png())
+        .await;
+    fixture.protocol.hold_original.store(true, Ordering::SeqCst);
+    let options = fixture.options();
+    let cancelled = {
+        let operation = inventory_sync(&fixture.api, &source, &options);
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => Some(result),
+            _ = fixture.protocol.original_entered.notified() => None,
+        }
+    };
+    fixture
+        .protocol
+        .hold_original
+        .store(false, Ordering::SeqCst);
+    fixture.protocol.original_release.notify_one();
+    let before_counts = fixture.store.counts().await.unwrap();
+    let state = fixture.protocol.state.lock().await;
+    let before_mutations = (state.posts, state.deletes.clone());
+    let before_ids: Vec<_> = state.images.keys().cloned().collect();
+    drop(state);
+    let token_path = options
+        .state_directory
+        .as_ref()
+        .unwrap()
+        .join("fence-token");
+    let original_token = std::fs::read(&token_path).unwrap();
+    let recovered = inventory_sync(&fixture.api, &source, &options).await;
+    let final_counts = fixture.store.counts().await.unwrap();
+    let state = fixture.protocol.state.lock().await;
+    let after_mutations = (state.posts, state.deletes.clone());
+    drop(state);
+    let recovered_token = std::fs::read(token_path).unwrap();
+    fixture.close().await;
+
+    assert!(cancelled.is_none());
+    assert_eq!(before_counts, (0, 0, 0));
+    assert_eq!(before_mutations, (0, Vec::new()));
+    assert_eq!(before_ids, [kept, obsolete.clone()]);
+    assert!(recovered.unwrap().data.verified);
+    assert_eq!(final_counts, (1, 1, 0));
+    assert_eq!(after_mutations, (0, vec![obsolete]));
+    assert_eq!(recovered_token, original_token);
 }
 
 #[tokio::test]

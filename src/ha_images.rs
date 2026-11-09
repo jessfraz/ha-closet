@@ -21,7 +21,7 @@ use crate::{
         DeliveryFormat, ImageSha, MAX_DELIVERY_BYTES, MAX_IMAGE_BYTES, NativeImageId, PreparedImage,
     },
 };
-const READ_TIMEOUT: Duration = Duration::from_secs(15);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -101,7 +101,7 @@ impl<'a> HaImages<'a> {
         let config = WebSocketConfig::default()
             .max_message_size(Some(2 * 1024 * 1024))
             .max_frame_size(Some(2 * 1024 * 1024));
-        let deadline = Instant::now() + READ_TIMEOUT;
+        let deadline = Instant::now() + COMMAND_TIMEOUT;
         let (mut socket, _) = timeout_at(
             deadline,
             connect_async_tls_with_config(
@@ -202,7 +202,6 @@ impl<'a> HaImages<'a> {
             .api
             .client
             .get(url)
-            .timeout(READ_TIMEOUT)
             .send()
             .await
             .map_err(|_| Failure::local("native_image_read_failed"))?;
