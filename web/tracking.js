@@ -294,7 +294,7 @@ export class TrackingController {
           const list = this.node("ol", "tracking-history");
           for (const event of page.events) {
             const row = this.node("li", "");
-            const time = this.node("time", "", new Date(event.at).toLocaleString()); time.dateTime = event.at;
+            const time = this.node("time", "", new Date(event.at).toLocaleString(undefined, { timeZoneName: "short" })); time.dateTime = event.at;
             row.append(time, document.createTextNode(`${event.automatic ? "Automatic" : "Manual"} · ${event.reason.replaceAll("_", " ")}: ${statusLabels[event.after.unit.status] || "Unknown"}${event.note ? ` · ${event.note}` : ""}`)); list.append(row);
           }
           history.append(page.events.length ? list : this.node("p", "muted", "No movement history yet."));
@@ -426,7 +426,8 @@ export class TrackingController {
     const fragment = document.createDocumentFragment();
     this.retryPanel(fragment);
     if (blockers.length) {
-      const warning = this.node("div", "notice", "Some physical pieces still need quantity or tracking-capacity review. Enrollment is not complete.");
+      const warning = this.node("div", "notice tracking-review");
+      warning.append(this.node("p", "", "Some physical pieces still need quantity or tracking-capacity review. Enrollment is not complete."));
       const review = this.node("button", "quiet", "Review tracking setup"); review.type = "button";
       review.addEventListener("click", () => document.getElementById("tracking-settings-tab").click());
       warning.append(review); fragment.append(warning);
@@ -687,11 +688,18 @@ export class TrackingController {
     const placePosition = (position) => {
       const area = areaFields.find((entry) => entry.id.input.id === position.area.input.value);
       (area?.positions || enrollmentCards).append(position.block);
-      position.area.wrapper.hidden = Boolean(area);
     };
     const removePosition = (position) => {
       portFields.splice(portFields.indexOf(position), 1); placeReaders();
       position.block.remove(); refreshPositions();
+    };
+    const coverageMapping = (position) => {
+      const reader = readerFields.find((entry) => entry.id.input.id === position.reader.input.value);
+      const area = areaFields.find((entry) => entry.id.input.id === position.area.input.value);
+      const connection = reader?.transport.input.value === "impinj_llrp"
+        ? [reader.host.input.value.trim(), Number(reader.connectionPort.input.value)]
+        : reader?.transport.input.value === "impinj_iot" ? [reader.origin.input.value.trim()] : [];
+      return JSON.stringify([reader?.id.input.value.trim(), reader?.transport.input.value, connection, Number(position.antenna.input.value), area?.id.input.value.trim()]);
     };
     const refreshPositions = (changed = null, choose = false) => {
       for (const position of portFields) {
@@ -704,6 +712,9 @@ export class TrackingController {
         const used = new Set(portFields.filter((entry) => entry !== position && entry.reader.input.value === position.reader.input.value && entry.antenna.input.value !== "").map((entry) => Number(entry.antenna.input.value)));
         const available = supported?.filter((port) => !used.has(port));
         if (choose && position === changed) position.antenna.input.value = available?.[0] ?? "";
+        const mapping = coverageMapping(position);
+        if (position.coverageMapping !== mapping) position.commissioned.input.checked = false;
+        position.coverageMapping = mapping;
         const value = position.antenna.input.value, port = Number(value);
         let error = "";
         if (value && used.has(port)) error = "This antenna port already has a position. Choose an unused port.";
@@ -745,6 +756,7 @@ export class TrackingController {
       block.append(label.wrapper, kind.wrapper, active.wrapper, overrides, advancedId("area", id), antennas);
       const fields = { block, id, label, kind, active, thresholds, positions }; areaFields.push(fields);
       label.input.addEventListener("input", updateReferences);
+      id.input.addEventListener("input", () => refreshPositions());
       block.append(this.button("Remove area", () => {
         for (const position of [...portFields]) if (position.area.input.value === id.input.id) removePosition(position);
         block.remove(); areaFields.splice(areaFields.indexOf(fields), 1); updateReferences();
@@ -773,7 +785,7 @@ export class TrackingController {
       block.append(label.wrapper, active.wrapper, transport.wrapper, host.wrapper, origin.wrapper, auth.wrapper, username.wrapper, password.wrapper, credentialHint, advanced);
       const fields = { block, id, label, active, transport, host, connectionPort, program, origin, auth, username, password, originalId: reader.id, originalConnection: structuredClone(reader.connection) }; readerFields.push(fields);
       label.input.addEventListener("input", updateReferences);
-      for (const field of [transport, host, connectionPort, origin]) field.input.addEventListener("input", () => refreshPositions());
+      for (const field of [id, transport, host, connectionPort, origin]) field.input.addEventListener("input", () => refreshPositions());
       block.append(this.button("Remove reader", () => { block.remove(); readerFields.splice(readerFields.indexOf(fields), 1); updateReferences(); })); readerCards.append(block); updateReferences();
       return fields;
     };
@@ -810,15 +822,16 @@ export class TrackingController {
       const readerSettings = this.node("details", "tracking-reader-settings");
       readerSettings.append(this.node("summary", "", "Reader connection"));
       const advanced = advancedId("position", id);
-      advanced.append(role.wrapper, active.wrapper, required.wrapper, power.wrapper, dwell.wrapper);
-      block.append(reader.wrapper, connection, readerSettings, antenna.wrapper, hint, area.wrapper, commissioned.wrapper, advanced);
+      advanced.append(area.wrapper, role.wrapper, active.wrapper, required.wrapper, power.wrapper, dwell.wrapper);
+      block.append(reader.wrapper, connection, readerSettings, antenna.wrapper, hint, commissioned.wrapper, advanced);
       const fields = { block, id, reader, antenna, hint, area, role, active, required, commissioned, power, dwell, editReader: connection, readerSettings }; portFields.push(fields);
+      fields.coverageMapping = coverageMapping(fields);
       reader.input.addEventListener("change", () => {
         if (reader.input.value === "new-reader") connection.click();
         placeReaders(); refreshPositions(fields, true);
       });
       antenna.input.addEventListener("input", () => refreshPositions());
-      area.input.addEventListener("change", () => placePosition(fields));
+      area.input.addEventListener("change", () => { placePosition(fields); refreshPositions(); });
       block.append(this.button("Remove position", () => removePosition(fields))); placePosition(fields);
       placeReaders(); refreshPositions(fields, isNew);
     };
@@ -850,20 +863,24 @@ export class TrackingController {
     checklist.append(steps); root.append(checklist);
     const reconcile = this.snapshot.inventory.filter((record) => record.needs_reconciliation && !record.archived);
     for (const record of reconcile) {
-      const block = this.node("div", "notice"); block.append(this.node("p", "", `Physical count needs review: ${record.catalog_id}. Source quantity: ${record.catalog_quantity ?? "not recorded"}; active tracked pieces: ${record.active_units}.`));
+      const block = this.node("div", "notice tracking-review");
+      const summary = (label) => `Physical count needs review: ${label}. Source quantity: ${record.catalog_quantity ?? "not recorded"}; active tracked pieces: ${record.active_units}.`;
+      const description = this.node("p", "", summary(record.catalog_id)); block.append(description);
+      void this.item(record.catalog_id).then((item) => { if (root.contains(block)) description.textContent = summary(`${item.brand} ${item.name}`); }).catch(() => {});
+      const actions = this.node("div", "tracking-notice-actions");
       if (record.capacity_limited) {
         block.append(this.node("p", "muted", `New allocations are limited to 20,000 active tracking units. ${record.unallocated_units} physical pieces have not been allocated. The authoritative catalog and its quantities are unchanged. Review obsolete tracking units before trying another allocation.`));
-        if (record.catalog_quantity !== null || record.declared_quantity !== null) block.append(this.button("Retry tracking allocation", () => this.command({ type: "reconcile_units", catalog_id: record.catalog_id }, revision)));
+        if (record.catalog_quantity !== null || record.declared_quantity !== null) actions.append(this.button("Retry tracking allocation", () => this.command({ type: "reconcile_units", catalog_id: record.catalog_id }, revision)));
       } else if (record.catalog_quantity === null) {
         const count = this.number("Confirmed physical count", record.declared_quantity ?? record.active_units); count.input.min = "1"; count.input.max = "20000";
-        block.append(count.wrapper, this.button("Confirm physical count", () => { if (count.input.reportValidity()) void this.command({ type: "declare_unit_count", catalog_id: record.catalog_id, count: Number(count.input.value) }, revision); }));
+        block.append(count.wrapper); actions.append(this.button("Confirm physical count", () => { if (count.input.reportValidity()) void this.command({ type: "declare_unit_count", catalog_id: record.catalog_id, count: Number(count.input.value) }, revision); }));
       } else if (record.active_units < record.catalog_quantity) {
-        block.append(this.button("Restore missing physical units", () => this.command({ type: "reconcile_units", catalog_id: record.catalog_id }, revision)));
+        actions.append(this.button("Restore missing physical units", () => this.command({ type: "reconcile_units", catalog_id: record.catalog_id }, revision)));
       } else {
         block.append(this.node("p", "muted", "Review the individual pieces and retire any extra tracking units. The source quantity cannot be overridden here."));
       }
-      block.append(this.button("Review physical pieces", async () => { try { this.openItem(await this.item(record.catalog_id)); } catch (error) { this.notice(this.errorMessage(error), true); } }));
-      root.append(block);
+      actions.append(this.button("Review physical pieces", async () => { try { this.openItem(await this.item(record.catalog_id)); } catch (error) { this.notice(this.errorMessage(error), true); } }));
+      block.append(actions); root.append(block);
     }
     const backup = this.node("details", "tracking-settings-support"); backup.append(this.node("summary", "", "Tracking backup and recovery"), this.node("p", "muted", "Exports contain private tag associations and movement history. Keep them private. Catalog metadata is not changed by a tracking import."));
     backup.append(this.button("Download tracking export", async () => {

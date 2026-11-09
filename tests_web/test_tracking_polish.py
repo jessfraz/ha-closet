@@ -403,3 +403,273 @@ async def test_areas_share_a_reader_and_keep_their_antenna_assignments(
             ).to_have_value("Example hamper")
         finally:
             await browser.close()
+
+
+async def populated_settings(backend: RustBackend) -> None:
+    config = (await snapshot(backend))["config"]
+    assert isinstance(config, dict)
+    config.pop("enabled", None)
+    config.update(
+        areas=[
+            {
+                "id": "example-closet",
+                "label": "Example wardrobe and hanging clothes",
+                "kind": "closet",
+                "enabled": True,
+            },
+            {
+                "id": "example-hamper",
+                "label": "Example laundry hamper",
+                "kind": "hamper",
+                "enabled": True,
+            },
+        ],
+        readers=[
+            {
+                "id": f"example-reader-{suffix}",
+                "label": (
+                    f"Example shared reader {suffix} with several antenna connections"
+                ),
+                "enabled": False,
+                "connection": {
+                    "type": "impinj_llrp",
+                    "host": f"reader-{suffix}.example.invalid",
+                    "port": 5084,
+                    "owned_rospec_id": 1,
+                },
+            }
+            for suffix in ("a", "b")
+        ],
+        ports=[
+            {
+                "id": f"example-position-{number}",
+                "reader_id": "example-reader-a" if number < 5 else "example-reader-b",
+                "antenna": number if number < 5 else number - 4,
+                "area_id": "example-closet"
+                if number < 3
+                else "example-hamper"
+                if number < 5
+                else None,
+                "role": "monitor" if number < 5 else "enrollment",
+                "enabled": True,
+                "required_for_absence": number < 5,
+                "commissioned": number < 5,
+                "transmit_power_cdbm": None,
+                "dwell_ms": None,
+            }
+            for number in range(1, 7)
+        ],
+    )
+    await command(backend, {"type": "configure", "config": config})
+
+
+@pytest.mark.parametrize("width", [320, 390])
+async def test_populated_settings_controls_fit_with_shared_readers_and_long_labels(
+    rust_backend: RustBackend, width: int
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await populated_settings(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(
+                viewport={"width": width, "height": 900}, color_scheme="dark"
+            )
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            positions = page.get_by_role("group", name="Antenna position", exact=True)
+            await expect(positions).to_have_count(6)
+            await positions.first.get_by_role(
+                "button", name="Edit reader connection", exact=True
+            ).click()
+            await positions.first.get_by_text(
+                "Advanced reader settings", exact=True
+            ).click()
+            await positions.first.get_by_text(
+                "Advanced position settings", exact=True
+            ).click()
+            assert not await page.evaluate(
+                "document.documentElement.scrollWidth > innerWidth"
+            )
+            for control in (
+                await page.locator("#tracking-settings").get_by_role("combobox").all()
+            ):
+                if not await control.is_visible():
+                    continue
+                bounds = await control.bounding_box()
+                assert bounds is not None
+                assert bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width
+            await page.get_by_text("Tracking backup and recovery", exact=True).click()
+            backup = page.get_by_text(
+                "Tracking backup and recovery", exact=True
+            ).locator("..")
+            text = await backup.locator("p").bounding_box()
+            download = await backup.get_by_role(
+                "button", name="Download tracking export", exact=True
+            ).bounding_box()
+            upload = await backup.get_by_label(
+                "Restore tracking export", exact=True
+            ).bounding_box()
+            restore = await backup.get_by_role(
+                "button", name="Restore selected export", exact=True
+            ).bounding_box()
+            assert text and download and upload and restore
+            assert download["y"] - text["y"] - text["height"] >= 12
+            assert upload["y"] - download["y"] - download["height"] >= 18
+            assert restore["y"] - upload["y"] - upload["height"] >= 12
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize(
+    "changed",
+    ["antenna", "reader", "host", "transport", "connection_port", "reader_id", "area"],
+)
+async def test_hardware_mapping_changes_require_fresh_commissioning(
+    rust_backend: RustBackend, changed: str
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await populated_settings(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 390, "height": 844})
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            position = page.get_by_role(
+                "group", name="Antenna position", exact=True
+            ).first
+            tested = position.get_by_label("Coverage tested", exact=True)
+            await expect(tested).to_be_checked()
+            if changed == "antenna":
+                await position.get_by_label("Antenna port", exact=True).fill("7")
+            elif changed == "reader":
+                await position.get_by_label(
+                    "Reader for this position", exact=True
+                ).select_option(
+                    label="Example shared reader b with several antenna connections"
+                )
+                await position.get_by_label("Antenna port", exact=True).fill("7")
+            elif changed == "area":
+                await position.get_by_text(
+                    "Advanced position settings", exact=True
+                ).click()
+                await position.get_by_label(
+                    "Area for this position", exact=True
+                ).select_option(label="Example laundry hamper")
+                position = (
+                    page.get_by_role("group", name="Area", exact=True)
+                    .nth(1)
+                    .get_by_role("group", name="Antenna position", exact=True)
+                    .last
+                )
+                tested = position.get_by_label("Coverage tested", exact=True)
+            else:
+                await position.get_by_role(
+                    "button", name="Edit reader connection", exact=True
+                ).click()
+                connection = position.locator(".tracking-reader-settings")
+                if changed == "host":
+                    await connection.get_by_label("Reader host", exact=True).fill(
+                        "replacement-reader.example.invalid"
+                    )
+                elif changed == "transport":
+                    await connection.get_by_label(
+                        "Reader transport", exact=True
+                    ).select_option("simulator")
+                else:
+                    await connection.get_by_text(
+                        "Advanced reader settings", exact=True
+                    ).click()
+                    await connection.get_by_label(
+                        "Reader port" if changed == "connection_port" else "Reader ID",
+                        exact=True,
+                    ).fill(
+                        "5085"
+                        if changed == "connection_port"
+                        else "example-replaced-reader"
+                    )
+            await expect(tested).not_to_be_checked()
+            await action(page, "Save tracking settings")
+            saved = (await snapshot(rust_backend))["config"]
+            assert isinstance(saved, dict) and isinstance(saved["ports"], list)
+            selected = next(
+                port
+                for port in saved["ports"]
+                if isinstance(port, dict) and port["id"] == "example-position-1"
+            )
+            assert isinstance(selected, dict) and selected["commissioned"] is False
+            affected = (
+                {f"example-position-{number}" for number in range(1, 5)}
+                if changed in {"host", "transport", "connection_port", "reader_id"}
+                else {"example-position-1"}
+            )
+            for port in saved["ports"][:4]:
+                assert isinstance(port, dict)
+                assert port["commissioned"] is (port["id"] not in affected)
+            # A deliberate confirmation after the new setup can be saved again.
+            target_area = page.get_by_role("group", name="Area", exact=True).nth(
+                1 if changed == "area" else 0
+            )
+            selected_position = target_area.get_by_role(
+                "group", name="Antenna position", exact=True
+            ).first
+            await selected_position.get_by_label("Coverage tested", exact=True).check()
+            await action(page, "Save tracking settings")
+            saved = (await snapshot(rust_backend))["config"]
+            assert isinstance(saved, dict) and isinstance(saved["ports"], list)
+            selected = next(
+                port
+                for port in saved["ports"]
+                if isinstance(port, dict) and port["id"] == "example-position-1"
+            )
+            assert isinstance(selected, dict) and selected["commissioned"] is True
+        finally:
+            await browser.close()
+
+
+async def test_label_edits_and_unhealthy_readers_keep_installation_confirmation(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await populated_settings(rust_backend)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            position = page.get_by_role(
+                "group", name="Antenna position", exact=True
+            ).first
+            await expect(
+                position.get_by_label("Coverage tested", exact=True)
+            ).to_be_checked()
+            await page.get_by_label("Area label", exact=True).first.fill(
+                "Example renamed wardrobe"
+            )
+            await position.get_by_role(
+                "button", name="Edit reader connection", exact=True
+            ).click()
+            await position.get_by_label("Reader label", exact=True).fill(
+                "Example renamed shared reader"
+            )
+            await action(page, "Save tracking settings")
+            saved = (await snapshot(rust_backend))["config"]
+            assert isinstance(saved, dict) and isinstance(saved["ports"], list)
+            assert all(
+                isinstance(port, dict) and port["commissioned"] is True
+                for port in saved["ports"][:4]
+            )
+            health = (await snapshot(rust_backend))["health"]
+            assert (
+                isinstance(health, dict) and health["absence_coverage_healthy"] is False
+            )
+        finally:
+            await browser.close()

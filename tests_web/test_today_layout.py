@@ -112,3 +112,41 @@ async def test_bedtime_ui_sends_sleepwear_occasion_and_keeps_the_saved_result(
             assert ha_protocol.generations == 1
         finally:
             await browser.close()
+
+
+@pytest.mark.parametrize("rust_backend", [True], indirect=True)
+@pytest.mark.parametrize("width", [390, 1440])
+async def test_single_piece_sleepwear_stays_proportional_to_other_looks(
+    rust_backend: RustBackend, width: int
+) -> None:
+    await rust_backend.sync(
+        [
+            catalog_item("example-top"),
+            catalog_item("example-jeans", category="clothing.jeans"),
+            catalog_item("example-flats", category="footwear"),
+            catalog_item("example-nightgown", category="clothing.sleepwear.nightgown"),
+        ]
+    )
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(
+                viewport={"width": width, "height": 900}, color_scheme="dark"
+            )
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Today", exact=True).click()
+            await page.get_by_label("Weather", exact=True).select_option("ignored")
+            await page.get_by_role("button", name="Suggest outfits", exact=True).click()
+            bedtime = page.get_by_role("region", name="Bedtime", exact=True)
+            await expect(bedtime.locator(".item-piece")).to_have_count(1)
+            photo = await bedtime.locator(".photo").bounding_box()
+            assert (
+                photo is not None and photo["width"] <= 160.5 and photo["height"] <= 201
+            )
+            everyday = page.get_by_role("region", name="Everyday", exact=True)
+            await expect(everyday.locator(".item-piece")).to_have_count(3)
+            assert not await page.evaluate(
+                "document.documentElement.scrollWidth > innerWidth"
+            )
+        finally:
+            await browser.close()

@@ -224,7 +224,7 @@ async def test_manual_status_filters_history(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
-            page = await browser.new_page()
+            page = await browser.new_page(timezone_id="America/Los_Angeles")
             await login(page, rust_backend, manual_paging=True)
             await expect(page.get_by_label("Readiness", exact=True)).to_be_visible()
             await expect(page.locator(".item-card .tracking-pill").first).to_have_text(
@@ -260,6 +260,9 @@ async def test_manual_status_filters_history(
                     exact=False,
                 )
             ).to_be_visible()
+            await expect(page.locator(".tracking-history time").first).to_have_text(
+                re.compile(r".* (PST|PDT)$")
+            )
             assert "00000001" not in await page.locator("body").inner_text()
             await page.get_by_role(
                 "button", name="Close item details", exact=True
@@ -639,7 +642,6 @@ async def test_failed_duplicate_id_repair_keeps_each_position_reference(
     config = (await snapshot(rust_backend))["config"]
     assert isinstance(config, dict)
     config.update(
-        enabled=False,
         areas=[
             {
                 "id": "example-closet",
@@ -699,6 +701,10 @@ async def test_failed_duplicate_id_repair_keeps_each_position_reference(
             ).click()
             advanced = page.get_by_text(f"Advanced {kind} settings", exact=True).first
             identifier = page.get_by_label(f"{kind.title()} ID", exact=True).first
+            if kind == "reader":
+                await page.get_by_role(
+                    "button", name="Edit reader connection", exact=True
+                ).first.click()
             await advanced.click()
             await identifier.fill(conflicting)
             async with page.expect_response("**/v1/tracking/commands") as response:
@@ -720,6 +726,10 @@ async def test_failed_duplicate_id_repair_keeps_each_position_reference(
                 if isinstance(port, dict)
             ] == [("example-monitor-a", original), ("example-monitor-b", conflicting)]
             # A valid rename still updates only the position linked to that row.
+            if kind == "reader":
+                await page.get_by_role(
+                    "button", name="Edit reader connection", exact=True
+                ).first.click()
             await advanced.click()
             await identifier.fill(renamed)
             await action(page, "Save tracking settings")
@@ -1132,9 +1142,14 @@ async def test_quantity_reconciliation_restores_units_without_overriding_source(
             await expect(
                 page.get_by_role("heading", name="The queue is complete", exact=True)
             ).to_have_count(0)
-            await page.get_by_role(
+            warning_button = page.get_by_role(
                 "button", name="Review tracking setup", exact=True
-            ).click()
+            )
+            warning = warning_button.locator("..")
+            copy = await warning.locator("p").bounding_box()
+            control = await warning_button.bounding_box()
+            assert copy and control and control["y"] - copy["y"] - copy["height"] >= 12
+            await warning_button.click()
             await expect(
                 page.get_by_role("button", name="Confirm physical count", exact=True)
             ).to_have_count(0)
@@ -1329,5 +1344,49 @@ async def test_manual_status_filters_remain_complete_after_bookmark_reload(
             await expect(
                 page.locator('[data-catalog-id="example-manual-wash"]')
             ).to_have_count(0)
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("mode", ["Enroll", "Look up a tag"])
+async def test_scan_controls_leave_space_for_guidance_on_mobile(
+    rust_backend: RustBackend, mode: str
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(
+                viewport={"width": 320, "height": 844}, color_scheme="dark"
+            )
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            await page.get_by_role("button", name=mode, exact=True).click()
+            station = page.locator(".station-controls")
+            await expect(station).to_be_visible()
+            previous = await station.locator(
+                "xpath=preceding-sibling::p[1]"
+            ).bounding_box()
+            controls = await station.bounding_box()
+            assert (
+                previous
+                and controls
+                and controls["y"] - previous["y"] - previous["height"] >= 16
+            )
+            actions = await station.locator(".enroll-actions").bounding_box()
+            helper = await station.get_by_text(
+                "A dedicated enrollment position is needed.", exact=False
+            ).bounding_box()
+            assert (
+                actions
+                and helper
+                and helper["y"] - actions["y"] - actions["height"] >= 12
+            )
+            if mode == "Enroll":
+                photo = await page.locator(".enroll-photo").bounding_box()
+                assert photo and controls["y"] >= photo["y"] + photo["height"]
+            assert not await page.evaluate(
+                "document.documentElement.scrollWidth > innerWidth"
+            )
         finally:
             await browser.close()
