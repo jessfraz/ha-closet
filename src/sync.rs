@@ -499,15 +499,20 @@ async fn live_references(
     Ok(referenced)
 }
 async fn candidates(
-    native: &HaImages<'_>,
+    api: &ApiClient,
     references: &BTreeSet<NativeImageId>,
+    lease: Option<(&FenceToken, i64)>,
 ) -> Result<Vec<ManagedImage>> {
+    let native = HaImages::new(api)?;
     let mut candidates = Vec::new();
     for image in native.list().await? {
         if references.contains(&image.id) {
             continue;
         }
         if let Some(sha) = ImageSha::from_upload_name(&image.name) {
+            if let Some((token, revision)) = lease {
+                acquire(api, token, revision).await?;
+            }
             native.verify(&image, &sha).await?;
             candidates.push(ManagedImage {
                 id: image.id,
@@ -718,7 +723,7 @@ async fn managed(
             let catalog = source.materialize(&api.origin, &resolved)?;
             let output = preview(api, catalog.items(), options.allow_empty).await?;
             summary.would_prune = Some(
-                candidates(&native, &live_references(api, catalog.items()).await?)
+                candidates(api, &live_references(api, catalog.items()).await?, None)
                     .await?
                     .len(),
             );
@@ -778,8 +783,14 @@ async fn managed(
         source.unchanged()?;
         let status = acquire(api, &owner.token, output.data.catalog_revision).await?;
         reconcile_uploads(api, &native, &owner.token, &status.uploads).await?;
-        let images = candidates(&native, &references).await?;
+        let images = candidates(
+            api,
+            &references,
+            Some((&owner.token, output.data.catalog_revision)),
+        )
+        .await?;
         source.unchanged()?;
+        acquire(api, &owner.token, output.data.catalog_revision).await?;
         let state = response::<FenceStatus>(
             api.request(Method::POST, "/inventory/fence/prepare")?
                 .json(&FencePrepare {

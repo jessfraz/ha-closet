@@ -276,7 +276,9 @@ has a one-hour network budget for large photo batches; native catalog sync
 defaults to ten minutes.
 `inventory sync --sync-timeout SECONDS` overrides that budget (1–7200 seconds).
 Photo preparation runs locally before the network operation. Native WebSocket
-commands have 15 seconds and one upload has 120 seconds.
+commands have 15 seconds and one upload has 120 seconds. Cleanup renews its
+sync lease while verifying old photos and rechecks the catalog revision before
+admitting deletions.
 Redirects are never followed. A timeout or lost reply does not prove that a
 write was rejected. Only an exact, durable pending deletion can be resumed;
 uploads and inventory writes are never automatically retried.

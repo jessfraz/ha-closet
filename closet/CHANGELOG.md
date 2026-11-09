@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- Renew the sync lease while verifying old photos, so large cleanup batches
+  finish without weakening revision checks or deletion safeguards.
+
 ## 0.3.2
 
 - Honor the request timeout when verifying native photos, including large old

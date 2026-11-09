@@ -19,6 +19,7 @@ use futures_util::{SinkExt, StreamExt};
 use http::Response;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sqlx::{Connection as _, SqliteConnection, sqlite::SqliteConnectOptions};
 use std::{
     collections::BTreeMap,
     net::SocketAddr,
@@ -467,6 +468,13 @@ impl Fixture {
             ..Default::default()
         }
     }
+    async fn fence_connection(&self) -> SqliteConnection {
+        SqliteConnection::connect_with(
+            &SqliteConnectOptions::new().filename(self.directory.path().join("closet.sqlite3")),
+        )
+        .await
+        .unwrap()
+    }
     fn source(&self) -> SourceSnapshot {
         self.source_bytes(png())
     }
@@ -908,6 +916,201 @@ async fn writer_is_blocked_during_native_delete_without_holding_a_sql_transactio
         assert!(sync.await.unwrap().data.verified);
     }
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn prune_candidate_reads_renew_the_lease_before_each_read_and_final_admission() {
+    let fixture = Fixture::new().await;
+    let source = SourceSnapshot::new(
+        closet::models::validate_catalog(Fixture::source_items()).unwrap(),
+        None,
+        None,
+    );
+    let first = fixture
+        .add(1, ImageSha::digest(&png()).upload_name(), png())
+        .await;
+    let second = fixture
+        .add(2, ImageSha::digest(&png()).upload_name(), png())
+        .await;
+    let unrelated = fixture.add(99, "someone-else.png".into(), png()).await;
+    let mut connection = fixture.fence_connection().await;
+    fixture.protocol.hold_original.store(true, Ordering::SeqCst);
+    let (renewed, concurrent_writer, result) = {
+        let options = fixture.options();
+        let operation = inventory_sync(&fixture.api, &source, &options);
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => panic!("completed before first candidate read: {result:?}"),
+            _ = fixture.protocol.original_entered.notified() => {}
+        }
+        sqlx::query("UPDATE inventory_fence SET expires_at=0")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        fixture.protocol.original_release.notify_one();
+        tokio::select! {
+            result = &mut operation => panic!("completed before second candidate read: {result:?}"),
+            _ = fixture.protocol.original_entered.notified() => {}
+        }
+        let renewed = sqlx::query_scalar::<_, bool>(
+            "SELECT expires_at > unixepoch() FROM inventory_fence WHERE singleton=1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        let concurrent_writer = fixture
+            .store
+            .sync(
+                SyncRequest {
+                    items: Fixture::source_items(),
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(1),
+                "concurrent-writer",
+                Some("candidate-read-writer"),
+            )
+            .await
+            .map_err(|error| error.code().to_owned());
+        // The final original can also outlast the lease. No following candidate
+        // exists to renew it, so admission needs its own fresh revision check.
+        sqlx::query("UPDATE inventory_fence SET expires_at=0")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        fixture
+            .protocol
+            .hold_original
+            .store(false, Ordering::SeqCst);
+        fixture.protocol.original_release.notify_one();
+        (renewed, concurrent_writer, operation.await)
+    };
+    let counts = fixture.store.counts().await.unwrap();
+    let state = fixture.protocol.state.lock().await;
+    let mutations = (state.posts, state.deletes.clone());
+    let remaining: Vec<_> = state.images.keys().cloned().collect();
+    drop(state);
+    connection.close().await.unwrap();
+    fixture.close().await;
+
+    assert!(
+        renewed,
+        "lease was not renewed before the next candidate read"
+    );
+    assert_eq!(concurrent_writer.unwrap_err(), "sync_in_progress");
+    let output = result.unwrap();
+    assert!(output.data.verified);
+    assert_eq!(output.data.images.unwrap().pruned, 2);
+    assert_eq!(counts, (1, 1, 0));
+    assert_eq!(mutations, (0, vec![first, second]));
+    assert_eq!(remaining, [unrelated]);
+}
+
+#[tokio::test]
+async fn prune_candidate_takeover_after_lease_expiry_keeps_new_live_references() {
+    use closet::fence::{FenceAcquire, FenceToken, ManagedImage};
+
+    let fixture = Fixture::new().await;
+    let source = SourceSnapshot::new(
+        closet::models::validate_catalog(Fixture::source_items()).unwrap(),
+        None,
+        None,
+    );
+    let old = fixture
+        .add(1, ImageSha::digest(&png()).upload_name(), png())
+        .await;
+    let unrelated = fixture.add(99, "someone-else.png".into(), png()).await;
+    let mut connection = fixture.fence_connection().await;
+    let successor = FenceToken::new().unwrap();
+    let new_url = format!(
+        "https://{}/api/image/serve/{old}/original",
+        fixture.native.local_addr()
+    );
+    fixture.protocol.hold_original.store(true, Ordering::SeqCst);
+    let (written, result) = {
+        let options = fixture.options();
+        let operation = inventory_sync(&fixture.api, &source, &options);
+        tokio::pin!(operation);
+        tokio::select! {
+            result = &mut operation => panic!("completed before candidate read: {result:?}"),
+            _ = fixture.protocol.original_entered.notified() => {}
+        }
+        sqlx::query("UPDATE inventory_fence SET expires_at=0")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        fixture
+            .store
+            .acquire_fence(
+                FenceAcquire {
+                    token: successor.clone(),
+                    expected_revision: 1,
+                },
+                "concurrent-writer",
+            )
+            .await
+            .unwrap();
+        let mut items = Fixture::source_items();
+        items[0].images[0].url = new_url.clone();
+        let written = fixture
+            .store
+            .sync_fenced(
+                SyncRequest {
+                    items,
+                    dry_run: false,
+                    allow_empty: false,
+                },
+                Some(1),
+                "concurrent-writer",
+                Some("new-live-reference"),
+                Some(&successor),
+            )
+            .await
+            .unwrap();
+        fixture
+            .protocol
+            .hold_original
+            .store(false, Ordering::SeqCst);
+        fixture.protocol.original_release.notify_one();
+        (written, operation.await)
+    };
+    let another_owner = fixture
+        .store
+        .acquire_fence(
+            FenceAcquire {
+                token: FenceToken::new().unwrap(),
+                expected_revision: 2,
+            },
+            "another-writer",
+        )
+        .await
+        .map_err(|error| error.code().to_owned());
+    let pending =
+        sqlx::query_scalar::<_, String>("SELECT pending FROM inventory_fence WHERE singleton=1")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    let pending: Vec<ManagedImage> = serde_json::from_str(&pending).unwrap();
+    let items = fixture.store.active_items().await.unwrap();
+    let state = fixture.protocol.state.lock().await;
+    let mutations = (state.posts, state.deletes.clone());
+    let remaining: Vec<_> = state.images.keys().cloned().collect();
+    drop(state);
+    fixture
+        .store
+        .release_fence(&successor, "concurrent-writer")
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    fixture.close().await;
+
+    assert_eq!(written.catalog_revision, 2);
+    assert_eq!(result.unwrap_err().error_code, "revision_conflict");
+    assert_eq!(another_owner.unwrap_err(), "sync_in_progress");
+    assert!(pending.is_empty());
+    assert_eq!(items[0].images[0].url, new_url);
+    assert_eq!(mutations, (0, Vec::new()));
+    assert_eq!(remaining, [old, unrelated]);
 }
 
 #[tokio::test]
