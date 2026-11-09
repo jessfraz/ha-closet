@@ -61,6 +61,14 @@ async def test_today_wrapped_source_labels_are_compact_and_follow_their_item(
                     return current.top-prior.bottom;
                 }""")
                 assert abs(gap) < 0.5, "source badge floats below its own item metadata"
+                text_gap = await badge.evaluate("""element => {
+                    const holder=element.parentElement;
+                    const range=document.createRange();
+                    range.selectNodeContents(holder.previousElementSibling);
+                    return holder.getBoundingClientRect().top
+                        - range.getBoundingClientRect().bottom;
+                }""")
+                assert 0 <= text_gap <= 4, "metadata text floats above its source"
             assert not await page.evaluate(
                 "document.documentElement.scrollWidth > innerWidth"
             )
