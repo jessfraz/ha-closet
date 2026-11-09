@@ -71,6 +71,16 @@ labels also support exact thirds, such as `"41 1/3"` and `"41 2/3"`; these
 remain fractions, and profile bounds compare them without rounding. A missing
 size fails validation; do not invent a size to satisfy the check.
 
+Use a numeric pair for a reported footwear label such as `7/8`:
+
+```toml
+value = { kind = "numeric_pair", first = "7", second = "8" }
+```
+
+Both numbers use the footwear profile's bounds and fraction rules. The first
+must be smaller than the second; the compiler preserves their order and does
+not turn the label into a conversion or two separate purchases.
+
 Materials are structured per component, such as shell, lining or sole. A listed
 fiber does not imply 100% purity. Percentage compositions use integer basis
 points: 7700 means 77%. Complete compositions total 10000 per component. Denim,

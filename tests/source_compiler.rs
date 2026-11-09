@@ -361,6 +361,228 @@ fn footwear_thirds_roundtrip_as_exact_labels_and_compare_in_sixths() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn numeric_pair_roundtrips_through_source_json_and_the_real_cli() {
+    let directory = tempfile::tempdir().unwrap();
+    for file in [
+        "wardrobe.toml",
+        "brands.toml",
+        "categories.toml",
+        "fittings.toml",
+    ] {
+        fs::copy(
+            format!("config/wardrobe.example/{file}"),
+            directory.path().join(file),
+        )
+        .unwrap();
+    }
+    let path = directory.path().join("wardrobe.toml");
+    edit(
+        &path,
+        "category = \"clothing.top.tshirt\"",
+        "category = \"footwear.sandals\"",
+    );
+    for old in ["00", "0"] {
+        edit(
+            &path,
+            &format!("value = {{ kind = \"numeric\", label = \"{old}\" }}"),
+            "value = { kind = \"numeric_pair\", first = \"7\", second = \"8\" }",
+        );
+    }
+    let categories = directory.path().join("categories.toml");
+    edit(&categories, "clothing.top.tshirt", "footwear.sandals");
+    edit(
+        &categories,
+        "sizing_kind = \"clothing\"",
+        "sizing_kind = \"footwear\"",
+    );
+    edit(
+        &directory.path().join("brands.toml"),
+        "kind = \"clothing\"",
+        "kind = \"footwear\"\nmin = \"7\"\nmax = \"8\"",
+    );
+    let source = CompiledCatalog::load(&path).unwrap();
+    let projected = source.materialize(&BTreeMap::new()).unwrap();
+    assert!(
+        projected
+            .items()
+            .iter()
+            .all(|item| item.size.as_deref() == Some("7/8"))
+    );
+    let wire = serde_json::to_vec(projected.items()).unwrap();
+    assert_eq!(
+        closet::models::parse_catalog(&wire).unwrap().items(),
+        projected.items()
+    );
+    let validated = Command::new(env!("CARGO_BIN_EXE_ha-closet"))
+        .args(["inventory", "validate", "--input"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        validated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validated.stdout)
+    );
+    let store = Store::open(directory.path().join("numeric-pair.sqlite3"))
+        .await
+        .unwrap();
+    let server = closet::api::start(
+        "127.0.0.1:0".parse().unwrap(),
+        std::sync::Arc::new(closet::api::Context::new(
+            store.clone(),
+            "fictional-numeric-pair-owner-credential",
+        )),
+    )
+    .unwrap();
+    let origin = format!("http://{}", server.local_addr());
+    let state = directory.path().join("sync-state");
+    let result = tokio::task::spawn_blocking(move || {
+        Command::new(env!("CARGO_BIN_EXE_ha-closet"))
+            .env(
+                "CLOSET_API_TOKEN",
+                "fictional-numeric-pair-owner-credential",
+            )
+            .args([
+                "--transport",
+                "native",
+                "--url",
+                &origin,
+                "inventory",
+                "sync",
+                "--input",
+            ])
+            .arg(path)
+            .arg("--state-dir")
+            .arg(state)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        result.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        store
+            .item("example-purchase-a")
+            .await
+            .unwrap()
+            .catalog
+            .size
+            .as_deref(),
+        Some("7/8")
+    );
+    server.close().await.unwrap();
+    store.close().await;
+}
+
+#[test]
+fn numeric_pairs_validate_both_numbers_and_the_footwear_profile() {
+    let (directory, path) = fixture();
+    edit(
+        &path,
+        "category = \"clothing.top.tshirt\"",
+        "category = \"footwear.sandals\"",
+    );
+    fs::write(
+        directory.path().join("categories.toml"),
+        "schema=1\n[categories.'footwear.sandals']\nlabel='Sandals'\nsizing_kind='footwear'\n",
+    )
+    .unwrap();
+    let brands = directory.path().join("brands.toml");
+    edit(
+        &brands,
+        "kind = \"clothing\"",
+        "kind = \"footwear\"\nmin = \"7\"\nmax = \"8\"",
+    );
+    let pair = |first: &str, second: &str| SizeValue::NumericPair {
+        first: first.to_owned().try_into().unwrap(),
+        second: second.to_owned().try_into().unwrap(),
+    };
+    let mut authored = document(&path);
+    for (first, second, expected) in [
+        ("7", "8", "7/8"),
+        ("7.5", "8", "7.5/8"),
+        ("7", "7.5", "7/7.5"),
+        ("7 1/3", "7.5", "7 1/3/7.5"),
+        ("7.5", "7 2/3", "7.5/7 2/3"),
+    ] {
+        for entry in &mut authored.inventory {
+            entry.size.primary.value = pair(first, second);
+        }
+        produce(&path, &authored);
+        assert_eq!(
+            CompiledCatalog::load(&path).unwrap().items()[0].size,
+            expected
+        );
+    }
+    for (first, second, expected) in [
+        ("8", "7", "invalid_numeric_pair"),
+        ("7", "7", "invalid_numeric_pair"),
+        ("7 2/3", "7.5", "invalid_numeric_pair"),
+        ("6", "8", "size_out_of_bounds"),
+        ("7", "9", "size_out_of_bounds"),
+        ("00", "8", "size_double_zero_not_allowed"),
+    ] {
+        for entry in &mut authored.inventory {
+            entry.size.primary.value = pair(first, second);
+        }
+        produce(&path, &authored);
+        code(&CompiledCatalog::load(&path).unwrap_err(), expected);
+    }
+    edit(&brands, "max = \"8\"", "max = \"8\"\nallow_half = false");
+    for (first, second) in [("7.5", "8"), ("7", "7.5")] {
+        for entry in &mut authored.inventory {
+            entry.size.primary.value = pair(first, second);
+        }
+        produce(&path, &authored);
+        code(
+            &CompiledCatalog::load(&path).unwrap_err(),
+            "size_half_not_allowed",
+        );
+    }
+    for entry in &mut authored.inventory {
+        entry.size.primary.value = pair("7", "8");
+    }
+    produce(&path, &authored);
+    edit(&brands, "allow_half = false", "forms = [\"numeric\"]");
+    code(
+        &CompiledCatalog::load(&path).unwrap_err(),
+        "size_profile_form_mismatch",
+    );
+    edit(
+        &brands,
+        "forms = [\"numeric\"]",
+        "forms = [\"numeric_pair\"]",
+    );
+    CompiledCatalog::load(&path).unwrap();
+    edit(&path, "footwear.sandals", "clothing.top.tshirt");
+    fs::write(
+        directory.path().join("categories.toml"),
+        include_str!("fixtures/toml/categories.toml"),
+    )
+    .unwrap();
+    edit(&brands, "kind = \"footwear\"", "kind = \"clothing\"");
+    let error = CompiledCatalog::load(&path).unwrap_err();
+    code(&error, "size_numeric_pair_not_allowed");
+    code(&error, "incompatible_size_form");
+    let mut authored = document(&path);
+    for (first, second) in [("7 1/3", "8"), ("7", "7 2/3")] {
+        for entry in &mut authored.inventory {
+            entry.size.primary.value = pair(first, second);
+        }
+        produce(&path, &authored);
+        code(
+            &CompiledCatalog::load(&path).unwrap_err(),
+            "size_thirds_not_allowed",
+        );
+    }
+}
+
 #[test]
 fn sizes_keep_zeroes_units_scopes_and_reported_labels_without_conversion() {
     let (directory, path) = fixture();

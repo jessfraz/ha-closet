@@ -192,6 +192,7 @@ choices!(SizeForm {
     Alpha => "alpha" => "Alpha",
     AlphaPair => "alpha_pair" => "Alpha pair",
     Numeric => "numeric" => "Numeric",
+    NumericPair => "numeric_pair" => "Numeric pair",
     Petite => "petite" => "Petite",
     Denim => "denim" => "Denim",
     OneSize => "one_size" => "One size",
@@ -571,6 +572,10 @@ pub enum SizeValue {
     },
     Numeric {
         label: NativeNumber,
+    },
+    NumericPair {
+        first: NativeNumber,
+        second: NativeNumber,
     },
     Petite {
         label: NativeNumber,

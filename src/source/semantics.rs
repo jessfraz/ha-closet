@@ -334,6 +334,7 @@ fn form(value: &SizeValue) -> SizeForm {
         SizeValue::Alpha { .. } => SizeForm::Alpha,
         SizeValue::AlphaPair { .. } => SizeForm::AlphaPair,
         SizeValue::Numeric { .. } => SizeForm::Numeric,
+        SizeValue::NumericPair { .. } => SizeForm::NumericPair,
         SizeValue::Petite { .. } => SizeForm::Petite,
         SizeValue::Denim { .. } => SizeForm::Denim,
         SizeValue::OneSize => SizeForm::OneSize,
@@ -352,7 +353,11 @@ fn default_form(kind: SizeKind, form: SizeForm) -> bool {
         ),
         SizeKind::Footwear => matches!(
             form,
-            SizeForm::Alpha | SizeForm::AlphaPair | SizeForm::Numeric | SizeForm::OneSize
+            SizeForm::Alpha
+                | SizeForm::AlphaPair
+                | SizeForm::Numeric
+                | SizeForm::NumericPair
+                | SizeForm::OneSize
         ),
         SizeKind::Denim => matches!(
             form,
@@ -421,6 +426,48 @@ pub(crate) fn validate_profile(profile: &SizingProfile, path: &str, errors: &mut
         }
     }
 }
+fn validate_numeric_label(
+    label: &NativeNumber,
+    profile: &SizingProfile,
+    path: &str,
+    errors: &mut Diagnostics,
+) {
+    let max = profile.max.as_ref().map_or(
+        if profile.kind == SizeKind::Belt {
+            3000
+        } else {
+            600
+        },
+        NativeNumber::sixths,
+    );
+    let min = profile.min.as_ref().map_or(0, NativeNumber::sixths);
+    errors.check(
+        (min..=max).contains(&label.sixths()),
+        path,
+        "size_out_of_bounds",
+    );
+    errors.check(
+        profile.allow_half || !matches!(label, NativeNumber::Half(_)),
+        path,
+        "size_half_not_allowed",
+    );
+    errors.check(
+        profile.kind == SizeKind::Footwear
+            || !matches!(
+                label,
+                NativeNumber::OneThird(_) | NativeNumber::TwoThirds(_)
+            ),
+        path,
+        "size_thirds_not_allowed",
+    );
+    errors.check(
+        !matches!(label, NativeNumber::DoubleZero)
+            || (profile.allow_double_zero && profile.kind == SizeKind::Clothing),
+        path,
+        "size_double_zero_not_allowed",
+    );
+}
+
 pub(crate) fn size(
     size: &ReportedSize,
     brand: &BrandId,
@@ -486,41 +533,23 @@ pub(crate) fn size(
                 format!("{}/{}", first.label(), second.label())
             }
             SizeValue::Numeric { label } | SizeValue::Petite { label } => {
-                let max = profile.max.as_ref().map_or(
-                    if profile.kind == SizeKind::Belt {
-                        3000
-                    } else {
-                        600
-                    },
-                    NativeNumber::sixths,
-                );
-                let min = profile.min.as_ref().map_or(0, NativeNumber::sixths);
-                errors.check(
-                    (min..=max).contains(&label.sixths()),
-                    format!("{path}.value.label"),
-                    "size_out_of_bounds",
-                );
-                errors.check(
-                    profile.allow_half || !matches!(label, NativeNumber::Half(_)),
-                    format!("{path}.value.label"),
-                    "size_half_not_allowed",
-                );
-                errors.check(
-                    profile.kind == SizeKind::Footwear
-                        || !matches!(
-                            label,
-                            NativeNumber::OneThird(_) | NativeNumber::TwoThirds(_)
-                        ),
-                    format!("{path}.value.label"),
-                    "size_thirds_not_allowed",
-                );
-                errors.check(
-                    !matches!(label, NativeNumber::DoubleZero)
-                        || (profile.allow_double_zero && profile.kind == SizeKind::Clothing),
-                    format!("{path}.value.label"),
-                    "size_double_zero_not_allowed",
-                );
+                validate_numeric_label(label, profile, &format!("{path}.value.label"), errors);
                 format!("{label}{}", if form == SizeForm::Petite { "P" } else { "" })
+            }
+            SizeValue::NumericPair { first, second } => {
+                errors.check(
+                    profile.kind == SizeKind::Footwear,
+                    format!("{path}.value"),
+                    "size_numeric_pair_not_allowed",
+                );
+                validate_numeric_label(first, profile, &format!("{path}.value.first"), errors);
+                validate_numeric_label(second, profile, &format!("{path}.value.second"), errors);
+                errors.check(
+                    first.sixths() < second.sixths(),
+                    format!("{path}.value"),
+                    "invalid_numeric_pair",
+                );
+                format!("{first}/{second}")
             }
             SizeValue::Denim { waist, inseam } => format!(
                 "W{}{}",
