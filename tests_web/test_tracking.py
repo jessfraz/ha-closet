@@ -113,7 +113,15 @@ async def test_photo_queue_pair_skip_resume_lookup_and_exceptions(
             await expect(
                 page.get_by_text("1 tagged · 3 remaining · 0 no-tag exceptions")
             ).to_be_visible()
-            await expect(page.locator("#tag-notice")).to_have_text("Tag paired.")
+            await expect(page.locator("#tag-notice")).to_contain_text(
+                "Tag paired to Example label · Example garment 0"
+            )
+            await expect(page.locator("#tag-notice")).to_contain_text(
+                "Self-bought · piece 1 · Initial area: Example closet"
+            )
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "data-tone", "ok"
+            )
             await expect(
                 page.get_by_label("Initial area (optional)", exact=True)
             ).to_have_value("")
@@ -265,7 +273,9 @@ async def test_manual_status_filters_history(
 async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
     rust_backend: RustBackend,
 ) -> None:
-    await rust_backend.sync([catalog_item()])
+    record = catalog_item()
+    record.update(quantity=2, size="M")
+    await rust_backend.sync([record])
     await configure(rust_backend)
     reader = ReaderEvidence(rust_backend)
     await reader.observe()
@@ -289,7 +299,25 @@ async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
             await reader.observe(capture_session=session_id, connected=False)
             await page.get_by_role("button", name="Refresh", exact=True).click()
             await expect(confirm).to_be_disabled()
+            await expect(page.locator("#service-status")).to_have_text("App connected")
+            await expect(page.locator(".reader-recovery")).to_contain_text(
+                "power and network connection"
+            )
+            await expect(page.locator(".reader-recovery")).to_contain_text(
+                "Scan again and wait for a fresh isolated tag"
+            )
+            await page.get_by_role(
+                "button", name="Open reader diagnostics", exact=True
+            ).click()
+            await expect(
+                page.locator(".tracking-diagnostics details")
+            ).to_have_attribute("open", "")
+            await expect(page.locator(".tracking-diagnostics summary")).to_be_focused()
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            await expect(confirm).to_be_disabled()
             await reader.observe()
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await expect(page.locator(".reader-recovery")).to_have_count(0)
             await action(page, "Scan again")
             await reader.observe(("00000009",), session_id)
             await page.get_by_role("button", name="Refresh", exact=True).click()
@@ -324,12 +352,48 @@ async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
             await expect(
                 page.get_by_role("button", name="Retry same action", exact=True)
             ).to_be_visible()
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "data-tone", "warning"
+            )
+            await expect(page.locator("#tag-notice")).to_have_css(
+                "color", "rgb(135, 85, 6)"
+            )
             await page.get_by_role(
                 "button", name="Retry same action", exact=True
             ).click()
             await expect(
-                page.get_by_text("1 tagged · 0 remaining · 0 no-tag exceptions")
+                page.get_by_text("1 tagged · 1 remaining · 0 no-tag exceptions")
             ).to_be_visible()
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "data-tone", "ok"
+            )
+            await expect(page.locator("#tag-notice")).to_contain_text(
+                "Example cotton tee"
+            )
+            await expect(page.locator("#tag-notice")).to_contain_text("size M")
+            await expect(page.locator("#tag-notice")).to_contain_text(
+                "Self-bought · piece 1"
+            )
+            await expect(page.locator("#tag-notice")).not_to_contain_text("piece 2")
+            await expect(page.locator("#tag-notice")).to_have_css(
+                "color", "rgb(44, 106, 69)"
+            )
+            await expect(page.locator("#tag-notice")).to_have_css(
+                "background-color", "rgb(231, 242, 234)"
+            )
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "role", "status"
+            )
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "aria-live", "polite"
+            )
+            await page.emulate_media(color_scheme="dark")
+            await expect(page.locator("#tag-notice")).to_have_css(
+                "color", "rgb(159, 211, 174)"
+            )
+            await expect(page.locator("#tag-notice")).to_have_css(
+                "background-color", "rgb(31, 51, 39)"
+            )
             assert len(requests) == 2 and requests[0] == requests[1]
             await page.unroute_all(behavior="wait")
             result = await snapshot(rust_backend)
@@ -374,6 +438,7 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             await page.get_by_label(
                 "Reader for this position", exact=True
             ).select_option(label="Fictional reader")
+            await page.get_by_label("Antenna port", exact=True).fill("1")
             await page.get_by_label("Area for this position", exact=True).select_option(
                 label="Fictional rack"
             )
@@ -423,6 +488,9 @@ async def test_reader_settings_save_and_optional_installation_metadata(
             assert positions[0]["reader_id"] == reader_id
             await expect(page.locator("#tracking-settings-notice")).to_have_text(
                 "Tracking settings saved."
+            )
+            await expect(page.locator("#tracking-settings-notice")).to_have_attribute(
+                "data-tone", "ok"
             )
             assert await page.locator("body").evaluate(
                 "node => node.scrollWidth <= innerWidth"
@@ -533,6 +601,9 @@ async def test_settings_can_save_twice_without_refresh(
                 await save.click()
             assert (await response.value).status == 400
             await expect(page.locator('[aria-busy="true"]')).to_have_count(0)
+            await expect(page.locator("#tracking-settings-notice")).to_have_attribute(
+                "data-tone", "warning"
+            )
             await expect(save).to_be_enabled()
             await expect(area_id).to_have_value("example-hamper")
             await area_id.fill("example-closet")
@@ -667,12 +738,16 @@ async def test_failed_duplicate_id_repair_keeps_each_position_reference(
             await browser.close()
 
 
+@pytest.mark.parametrize("width", [320, 390])
 async def test_queue_labels_distinguish_copies_and_mobile_photo_stays_compact(
     rust_backend: RustBackend,
+    width: int,
 ) -> None:
     first = catalog_item("example-copy-a", name="Example shared shirt")
     second = catalog_item("example-copy-b", name="Example shared shirt")
     first["size"], second["size"] = "M", "L"
+    for record in (first, second):
+        record["brand"] = "Example label with a deliberately lengthy name"
     second["shop"] = {
         "id": "example-atelier",
         "label": "Example atelier",
@@ -697,7 +772,7 @@ async def test_queue_labels_distinguish_copies_and_mobile_photo_stays_compact(
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page(
-                viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True
+                viewport={"width": width, "height": 844}, is_mobile=True, has_touch=True
             )
             await page.route("https://images.example.invalid/**", product_photo)
             await login(page, rust_backend)
@@ -712,6 +787,15 @@ async def test_queue_labels_distinguish_copies_and_mobile_photo_stays_compact(
             assert isinstance(selected_id, str)
             await chooser.select_option(selected_id)
             await expect(chooser).to_have_value(selected_id)
+            summary = page.locator("#selected-copy-details")
+            await expect(summary).to_contain_text("Size L · Example atelier")
+            await expect(chooser).to_have_accessible_description(
+                "Size L · Example atelier · Cool white · Piece 1"
+            )
+            await expect(summary).to_be_visible()
+            assert await summary.evaluate(
+                "node => node.scrollWidth <= node.clientWidth"
+            )
             await expect(page.locator(".enroll-copy > .muted").first).to_contain_text(
                 "size L"
             )
@@ -848,6 +932,9 @@ async def test_replacement_after_ended_queue_keeps_clicked_piece_in_same_tab(
                 page.get_by_role("button", name="Scan replacement tag", exact=True)
             ).to_be_enabled()
             await action(page, "Scan replacement tag")
+            await expect(page.locator("#tag-notice")).to_contain_text(
+                "Replacement scan started for Example label · Example wool cardigan"
+            )
             sessions = (await snapshot(rust_backend))["sessions"]
             assert isinstance(sessions, list)
             active = next(
@@ -945,8 +1032,17 @@ async def test_replace_unbind_and_undo_keep_physical_piece_identity(
             await reader.observe(("00000012",), session_id)
             await page.get_by_role("button", name="Refresh", exact=True).click()
             await action(page, "Confirm replacement")
-            await expect(page.locator("#tag-notice")).to_have_text(
-                "Replacement tag saved."
+            await expect(page.locator("#tag-notice")).to_contain_text(
+                "Replacement tag saved for Example label · Example cotton tee"
+            )
+            await expect(page.locator("#tag-notice")).to_contain_text(
+                "Self-bought · piece 1"
+            )
+            await expect(page.locator("#tag-notice")).not_to_contain_text(
+                "Initial area"
+            )
+            await expect(page.locator("#tag-notice")).to_have_attribute(
+                "data-tone", "ok"
             )
             await expect(
                 page.get_by_text("1 tagged · 0 remaining · 0 no-tag exceptions")

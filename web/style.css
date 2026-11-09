@@ -6,6 +6,7 @@
   --bg: #f7f7f6; --paper: #fff; --ink: #1d1e20; --muted: #6a6d71;
   --line: #e1e1de; --soft: #f0f0ee; --accent: #1d1e20; --on-accent: #fff;
   --warning: #875506; --warning-soft: #fff3d7; --focus: #3d6ec9;
+  --ok: #2c6a45; --ok-soft: #e7f2ea;
   color: var(--ink); background: var(--bg);
 }
 * { box-sizing: border-box; }
@@ -99,6 +100,7 @@ select { max-width: 250px; }
 #notice:empty { display: none; }
 #notice { margin: 0 0 22px; color: var(--warning); font-size: 13px; line-height: 1.6; }
 .notice { color: var(--warning); background: var(--warning-soft); border-radius: 6px; padding: 12px 16px; font-size: 13px; line-height: 1.6; margin: 22px 0; }
+.notice[data-tone="ok"] { color: var(--ok); background: var(--ok-soft); }
 .experiment-label { font: 10px/1.6 var(--mono); color: var(--muted); letter-spacing: .5px; }
 .weather { margin-top: 17px; color: var(--muted); font-size: 13px; line-height: 1.7; }
 .weather small { display: block; font-size: 12px; }
@@ -163,6 +165,8 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
 .enroll-copy { min-width: 0; }
 .enroll-copy h2 { margin-top: 5px; }
 .enroll-copy > .muted { margin-top: 10px; }
+.selected-copy-details { max-width: 100%; margin: 8px 0 18px; overflow-wrap: anywhere; }
+.reader-recovery { margin: 12px 0; }
 .enroll-actions button { min-height: 48px; }
 .capture-panel { background: var(--paper); border: 1px solid var(--line); padding: 18px; border-radius: 8px; margin-top: 20px; }
 .capture-panel h3 { font-size: 15px; }
@@ -182,7 +186,7 @@ textarea { border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px
 .reader-health { margin-top: 12px; font-size: 12px; line-height: 1.65; }
 .settings-group { border-top: 1px solid var(--line); padding-top: 22px; margin-top: 24px; }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #131415; --paper: #1b1c1e; --ink: #e6e6e4; --muted: #9c9fa3; --line: #2f3134; --soft: #242528; --accent: #e6e6e4; --on-accent: #131415; --warning: #f6d48e; --warning-soft: #46391e; --focus: #7fa6ee; }
+  :root { --bg: #131415; --paper: #1b1c1e; --ink: #e6e6e4; --muted: #9c9fa3; --line: #2f3134; --soft: #242528; --accent: #e6e6e4; --on-accent: #131415; --warning: #f6d48e; --warning-soft: #46391e; --focus: #7fa6ee; --ok: #9fd3ae; --ok-soft: #1f3327; }
   .brand-light { display: none; }
   .brand-dark { display: block; }
   .source-tone-0 { background: #283a24; color: #c8dfbe; border-color: #4a6940; }

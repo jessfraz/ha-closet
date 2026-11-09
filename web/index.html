@@ -35,8 +35,7 @@
         <section id="inventory" aria-labelledby="inventory-heading">
           <div class="page-heading"><div><p class="eyebrow">YOUR CATALOG</p><h1 id="inventory-heading">Inventory</h1></div><p id="inventory-count" class="muted" role="status" aria-live="polite"></p></div>
           <div id="tracking-health" class="tracking-health" role="status" hidden></div>
-          <div class="catalog-note"><details><summary>Update the catalog</summary><p class="muted">Edit the source JSON, validate it, then preview and apply a sync with the CLI. This screen never edits the source file.</p><pre><code>ha-closet inventory validate --input wardrobe.json
-ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details></div>
+          <div class="catalog-note"><details><summary>Update the catalog</summary><p class="muted">Edit your TOML catalog, then sync it with its local photos in one command.</p><pre><code>ha-closet inventory sync --input wardrobe.toml</code></pre></details></div>
           <form id="filters" class="filters" role="search">
             <label class="search-field" for="search">Search<input id="search" type="search" placeholder="Brand, item, or SKU" maxlength="200"></label>
             <div class="field"><label for="brand">Brand</label><select id="brand"><option value="">All brands</option></select></div>
@@ -47,7 +46,7 @@ ha-closet inventory sync --input wardrobe.json --dry-run</code></pre></details><
             <div class="field" data-tracking-filter hidden><label for="tracking-area">Area</label><select id="tracking-area"><option value="">All areas</option></select></div>
             <button type="submit" class="quiet">Search</button>
           </form>
-          <div id="inventory-empty" class="empty" hidden><h2>No items yet</h2><p class="muted">Validate and sync a JSON catalog to fill the closet.</p></div>
+          <div id="inventory-empty" class="empty" hidden><h2>No items yet</h2><p class="muted">Sync a TOML catalog to fill the closet.</p></div>
           <div id="item-grid" class="item-grid"></div>
           <button id="load-more" type="button" class="quiet" hidden>Load more</button>
           <div id="page-sentinel" aria-hidden="true" hidden></div>

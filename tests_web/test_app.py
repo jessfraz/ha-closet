@@ -173,7 +173,7 @@ async def test_shell_and_item_controls_fit_mobile_and_dark_mode(
                 assert box["height"] >= minimum
                 assert box["width"] >= minimum
             await expect(page.locator("#app-version")).to_have_text(version)
-            await expect(page.get_by_text("Connected", exact=True)).to_be_visible()
+            await expect(page.get_by_text("App connected", exact=True)).to_be_visible()
             if width <= 620:
                 header = await page.locator(".app-header").bounding_box()
                 wordmark = await page.locator(".wordmark").bounding_box()
@@ -348,12 +348,12 @@ async def test_failed_refresh_keeps_inventory_and_marks_connection_lost(
                 "previous inventory result"
             )
             await expect(page.locator("#service-status")).to_have_text(
-                "Connection lost"
+                "App connection lost"
             )
             await expect(page.locator(".item-card")).to_have_count(1)
             await page.unroute("**/v1/items?**")
             await page.get_by_role("button", name="Refresh", exact=True).click()
-            await expect(page.locator("#service-status")).to_have_text("Connected")
+            await expect(page.locator("#service-status")).to_have_text("App connected")
             await expect(page.locator("#notice")).to_be_empty()
         finally:
             await browser.close()

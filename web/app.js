@@ -189,10 +189,10 @@ async function request(path, options = {}) {
     });
     text = await response.text();
   } catch (error) {
-    if (error.name !== "AbortError" && system) byId("service-status").textContent = "Connection lost";
+    if (error.name !== "AbortError" && system) byId("service-status").textContent = "App connection lost";
     throw error;
   }
-  if (system) byId("service-status").textContent = response.status === 401 ? "Authorization expired" : "Connected";
+  if (system) byId("service-status").textContent = response.status === 401 ? "App authorization expired" : "App connected";
   if (text.length > 8 * 1024 * 1024) throw new APIError(response.status, "response_too_large");
   let data = null;
   if (text) {
@@ -518,7 +518,7 @@ async function loadInventory(append = false, { automatic = false } = {}) {
     if (moveFocus && nextPage === null && [document.body, more].includes(document.activeElement)) (firstAddedButton || existingButton)?.focus();
     byId("inventory-empty").hidden = data.total !== 0;
     byId("inventory-empty").querySelector("h2").textContent = data.scope_total === 0 ? "No items yet" : "No matching items";
-    byId("inventory-empty").querySelector("p").textContent = data.scope_total === 0 ? "Validate and sync a JSON catalog to fill the closet." : "Try another search or clear the filters.";
+    byId("inventory-empty").querySelector("p").textContent = data.scope_total === 0 ? "Sync a TOML catalog to fill the closet." : "Try another search or clear the filters.";
     byId("inventory-count").textContent = `${data.total} ${data.total === 1 ? "item" : "items"}${data.total !== data.scope_total ? ` · ${data.scope_total} in inventory` : ""}`;
     fillOptions(byId("brand"), data.facets.brands || [], "All brands");
     fillOptions(byId("category"), data.facets.categories || [], "All categories");
@@ -864,7 +864,7 @@ async function connect() {
   byId("app-footer").hidden = false;
   byId("analytics-tab").hidden = data.role !== "owner";
   byId("app-version").textContent = data.version;
-  byId("service-status").textContent = "Connected";
+  byId("service-status").textContent = "App connected";
   applyLocation(navigationURL(), { refresh: true });
   void tracking.refresh();
 }

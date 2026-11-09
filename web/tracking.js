@@ -53,9 +53,9 @@ export class TrackingController {
   }
 
   node(tag, className, text) { return this.element(tag, className, text); }
-  notice(text = "", settings = false) {
+  notice(text = "", settings = false, tone = "warning") {
     const node = document.getElementById(settings ? "tracking-settings-notice" : "tag-notice");
-    node.textContent = text; node.hidden = !text;
+    node.textContent = text; node.hidden = !text; node.dataset.tone = tone;
   }
   button(text, action, quiet = true) {
     const button = this.node("button", quiet ? "quiet" : "", text);
@@ -85,6 +85,16 @@ export class TrackingController {
   pieceLabel(item, unit) {
     const source = this.sourceLabel(item);
     return [item.brand, item.name, item.size ? `size ${item.size}` : null, item.color, source, `piece ${unit.ordinal}`].filter(Boolean).join(" · ");
+  }
+  confirmationContext(body) {
+    const unitId = body.unit_id || (body.type === "start_enrollment" ? body.unit_ids[0] : null);
+    const unit = this.snapshot.units.find((entry) => entry.id === unitId);
+    const item = unit && (this.catalog.get(unit.catalog_id) || (this.detail?.item.id === unit.catalog_id ? this.detail.item : null));
+    return {
+      piece: unit ? item ? this.pieceLabel(item, unit) : `${unit.catalog_id} · piece ${unit.ordinal}` : null,
+      area: this.area(body.baseline_area || body.area_id)?.label || null,
+      purpose: body.purpose || this.snapshot.sessions.find((session) => session.id === body.session_id)?.purpose,
+    };
   }
   session() { return this.snapshot?.sessions.find((session) => session.id === this.sessionId); }
   currentUnit() {
@@ -173,7 +183,7 @@ export class TrackingController {
   }
   async command(body, revision = this.snapshot?.tracking_revision) {
     if (this.busy || this.role() !== "owner" || !this.snapshot) return null;
-    this.pending ||= { body: structuredClone(body), key: crypto.randomUUID(), revision };
+    this.pending ||= { body: structuredClone(body), key: crypto.randomUUID(), revision, confirmation: this.confirmationContext(body) };
     const roots = [document.getElementById("tag-workspace"), document.getElementById("tracking-settings-content"), this.detail?.root].filter(Boolean);
     // Keep the original control state through an uncertain response and retry.
     // Cached views may survive readback, so rendering alone cannot unlock them.
@@ -197,14 +207,17 @@ export class TrackingController {
       acknowledged = true;
       if (result.session) this.sessionId = result.session.id;
       if (pending.body.type === "select_candidate") this.captureBaseline = "";
+      // Keep the acknowledged copy's identity through queue advance and retries.
+      const { piece, area, purpose } = pending.confirmation;
+      const initialArea = area ? ` · Initial area: ${area}` : "";
       const messages = {
         configure: "Tracking settings saved.", installation: "Installation saved.",
-        correct: "Tracking status saved.", baseline: "Area baseline saved.",
-        select_candidate: this.session()?.purpose === "replace" ? "Replacement tag saved." : "Tag paired.",
-        start_enrollment: pending.body.purpose === "lookup" ? "Lookup started. Read a tag to find its garment." : "Enrollment session started.",
+        correct: "Tracking status saved.", baseline: `Area baseline saved for ${piece} · ${area}.`,
+        select_candidate: purpose === "replace" ? `Replacement tag saved for ${piece}${initialArea}.` : `Tag paired to ${piece}${initialArea}.`,
+        start_enrollment: purpose === "replace" ? `Replacement scan started for ${piece}.` : purpose === "lookup" ? "Lookup started. Read a tag to find its garment." : "Enrollment session started.",
         abort_enrollment: "Session ended.", skip: "Piece skipped.", reset_capture: "Ready for a fresh scan.",
       };
-      this.notice(messages[pending.body.type] || "Change saved.", this.view === "tracking-settings");
+      this.notice(messages[pending.body.type] || "Change saved.", this.view === "tracking-settings", "ok");
       return result;
     } catch (error) {
       if (Number.isInteger(error.status) && error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)) this.pending = null;
@@ -426,6 +439,13 @@ export class TrackingController {
       const select = this.field("Choose a physical piece", choices.map((piece) => [piece.id, `Piece ${piece.ordinal} · ${piece.catalog_id}`]), this.selectedId);
       select.input.addEventListener("change", () => { this.invalidateConfirmation(); this.selectedId = select.input.value; this.replacementId = null; this.workspaceKey = null; void this.renderWorkspace(); });
       fragment.append(select.wrapper);
+      if (unit) {
+        const item = await this.item(unit.catalog_id);
+        if (revision !== this.workspaceRevision) return;
+        const summary = this.node("p", "muted selected-copy-details", [item.size ? `Size ${item.size}` : null, this.sourceLabel(item), item.color, `Piece ${unit.ordinal}`].filter(Boolean).join(" · "));
+        summary.id = "selected-copy-details"; summary.setAttribute("role", "status");
+        select.input.setAttribute("aria-describedby", summary.id); fragment.append(summary);
+      }
       // Resolve names for the queue without an N+1 request on each poll.
       void Promise.all(choices.map(async (piece, index) => {
         try { const item = await this.item(piece.catalog_id); select.input.options[index].textContent = `${piece.id === this.replacementId ? "Replacement · " : ""}${this.pieceLabel(item, piece)}`; } catch { /* Keep the stable catalog identifier when offline. */ }
@@ -540,6 +560,11 @@ export class TrackingController {
     panel.append(candidates);
     const message = !this.online || disconnected ? session.purpose === "lookup" ? "Reader connection unavailable. Lookup is paused." : "Reader connection unavailable. Confirmation is blocked." : !isolated ? "Waiting for the reader to isolate this antenna. Normal area coverage is intentionally paused." : Date.parse(session.expires_at) <= now ? "This session expired. Start a new session." : session.capture_overflow ? "Too many tags were detected in this capture. Clear the reading position and scan again." : fresh.length > 1 ? "More than one tag is present. Move other garments away and scan again." : fresh.length === 0 ? "Waiting for a fresh tag. Keep just this piece in the reading position." : session.purpose === "lookup" ? fresh[0].bound_unit_id ? "Garment found. Open its details below." : "No garment is paired with this tag." : fresh[0].bound_unit_id ? "This tag is already paired. Check the garment before changing any binding." : fresh[0].selectable ? "One fresh tag is ready for confirmation." : "Keep this piece still while the reader confirms a stable isolated tag.";
     panel.append(this.node("p", "capture-state", message));
+    if (!this.online || disconnected) {
+      panel.append(this.node("p", "muted reader-recovery", "Check the reader’s power and network connection. After it reconnects, choose Scan again and wait for a fresh isolated tag."));
+      const diagnostics = this.node("button", "quiet", "Open reader diagnostics"); diagnostics.type = "button";
+      diagnostics.addEventListener("click", () => { this.openDiagnosticsRequested = true; document.getElementById("tracking-settings-tab").click(); }); panel.append(diagnostics);
+    }
     const actions = this.node("div", "enroll-actions");
     const reset = this.button("Scan again", () => this.command({ type: "reset_capture", session_id: session.id })); reset.id = "capture-reset"; actions.append(reset);
     if (session.purpose !== "lookup") {
@@ -637,6 +662,24 @@ export class TrackingController {
       details.append(this.node("summary", "", `Advanced ${kind} settings`), field.wrapper);
       return details;
     };
+    const refreshPositions = (changed = null, choose = false) => {
+      for (const position of portFields) {
+        const reader = readerFields.find((entry) => entry.id.input.id === position.reader.input.value);
+        const original = reader?.originalConnection;
+        const sameConnection = original?.type === reader?.transport.input.value && (original?.type === "impinj_llrp" ? original.host === reader.host.input.value.trim() && original.port === Number(reader.connectionPort.input.value) : original?.type === "impinj_iot" && original.base_url === reader.origin.input.value.trim());
+        const readback = sameConnection && this.snapshot.reader_readbacks.find((entry) => entry.reader_id === reader.originalId);
+        const supported = readback ? [...new Set(readback.capabilities.antenna_ports)].sort((a, b) => a - b) : null;
+        const used = new Set(portFields.filter((entry) => entry !== position && entry.reader.input.value === position.reader.input.value && entry.antenna.input.value !== "").map((entry) => Number(entry.antenna.input.value)));
+        const available = supported?.filter((port) => !used.has(port));
+        if (choose && position === changed) position.antenna.input.value = available?.[0] ?? "";
+        const value = position.antenna.input.value, port = Number(value);
+        let error = "";
+        if (value && used.has(port)) error = "This antenna port already has a position. Choose an unused port.";
+        else if (value && supported && !supported.includes(port)) error = "This antenna port is not reported by the selected reader.";
+        position.antenna.input.setCustomValidity(error);
+        position.hint.textContent = error || !reader ? error || "Choose a reader, then an antenna port." : supported === null ? "No reader readback is available. Enter an antenna port verified on this reader." : !available.length && !value ? "All reported antenna ports already have positions. Choose another reader or remove an unused draft position." : `Reported ports: ${supported.join(", ")}.${available.length ? ` Unused: ${available.join(", ")}.` : ""}`;
+      }
+    };
     // Select values identify draft rows. A duplicate editable domain ID must
     // never retarget a position that selected a different area or reader.
     const updateReferences = () => {
@@ -648,6 +691,7 @@ export class TrackingController {
           if (select.selectedIndex < 0) select.value = "";
         }
       }
+      refreshPositions();
     };
     const referencedId = (field, records) => records.find((record) => record.id.input.id === field.input.value)?.id.input.value.trim() || null;
     const addArea = (area) => {
@@ -677,27 +721,32 @@ export class TrackingController {
       const active = this.checkbox("Reader enabled", reader.enabled);
       const transport = this.field("Reader transport", [["impinj_llrp", "Impinj LLRP"], ["impinj_iot", "Impinj IoT API"], ["simulator", "Simulator (not physical evidence)"]], reader.connection.type);
       const host = this.field("Reader host", null, reader.connection.host); host.input.maxLength = 253;
+      const connectionPort = this.number("Reader port", reader.connection.port ?? 5084); connectionPort.input.min = "1"; connectionPort.input.max = "65535";
       const program = this.number("Closet-owned ROSpec ID", reader.connection.owned_rospec_id ?? 1); program.input.min = "1"; program.input.max = "4294967295";
       const origin = this.field("Reader API origin", null, reader.connection.base_url, "url"); origin.input.pattern = "https://.*";
       const auth = this.field("Reader authentication", [["none", "None"], ["basic_env", "Environment-backed basic authentication"]], reader.connection.credentials?.type || "none");
       const username = this.field("Username environment variable", null, reader.connection.credentials?.username);
       const password = this.field("Password environment variable", null, reader.connection.credentials?.password);
       for (const field of [username, password]) { field.input.pattern = "[A-Z_][A-Z0-9_]*"; field.input.maxLength = 128; }
-      const update = () => { host.wrapper.hidden = program.wrapper.hidden = transport.input.value !== "impinj_llrp"; host.input.required = program.input.required = !host.wrapper.hidden; origin.wrapper.hidden = transport.input.value !== "impinj_iot"; auth.wrapper.hidden = origin.wrapper.hidden; username.wrapper.hidden = password.wrapper.hidden = origin.wrapper.hidden || auth.input.value !== "basic_env"; origin.input.required = !origin.wrapper.hidden; username.input.required = password.input.required = !username.wrapper.hidden; };
+      const update = () => { host.wrapper.hidden = connectionPort.wrapper.hidden = program.wrapper.hidden = transport.input.value !== "impinj_llrp"; host.input.required = connectionPort.input.required = program.input.required = !host.wrapper.hidden; origin.wrapper.hidden = transport.input.value !== "impinj_iot"; auth.wrapper.hidden = origin.wrapper.hidden; username.wrapper.hidden = password.wrapper.hidden = origin.wrapper.hidden || auth.input.value !== "basic_env"; origin.input.required = !origin.wrapper.hidden; username.input.required = password.input.required = !username.wrapper.hidden; };
       transport.input.addEventListener("change", update); auth.input.addEventListener("change", update); update();
-      block.append(label.wrapper, active.wrapper, transport.wrapper, host.wrapper, program.wrapper, origin.wrapper, auth.wrapper, username.wrapper, password.wrapper, this.node("p", "muted", "Only environment variable names belong here. Set actual credentials in the app environment, never in this form."), advancedId("reader", id));
-      const fields = { block, id, label, active, transport, host, program, origin, auth, username, password }; readerFields.push(fields);
+      block.append(label.wrapper, active.wrapper, transport.wrapper, host.wrapper, connectionPort.wrapper, program.wrapper, origin.wrapper, auth.wrapper, username.wrapper, password.wrapper, this.node("p", "muted", "Only environment variable names belong here. Set actual credentials in the app environment, never in this form."), advancedId("reader", id));
+      const fields = { block, id, label, active, transport, host, connectionPort, program, origin, auth, username, password, originalId: reader.id, originalConnection: structuredClone(reader.connection) }; readerFields.push(fields);
       label.input.addEventListener("input", updateReferences);
+      for (const field of [transport, host, connectionPort, origin]) field.input.addEventListener("input", () => refreshPositions());
       block.append(this.button("Remove reader", () => { block.remove(); readerFields.splice(readerFields.indexOf(fields), 1); updateReferences(); })); readers.append(block); updateReferences();
     };
     for (const reader of config.readers) addReader(reader);
     readers.append(this.button("Add reader", () => addReader({ id: `reader-${crypto.randomUUID()}`, label: "", enabled: true, connection: { type: "impinj_llrp", credentials: { type: "none" } } })));
     const ports = this.node("section", ""); ports.append(this.node("h3", "", "3. Reading positions"), this.node("p", "muted", "Choose a named reader and area for each antenna. Use a dedicated enrollment position when the reader cannot pause a monitored position."));
-    const addPort = (port) => {
+    const addPort = (port, isNew = false) => {
       const block = this.node("fieldset", "tracking-config-card"); block.append(this.node("legend", "", "Antenna position"));
       const id = this.field("Position ID", null, port.id); id.input.pattern = "[A-Za-z0-9_-]{1,64}"; id.input.required = true;
-      const reader = this.field("Reader for this position", [["", "Choose a reader"], ...readerFields.map((entry) => [entry.id.input.id, entry.label.input.value || "Unnamed reader"])], readerFields.find((entry) => entry.id.input.value === port.reader_id)?.id.input.id || ""); reader.input.required = true;
+      const selectedReader = readerFields.find((entry) => entry.id.input.value === port.reader_id) || (isNew && readerFields.length === 1 ? readerFields[0] : null);
+      const reader = this.field("Reader for this position", [["", "Choose a reader"], ...readerFields.map((entry) => [entry.id.input.id, entry.label.input.value || "Unnamed reader"])], selectedReader?.id.input.id || ""); reader.input.required = true;
       const antenna = this.number("Antenna port", port.antenna); antenna.input.min = "1";
+      const hint = this.node("p", "muted antenna-hint"); hint.id = `${antenna.input.id}-hint`;
+      antenna.input.setAttribute("aria-describedby", hint.id); hint.setAttribute("role", "status");
       const area = this.field("Area for this position", [["", "No area (enrollment only)"], ...areaFields.map((entry) => [entry.id.input.id, entry.label.input.value || "Unnamed area"])], areaFields.find((entry) => entry.id.input.value === port.area_id)?.id.input.id || "");
       const role = this.field("Position role", [["monitor", "Area monitoring"], ["enrollment", "Isolated enrollment position"]], port.role);
       const active = this.checkbox("Position enabled", port.enabled);
@@ -712,12 +761,15 @@ export class TrackingController {
         required.input.disabled = enrollment || this.busy || Boolean(this.pending) || this.role() !== "owner";
       };
       role.input.addEventListener("change", updateRole); updateRole();
-      block.append(reader.wrapper, antenna.wrapper, role.wrapper, area.wrapper, active.wrapper, required.wrapper, commissioned.wrapper, power.wrapper, dwell.wrapper, this.node("p", "muted", "Power and dwell are requests, not guarantees. Check actual reader capability and readback below. Enrollment on a monitoring antenna explicitly borrows it and pauses affected coverage."), advancedId("position", id));
-      const fields = { block, id, reader, antenna, area, role, active, required, commissioned, power, dwell }; portFields.push(fields);
-      block.append(this.button("Remove position", () => { block.remove(); portFields.splice(portFields.indexOf(fields), 1); })); ports.append(block);
+      block.append(reader.wrapper, antenna.wrapper, hint, role.wrapper, area.wrapper, active.wrapper, required.wrapper, commissioned.wrapper, power.wrapper, dwell.wrapper, this.node("p", "muted", "Power and dwell are requests, not guarantees. Check actual reader capability and readback below. Enrollment on a monitoring antenna explicitly borrows it and pauses affected coverage."), advancedId("position", id));
+      const fields = { block, id, reader, antenna, hint, area, role, active, required, commissioned, power, dwell }; portFields.push(fields);
+      reader.input.addEventListener("change", () => refreshPositions(fields, true));
+      antenna.input.addEventListener("input", () => refreshPositions());
+      block.append(this.button("Remove position", () => { block.remove(); portFields.splice(portFields.indexOf(fields), 1); refreshPositions(); })); ports.append(block);
+      refreshPositions(fields, isNew);
     };
     for (const port of config.ports) addPort(port);
-    ports.append(this.button("Add reading position", () => addPort({ id: `position-${crypto.randomUUID()}`, reader_id: "", antenna: 1, area_id: null, role: "monitor", enabled: true, required_for_absence: true, commissioned: false })));
+    ports.append(this.button("Add reading position", () => addPort({ id: `position-${crypto.randomUUID()}`, reader_id: "", antenna: null, area_id: null, role: "monitor", enabled: true, required_for_absence: true, commissioned: false }, true)));
     groups.append(areas, readers, ports); form.append(groups);
     const thresholds = this.node("details", ""); thresholds.append(this.node("summary", "", "Default evidence thresholds"));
     const thresholdFields = {};
@@ -729,7 +781,7 @@ export class TrackingController {
       const next = {
         schema_version: config.schema_version, enabled: enabled.input.checked,
         areas: areaFields.map((f) => ({ id: f.id.input.value.trim(), label: f.label.input.value.trim(), kind: f.kind.input.value, enabled: f.active.input.checked, thresholds: Object.fromEntries(Object.entries(f.thresholds).map(([key, field]) => [key, nullable(field)])) })),
-        readers: readerFields.map((f) => ({ id: f.id.input.value.trim(), label: f.label.input.value.trim(), enabled: f.active.input.checked, connection: f.transport.input.value === "simulator" ? { type: "simulator" } : f.transport.input.value === "impinj_llrp" ? { type: "impinj_llrp", host: f.host.input.value.trim(), port: 5084, owned_rospec_id: Number(f.program.input.value) } : { type: "impinj_iot", base_url: f.origin.input.value.trim(), credentials: f.auth.input.value === "none" ? { type: "none" } : { type: "basic_env", username: f.username.input.value.trim(), password: f.password.input.value.trim() } } })),
+        readers: readerFields.map((f) => ({ id: f.id.input.value.trim(), label: f.label.input.value.trim(), enabled: f.active.input.checked, connection: f.transport.input.value === "simulator" ? { type: "simulator" } : f.transport.input.value === "impinj_llrp" ? { type: "impinj_llrp", host: f.host.input.value.trim(), port: Number(f.connectionPort.input.value), owned_rospec_id: Number(f.program.input.value) } : { type: "impinj_iot", base_url: f.origin.input.value.trim(), credentials: f.auth.input.value === "none" ? { type: "none" } : { type: "basic_env", username: f.username.input.value.trim(), password: f.password.input.value.trim() } } })),
         ports: portFields.map((f) => ({ id: f.id.input.value.trim(), reader_id: referencedId(f.reader, readerFields) || "", antenna: Number(f.antenna.input.value), area_id: referencedId(f.area, areaFields), role: f.role.input.value, enabled: f.active.input.checked, required_for_absence: f.required.input.checked, commissioned: f.commissioned.input.checked, transmit_power_cdbm: nullable(f.power), dwell_ms: nullable(f.dwell) })),
         thresholds: Object.fromEntries(Object.entries(thresholdFields).map(([key, field]) => [key, Number(field.input.value)])),
       };
@@ -781,7 +833,9 @@ export class TrackingController {
   }
   renderDiagnostics() {
     const root = document.querySelector(".tracking-diagnostics"); if (!root || !this.snapshot) return;
-    const open = root.querySelector("details")?.open || false;
+    const requested = Boolean(this.openDiagnosticsRequested);
+    const open = requested || root.querySelector("details")?.open || false;
+    this.openDiagnosticsRequested = false;
     const details = this.node("details", ""); details.open = open; details.append(this.node("summary", "", "Reader health and evidence diagnostics"));
     details.append(this.node("p", "muted", "Raw tag identifiers appear only in this diagnostic panel. Simulation is not physical commissioning evidence."));
     const list = this.node("ul", "");
@@ -804,6 +858,7 @@ export class TrackingController {
     for (const decision of this.snapshot.diagnostics.decisions.slice(-20).reverse()) details.append(this.node("p", "muted", `${new Date(decision.at).toLocaleTimeString()} · ${decision.reason.replaceAll("_", " ")}${decision.area_id ? ` · ${this.area(decision.area_id)?.label || decision.area_id}` : ""}`));
     for (const fault of this.snapshot.diagnostics.faults.slice(-20).reverse()) details.append(this.node("p", "notice", `${new Date(fault.at).toLocaleTimeString()} · ${fault.code.replaceAll("_", " ")}`));
     root.replaceChildren(details);
+    if (requested) details.querySelector("summary").focus();
   }
 
 }
