@@ -29,6 +29,7 @@ const sourceLabels = new Map();
 const filterFields = [["q", "search"], ["brand", "brand"], ["category", "category"], ["source", "source"], ["ready_to_wear", "ready"], ["status", "tracking-status"], ["area", "tracking-area"]];
 let appliedFilters = Object.fromEntries(filterFields.map(([key]) => [key, ""]));
 let selectedItemId = null;
+let selectedVariantId = null;
 let detailAbort = null;
 let detailRevision = 0;
 let detailClosePending = false;
@@ -84,6 +85,7 @@ function restoreFilters(filters) {
 function applyLocation(url = navigationURL(), { refresh = false } = {}) {
   const filters = Object.fromEntries(filterFields.map(([key]) => [key, url.searchParams.get(`closet_${key}`) || ""]));
   const itemId = url.searchParams.get("closet_item") || null;
+  const variantId = itemId ? null : url.searchParams.get("closet_variant") || null;
   const filtersChanged = filterFields.some(([key]) => filters[key] !== appliedFilters[key]);
   const first = !locationInitialized;
   const nextView = ["today", "analytics", "tags", "tracking-settings"].includes(url.searchParams.get("closet_view")) ? url.searchParams.get("closet_view") : "inventory";
@@ -97,23 +99,26 @@ function applyLocation(url = navigationURL(), { refresh = false } = {}) {
   }
   locationInitialized = true;
   detailClosePending = false;
-  const itemChanged = itemId !== selectedItemId;
+  const itemChanged = itemId !== selectedItemId || variantId !== selectedVariantId;
   selectedItemId = itemId;
+  selectedVariantId = variantId;
   if (!system) return;
   if (first || viewChanged) showView(nextView);
   if (first || filtersChanged || refresh) void loadInventory();
-  if (first || itemChanged || refresh) void loadDetail(itemId);
+  if (first || itemChanged || refresh) void loadDetail(itemId, variantId);
   if (view === "analytics" && (first || viewChanged || rangeChanged || refresh)) void analytics.load();
 }
 
-function navigate(filters, itemId, { replace = false, nextView = view, days = analytics.days } = {}) {
+function navigate(filters, itemId, { replace = false, variantId = null, nextView = view, days = analytics.days } = {}) {
   const url = navigationURL();
   for (const [key] of filterFields) {
     url.searchParams.delete(`closet_${key}`);
     if (filters[key]) url.searchParams.set(`closet_${key}`, filters[key]);
   }
   url.searchParams.delete("closet_item");
+  url.searchParams.delete("closet_variant");
   if (itemId) url.searchParams.set("closet_item", itemId);
+  else if (variantId) url.searchParams.set("closet_variant", variantId);
   url.searchParams.delete("closet_view");
   url.searchParams.delete("closet_days");
   if (nextView !== "inventory") url.searchParams.set("closet_view", nextView);
@@ -122,7 +127,7 @@ function navigate(filters, itemId, { replace = false, nextView = view, days = an
   if (url.href !== navigationURL().href || queued) {
     if (navigationHost === window) {
       const previous = object(history.state) ? history.state : {};
-      history[replace ? "replaceState" : "pushState"]({ ...previous, closetItemEntry: Boolean(itemId) && !replace }, "", url);
+      history[replace ? "replaceState" : "pushState"]({ ...previous, closetItemEntry: Boolean(itemId || variantId) && !replace, closetParentVariant: !replace ? selectedVariantId : null }, "", url);
     } else if (pendingLocations.at(-1) !== url.href) {
       pendingLocations.push(url.href);
       navigationHost.postMessage({ type: "home-assistant/navigate", path: url.pathname + url.search + url.hash, options: { replace } }, url.origin);
@@ -139,9 +144,9 @@ function applyFilters() {
 }
 
 function closeDetail() {
-  if (!selectedItemId || detailClosePending) return;
+  if ((!selectedItemId && !selectedVariantId) || detailClosePending) return;
   detailClosePending = true;
-  if (navigationHost === window && history.state?.closetItemEntry === true) history.back();
+  if (navigationHost === window && history.state?.closetItemEntry === true && !history.state?.closetParentVariant) history.back();
   else navigate(appliedFilters, null, { replace: true });
 }
 
@@ -317,21 +322,26 @@ function filterBadge(field, value, label, accessibleLabel) {
   return button;
 }
 
-function itemCard(item, compact = false, presentation = "card") {
+function itemCard(item, compact = false, presentation = "card", variantId = null) {
   const card = element("article", compact ? "item-piece" : "item-card");
   card.dataset.catalogId = item.id;
-  card.append(photo(item, 0, presentation));
+  if (!variantId) card.append(photo(item, 0, presentation));
   if (item.brand) card.append(filterBadge("brand", item.brand, item.brand, `Show all items by ${item.brand}`));
-  const button = element("button", "item-open item-name", item.name);
+  const button = element("button", variantId ? "item-open group-open" : "item-open item-name");
   button.type = "button";
-  button.setAttribute("aria-label", `View ${item.name}`);
+  button.setAttribute("aria-label", variantId ? `View all copies of ${item.name}` : `View ${item.name}`);
+  if (variantId) {
+    card.classList.add("group-card");
+    card.dataset.variantId = variantId;
+    button.append(photo(item, 0, presentation), element("span", "item-name", item.name));
+  } else button.textContent = item.name;
   const metadata = [item.size, item.color].filter((value) => value !== null && value !== undefined && value !== "");
   const reference = Array.isArray(item.images) ? item.images[0] : null;
   const description = [item.brand];
   if (!compact) description.push(...metadata);
   if (object(reference) && reference.notes) description.push(reference.notes);
   button.setAttribute("aria-description", description.filter(Boolean).join(" · "));
-  button.addEventListener("click", () => openDetail(item));
+  button.addEventListener("click", () => variantId ? openGroup(variantId) : openDetail(item));
   card.append(button);
   if (!compact && metadata.length) card.append(element("span", "item-meta", metadata.join(" · ")));
   if (object(reference) && reference.notes) card.append(element("span", "image-note", reference.notes));
@@ -349,38 +359,83 @@ function itemCard(item, compact = false, presentation = "card") {
   return card;
 }
 
+function pieceCount(quantity) {
+  return Number.isInteger(quantity) ? `${quantity} ${quantity === 1 ? "piece" : "pieces"}` : "Quantity not recorded";
+}
+
+function purchaseCount(count) {
+  return `${count} ${count === 1 ? "purchase" : "purchases"}`;
+}
+
+function copiesContext() {
+  return ["source", "ready_to_wear", "status", "area"].some((key) => appliedFilters[key]);
+}
+
+function copyList(item, copies, detailed = false) {
+  const list = element("ol", "item-copies");
+  list.setAttribute("aria-label", `Purchases of ${item.name}`);
+  const sizes = new Map();
+  for (const copy of copies) {
+    if (!sizes.has(copy.size || null)) sizes.set(copy.size || null, []);
+    sizes.get(copy.size || null).push(copy);
+  }
+  for (const [size, purchases] of sizes) {
+    const sizeRow = element("li", "size-group");
+    const quantity = purchases.every((copy) => Number.isInteger(copy.quantity)) ? purchases.reduce((total, copy) => total + copy.quantity, 0) : null;
+    const heading = element("div", "size-heading");
+    if (size) heading.append(element("span", "", `Size ${size}`));
+    heading.append(element("span", "copy-quantity", pieceCount(quantity)));
+    sizeRow.append(heading);
+    const rows = element("ol", "size-purchases");
+    for (const copy of purchases) {
+      const row = element("li", "item-copy");
+      row.dataset.catalogId = copy.id;
+      row.dataset.copyId = copy.id;
+      const actions = element("div", "copy-actions");
+      const source = sourceOf(copy), label = sourceLabel(copy);
+      const open = element("button", "copy-open", "View copy ›");
+      open.type = "button";
+      const index = copies.indexOf(copy) + 1;
+      open.setAttribute("aria-label", `View ${copy.name || item.name}${size ? `, size ${size}` : ""}${label ? `, from ${label}` : ""}, purchase ${index}`);
+      open.setAttribute("aria-description", [size ? `Size ${size}` : null, Number.isInteger(copy.quantity) ? `Quantity ${copy.quantity}` : "Quantity unknown", label].filter(Boolean).join(" · "));
+      open.addEventListener("click", () => openDetail(copy));
+      actions.append(open);
+      if (source !== null && label !== null) {
+        const badge = filterBadge("source", source, label, `Show all items from ${label}`);
+        if (appliedFilters.source === source) { badge.classList.add("source-match"); badge.setAttribute("aria-pressed", "true"); }
+        actions.append(badge);
+      }
+      row.append(actions);
+      // A size total may span purchases. Keep the quantity of each acquisition
+      // explicit without turning a multi-piece purchase into invented records.
+      if (purchases.length > 1 || copy.quantity === null) row.append(element("p", "copy-quantity", pieceCount(copy.quantity)));
+      if (detailed) {
+        const facts = element("dl", "purchase-facts");
+        for (const [label, value] of purchaseFacts(copy).filter(([label]) => label !== "Source")) {
+          if (value !== null && value !== undefined && value !== "") facts.append(element("dt", "", label), element("dd", "", value));
+        }
+        if (facts.childElementCount) row.append(facts);
+      }
+      if (copy.usage?.kind === "safety_work_only") row.append(element("span", "usage-badge", "Safety work only"));
+      const badge = tracking.badge(copy);
+      if (badge) row.append(badge);
+      rows.append(row);
+    }
+    sizeRow.append(rows);
+    list.append(sizeRow);
+  }
+  return list;
+}
+
 function renderCopies(card, item, group) {
   card.querySelector(":scope > .owned-count")?.remove();
   card.querySelector(":scope > .item-copies")?.remove();
+  card.querySelector(":scope > .copies-context")?.remove();
   card.querySelector(":scope > .usage-badge")?.remove();
-  const safetyOnly = group.copies.every((copy) => copy.usage?.kind === "safety_work_only");
-  if (safetyOnly) card.append(element("span", "usage-badge", "Safety work only"));
-  const count = Number.isInteger(group.quantity) ? `${group.quantity} owned` : "Quantity not recorded";
-  card.append(element("p", "owned-count", count));
-  const copies = element("ol", "item-copies");
-  copies.setAttribute("aria-label", `Owned copies of ${item.name}`);
-  for (const [index, copy] of group.copies.entries()) {
-    inventoryCopies.set(copy.id, copy);
-    const row = element("li", "item-copy");
-    row.dataset.catalogId = copy.id;
-    row.dataset.copyId = copy.id;
-    const actions = element("div", "copy-actions");
-    const open = element("button", "copy-open", copy.size ? `Size ${copy.size}` : "View copy");
-    open.type = "button";
-    open.setAttribute("aria-label", `View ${item.name}, purchase ${index + 1}`);
-    open.addEventListener("click", () => openDetail(copy));
-    if (copy.quantity !== 1) open.append(element("span", "copy-quantity", copy.quantity === null ? " · quantity unknown" : ` · ×${copy.quantity}`));
-    actions.append(open);
-    const source = sourceOf(copy), label = sourceLabel(copy);
-    open.setAttribute("aria-description", [copy.size ? `Size ${copy.size}` : null, copy.quantity === null ? "Quantity unknown" : `Quantity ${copy.quantity}`, label].filter(Boolean).join(" · "));
-    if (source !== null && label !== null) actions.append(filterBadge("source", source, label, `Show all items from ${label}`));
-    row.append(actions);
-    if (!safetyOnly && copy.usage?.kind === "safety_work_only") row.append(element("span", "usage-badge", "Safety work only"));
-    const badge = tracking.badge(copy);
-    if (badge) row.append(badge);
-    copies.append(row);
-  }
-  card.append(copies);
+  card.append(element("p", "owned-count", `${pieceCount(group.quantity)} · ${purchaseCount(group.copies.length)}`));
+  if (copiesContext()) card.append(element("p", "muted copies-context", "All purchases shown"));
+  for (const copy of group.copies) inventoryCopies.set(copy.id, copy);
+  card.append(copyList(item, group.copies));
 }
 
 function inventoryCard(item, group) {
@@ -396,8 +451,7 @@ function inventoryCard(item, group) {
     }
     return existing.card;
   }
-  const card = itemCard(item);
-  if (group) card.dataset.variantId = group.identity.variant_id;
+  const card = itemCard(item, false, "card", group?.identity.variant_id);
   if (grouped) {
     card.querySelector(":scope > .tracking-pill")?.remove();
     card.querySelector(":scope > .item-badges")?.remove();
@@ -546,11 +600,18 @@ function openDetail(item) {
   navigate(appliedFilters, item.id);
 }
 
-async function loadDetail(itemId) {
+function openGroup(variantId) {
+  if (navigationHost === window && selectedItemId && history.state?.closetParentVariant === variantId) history.back();
+  else navigate(appliedFilters, null, { variantId });
+}
+
+async function loadDetail(itemId, variantId = null) {
   detailAbort?.abort();
   const revision = ++detailRevision;
   const dialog = byId("detail");
-  if (!itemId) { if (dialog.open) dialog.close(); return; }
+  // The tracking controller owns one exact-purchase detail root at a time.
+  tracking.detail = null;
+  if (!itemId && !variantId) { if (dialog.open) dialog.close(); return; }
   const controller = new AbortController();
   detailAbort = controller;
   byId("detail-brand").textContent = "";
@@ -558,15 +619,24 @@ async function loadDetail(itemId) {
   if (dialog.open && byId("detail-content").contains(document.activeElement)) byId("close-detail").focus();
   byId("detail-content").replaceChildren(element("p", "muted", "Loading item…"));
   if (!dialog.open) dialog.showModal();
+  const current = () => revision === detailRevision && selectedItemId === itemId && selectedVariantId === variantId;
   try {
-    const item = await request(`v1/items/${encodeURIComponent(itemId)}`, { signal: controller.signal });
-    if (revision !== detailRevision || selectedItemId !== itemId) return;
-    if (!object(item) || item.id !== itemId) throw new APIError(200, "invalid_response");
-    if (item.archived) throw new APIError(404, "item_not_found");
-    items.set(itemId, item);
-    renderDetail(item);
+    if (variantId) {
+      const group = await request(`v1/variants/${encodeURIComponent(variantId)}/items`, { signal: controller.signal });
+      if (!current()) return;
+      if (!object(group) || group.identity?.variant_id !== variantId || !Array.isArray(group.items) || !group.items.length || group.items.some((item) => !object(item) || item.identity?.variant_id !== variantId || item.archived)) throw new APIError(200, "invalid_response");
+      for (const item of group.items) items.set(item.id, item);
+      renderGroupDetail(group);
+    } else {
+      const item = await request(`v1/items/${encodeURIComponent(itemId)}`, { signal: controller.signal });
+      if (!current()) return;
+      if (!object(item) || item.id !== itemId) throw new APIError(200, "invalid_response");
+      if (item.archived) throw new APIError(404, "item_not_found");
+      items.set(itemId, item);
+      renderDetail(item);
+    }
   } catch (error) {
-    if (error.name === "AbortError" || revision !== detailRevision || selectedItemId !== itemId) return;
+    if (error.name === "AbortError" || !current()) return;
     byId("detail-title").textContent = error instanceof APIError && error.status === 404 ? "Item unavailable" : "Unable to load item";
     byId("detail-content").replaceChildren(element("p", "muted", error instanceof APIError && error.status === 404 ? "This item is not in the active inventory." : errorMessage(error)));
   }
@@ -639,6 +709,49 @@ function gallery(item) {
   return panel;
 }
 
+function purchaseFacts(item) {
+  const values = [];
+  if (item.identity) {
+    values.push(["Source", sourceLabel(item)]);
+  } else {
+    if (item.purchase_source) values.push(["Purchase source", item.purchase_source]);
+    if (object(item.shop)) values.push(["Shop", item.shop.label]);
+  }
+  if (object(item.shop)) {
+    if (item.shop.season) values.push(["Season", item.shop.season]);
+    if (Array.isArray(item.shop.years) && item.shop.years.length) values.push(["Years", item.shop.years.join(", ")]);
+  }
+  if (object(item.price) && typeof item.price.amount === "number" && typeof item.price.currency === "string") {
+    let price = `${item.price.amount} ${item.price.currency}`;
+    try { price = new Intl.NumberFormat(undefined, { style: "currency", currency: item.price.currency }).format(item.price.amount); }
+    catch { /* Keep the recorded amount/currency if this browser cannot format it. */ }
+    values.push(["Recorded price", price]);
+    if (item.price.basis) values.push(["Price basis", item.price.basis]);
+    if (item.price.quantity_basis) values.push(["Quantity basis", item.price.quantity_basis]);
+  }
+  return values;
+}
+
+function renderGroupDetail(group) {
+  const item = group.items[0];
+  byId("detail-brand").textContent = item.brand || "";
+  byId("detail-title").textContent = item.name;
+  const layout = element("div", "detail-layout");
+  const images = new Map();
+  for (const purchase of group.items) for (const image of purchase.images || []) images.set(JSON.stringify(image), image);
+  const copy = element("div", "group-detail");
+  copy.append(element("p", "owned-count", `${pieceCount(group.quantity)} · ${purchaseCount(group.items.length)}`));
+  const definition = element("dl");
+  for (const [label, value] of [["Category", item.category], ["Color", item.color], ["Material", item.material]]) {
+    if (value !== null && value !== undefined && value !== "") definition.append(element("dt", "", label), element("dd", "", value));
+  }
+  copy.append(definition, element("h3", "copies-heading", "Purchases"));
+  if (copiesContext()) copy.append(element("p", "muted copies-context", "All purchases shown"));
+  copy.append(copyList(item, group.items, true));
+  layout.append(gallery({ ...item, images: [...images.values()] }), copy);
+  byId("detail-content").replaceChildren(layout);
+}
+
 function renderDetail(item) {
   byId("detail-brand").textContent = item.brand || "";
   byId("detail-title").textContent = item.name;
@@ -652,25 +765,19 @@ function renderDetail(item) {
     values.push(["Use", "Safety work only"]);
     if (item.usage.requirement === "steel_toe") values.push(["Requirement", "Steel toe"]);
   }
-  if (item.purchase_source) values.push(["Purchase source", item.purchase_source]);
-  if (object(item.shop)) {
-    values.push(["Shop", item.shop.label]);
-    if (item.shop.season) values.push(["Season", item.shop.season]);
-    if (Array.isArray(item.shop.years) && item.shop.years.length) values.push(["Years", item.shop.years.join(", ")]);
-  }
-  if (object(item.price) && typeof item.price.amount === "number" && typeof item.price.currency === "string") {
-    let price = `${item.price.amount} ${item.price.currency}`;
-    try { price = new Intl.NumberFormat(undefined, { style: "currency", currency: item.price.currency }).format(item.price.amount); }
-    catch { /* Keep the recorded amount/currency if this browser cannot format it. */ }
-    values.push(["Recorded price", price]);
-    if (item.price.basis) values.push(["Price basis", item.price.basis]);
-    if (item.price.quantity_basis) values.push(["Quantity basis", item.price.quantity_basis]);
-  }
+  values.push(...purchaseFacts(item));
   const definition = element("dl");
   for (const [label, value] of values) {
     if (value !== null && value !== undefined && value !== "") definition.append(element("dt", "", label), element("dd", "", value));
   }
-  const copy = element("div"); copy.append(definition);
+  const copy = element("div");
+  if (item.identity?.variant_id) {
+    const all = element("button", "all-copies", "‹ All copies");
+    all.type = "button";
+    all.addEventListener("click", () => openGroup(item.identity.variant_id));
+    copy.append(all);
+  }
+  copy.append(definition);
   if (Array.isArray(item.notes) && item.notes.length) {
     const notes = element("div", "detail-notes");
     notes.append(element("h3", "", "Notes"));
@@ -928,7 +1035,7 @@ byId("refresh").addEventListener("click", async () => {
   else if (view === "analytics") await analytics.load();
   else if (view === "inventory") await loadInventory();
   else { tracking.catalogFacets = null; tracking.workspaceKey = null; if (view === "tracking-settings") tracking.settingsKey = null; await tracking.refresh(); }
-  if (selectedItemId) void loadDetail(selectedItemId);
+  if (selectedItemId || selectedVariantId) void loadDetail(selectedItemId, selectedVariantId);
 });
 byId("filters").addEventListener("submit", (event) => { event.preventDefault(); applyFilters(); });
 byId("brand").addEventListener("change", applyFilters);

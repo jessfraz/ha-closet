@@ -32,7 +32,7 @@ use crate::{
     models::{
         AccessRole, CatalogItem, Generation, Item, ItemsPage, ListQuery, SafetyRequirement,
         SyncReport, SyncRequest, System, TodayRequest, TodayResponse, ValidationReport,
-        catalog_items_schema, valid_id, validate_catalog,
+        VariantItems, catalog_items_schema, valid_id, validate_catalog,
     },
     store::{GenerationBasis, Store, StoreError},
     today::TodayConfig,
@@ -274,6 +274,10 @@ fn revision_headers(revision: i64) -> RevisionHeaders {
 struct ItemPath {
     id: String,
 }
+#[derive(Deserialize, JsonSchema)]
+struct VariantPath {
+    variant_id: String,
+}
 
 /// Readiness only; no private catalog or model configuration is returned.
 #[endpoint {method=GET,path="/health",tags=["system"]}]
@@ -340,6 +344,26 @@ async fn item_get(
         .map_err(store_error)?;
     let headers = revision_headers(item.revision);
     Ok(HttpResponseHeaders::new(HttpResponseOk(item), headers))
+}
+/// Complete active acquisitions of a variant, independent of list filters and pages.
+#[endpoint {method=GET,path="/v1/variants/{variant_id}/items",tags=["inventory"]}]
+async fn variant_items_get(
+    request: RequestContext<Arc<Context>>,
+    path: Path<VariantPath>,
+) -> Result<HttpResponseHeaders<HttpResponseOk<VariantItems>, RevisionHeaders>, HttpError> {
+    authenticate(&request)?;
+    let id = path.into_inner().variant_id;
+    if !valid_id(&id) {
+        return Err(fail(Status::BAD_REQUEST, "invalid_id"));
+    }
+    let variant = request
+        .context()
+        .store
+        .variant_items(&id)
+        .await
+        .map_err(store_error)?;
+    let headers = revision_headers(variant.catalog_revision);
+    Ok(HttpResponseHeaders::new(HttpResponseOk(variant), headers))
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(transparent)]
@@ -1008,11 +1032,12 @@ async fn schema(request: RequestContext<Arc<Context>>) -> Result<Response<Body>,
 
 pub fn description() -> anyhow::Result<ApiDescription<Arc<Context>>> {
     let mut api = ApiDescription::new();
-    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 31] = [
+    let endpoints: [dropshot::ApiEndpoint<Arc<Context>>; 32] = [
         health.into(),
         system.into(),
         items_list.into(),
         item_get.into(),
+        variant_items_get.into(),
         inventory_validate.into(),
         inventory_sync.into(),
         fence_acquire.into(),

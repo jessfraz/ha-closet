@@ -18,7 +18,8 @@ ha-closet inventory sync --input wardrobe.toml --dry-run
 Validation is offline. It does not resolve a server URL, read a credential,
 connect to Home Assistant, or write anything. This is the command to run in CI.
 Every item needs a shop or purchase source and an explicit positive quantity.
-TOML also requires brand, name, category, color, size, materials, photos and price.
+TOML also requires brand, name, category, color, size, materials and photos.
+An omitted purchase price stays unknown.
 Missing values fail validation; quantities are never defaulted.
 Invalid input exits nonzero with safe field locations and error codes, without
 printing item names or input values.

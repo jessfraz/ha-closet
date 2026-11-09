@@ -184,3 +184,43 @@ async def test_complete_variant_copy_summaries_survive_the_authenticated_bridge(
         "example-copy-b",
     ]
     assert [copy["size"] for copy in group["copies"]] == ["XS", "S"]
+
+
+async def test_variant_detail_bridge_returns_complete_active_acquisitions(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    hass_user_token: str,
+    rust_backend: RustBackend,
+) -> None:
+    first = catalog_item("example-acquisition-a")
+    second = catalog_item("example-acquisition-b")
+    for record, size, quantity in [(first, "XS", 1), (second, "M", 3)]:
+        record["identity"] = {
+            "style_id": "example-shared-style",
+            "variant_id": "example-shared-variant",
+        }
+        record["size"], record["quantity"] = size, quantity
+    second["shop"] = {
+        "id": "example-atelier",
+        "label": "Example atelier",
+        "season": None,
+        "years": [],
+    }
+    await rust_backend.sync([first, second])
+    await connect(hass, rust_backend)
+    client = await hass_client(hass_user_token)
+    path = f"{PREFIX}/variants/example-shared-variant/items"
+    response = await client.get(path)
+    assert response.status == 200
+    assert response.headers["ETag"] == '"1"'
+    data = await response.json()
+    assert data["catalog_revision"] == 1
+    assert data["quantity"] == 4
+    assert data["identity"] == first["identity"]
+    assert [item["id"] for item in data["items"]] == [first["id"], second["id"]]
+    assert [item["size"] for item in data["items"]] == ["XS", "M"]
+    assert [item["quantity"] for item in data["items"]] == [1, 3]
+    assert data["items"][1]["shop"] == second["shop"]
+    assert (await client.get(f"{path}?source=shop:example-atelier")).status == 400
+    assert (await client.post(path, json={})).status == 405
+    assert (await client.get(f"{PREFIX}/variants/example-missing/items")).status == 404

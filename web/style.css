@@ -59,6 +59,16 @@ select { max-width: 250px; }
 .item-open::after { content: ""; position: absolute; inset: 0; border-radius: 5px; }
 .item-open:focus-visible { outline: none; }
 .item-open:focus-visible::after { outline: 2px solid var(--focus); outline-offset: 3px; }
+/* The photo and title share a real button. The brand filter occupies its own
+   row above the title and remains a separate keyboard target. */
+.group-card { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; }
+.group-open { grid-column: 1; grid-row: 1 / span 3; display: grid; grid-template-rows: subgrid; }
+.group-open .photo { grid-row: 1; }
+.group-open .item-name { grid-row: 3; }
+.group-open::after { content: none; }
+.group-open:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 5px; }
+.group-card > .brand-badge { grid-column: 1; grid-row: 2; justify-self: start; }
+.group-card > :not(.group-open):not(.brand-badge) { grid-column: 1; }
 .photo { --photo-aspect: .8; aspect-ratio: var(--photo-aspect); flex-shrink: 0; display: grid; place-items: center; background: #fff; border-radius: 5px; overflow: hidden; width: 100%; }
 .photo img { width: 100%; height: 100%; object-fit: contain; }
 .photo > img { min-width: 0; min-height: 0; }
@@ -73,11 +83,17 @@ select { max-width: 250px; }
 .usage-badge { align-self: flex-start; max-width: 100%; margin-top: 7px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .owned-count { margin-top: 9px; color: var(--ink); font: 11px/1.5 var(--mono); }
 .item-copies { position: relative; z-index: 1; list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
-.item-copy { padding: 4px 0 8px; border-bottom: 1px solid var(--line); }
+.size-group { padding: 10px 0 6px; border-bottom: 1px solid var(--line); }
+.size-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; line-height: 1.6; }
+.size-purchases { list-style: none; margin: 0; padding: 0; }
+.item-copy { padding: 0 0 8px; }
+.item-copy + .item-copy { border-top: 1px dotted var(--line); }
 .copy-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 6px; }
 .copy-open { min-height: 44px; max-width: 100%; padding: 7px 0; border: 0; background: transparent; color: var(--ink); font-size: 12px; font-weight: 500; text-align: left; overflow-wrap: anywhere; }
 .copy-open:hover { color: var(--focus); opacity: 1; }
 .copy-quantity { color: var(--muted); font-weight: 400; }
+.item-copy > .copy-quantity, .copies-context { font-size: 11px; line-height: 1.6; }
+.source-match { box-shadow: 0 0 0 1px currentColor; }
 .item-copy .tracking-pill { margin-top: 0; }
 .footwear-option { display: flex; flex-direction: row; align-items: center; gap: 8px; min-height: 44px; padding: 6px 0; color: var(--ink); cursor: pointer; }
 .today-controls .footwear-option input { flex: 0 0 auto; width: 17px; height: 17px; min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
@@ -123,6 +139,12 @@ dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
 dialog::backdrop { background: #10182088; }
 .dialog-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; margin-bottom: 22px; }
 .detail-layout { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 24px; }
+.group-detail > .owned-count { margin: 0 0 16px; }
+.copies-heading { margin-top: 22px; font-size: 14px; }
+.purchase-facts { gap: 4px 10px; margin: 4px 0 10px; font-size: 11px; overflow-wrap: anywhere; }
+.purchase-facts dt { min-width: 0; }
+.all-copies { padding: 8px 0; margin: -8px 0 14px; min-height: 44px; background: transparent; border: 0; color: var(--muted); font-size: 12px; }
+.all-copies:hover { color: var(--ink); opacity: 1; }
 dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 15px; font-size: 13px; line-height: 1.65; margin: 0; }
 dt { color: var(--muted); }
 dd { margin: 0; }

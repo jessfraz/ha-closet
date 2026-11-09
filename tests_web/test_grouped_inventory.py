@@ -72,7 +72,9 @@ async def test_grouped_copies_are_complete_before_later_pages_and_keep_details(
             await login(page, rust_backend, manual_paging=True)
             await expect(page.locator(".item-card")).to_have_count(50)
             group = page.locator('[data-variant-id="example-variant"]')
-            await expect(group.locator(".owned-count")).to_have_text("2 owned")
+            await expect(group.locator(".owned-count")).to_have_text(
+                "2 pieces · 2 purchases"
+            )
             await expect(group.locator(".item-copy")).to_have_count(2)
             await expect(group.get_by_text("Size M", exact=True)).to_be_visible()
             await expect(group.get_by_text("Size L", exact=True)).to_be_visible()
@@ -86,7 +88,11 @@ async def test_grouped_copies_are_complete_before_later_pages_and_keep_details(
                 group.locator('[data-copy-id="example-999"] .tracking-pill')
             ).to_have_text("Needs laundry")
             second_copy = group.get_by_role(
-                "button", name="View Example grouped top, purchase 2", exact=True
+                "button",
+                name=(
+                    "View Example grouped top, size L, from Example atelier, purchase 2"
+                ),
+                exact=True,
             )
             await expect(second_copy).to_have_accessible_description(
                 "Size L · Quantity 1 · Example atelier"
@@ -118,7 +124,9 @@ async def test_grouped_copies_are_complete_before_later_pages_and_keep_details(
             ).to_be_hidden()
             await expect(page.locator(".item-card")).to_have_count(50)
             await expect(group.locator(".item-open")).to_be_focused()
-            await expect(group.locator(".owned-count")).to_have_text("2 owned")
+            await expect(group.locator(".owned-count")).to_have_text(
+                "2 pieces · 2 purchases"
+            )
             await expect(group.locator(".item-copy")).to_have_count(2)
             await group.get_by_role(
                 "button", name="Show all items from Example atelier", exact=True
@@ -127,7 +135,9 @@ async def test_grouped_copies_are_complete_before_later_pages_and_keep_details(
             await expect(page.locator("#inventory-count")).to_have_text(
                 "1 item · 51 in inventory"
             )
-            await expect(group.locator(".owned-count")).to_have_text("2 owned")
+            await expect(group.locator(".owned-count")).to_have_text(
+                "2 pieces · 2 purchases"
+            )
             await expect(group.locator(".item-copy")).to_have_count(2)
             await expect(page).to_have_url(
                 re.compile("closet_source=shop%3Aexample-atelier")
@@ -203,7 +213,7 @@ async def test_unknown_group_quantity_and_distinct_variants_remain_explicit(
             await expect(page.locator(".item-card")).to_have_count(4)
             blue = page.locator('[data-variant-id="example-blue"]')
             await expect(blue.locator(".owned-count")).to_have_text(
-                "Quantity not recorded"
+                "Quantity not recorded · 2 purchases"
             )
             await expect(blue.locator(".item-copy")).to_have_count(2)
             await expect(blue.locator(".copy-open")).to_contain_text(
@@ -211,13 +221,15 @@ async def test_unknown_group_quantity_and_distinct_variants_remain_explicit(
             )
             assert "Size not recorded" not in await blue.inner_text()
             await expect(
-                blue.get_by_text("· quantity unknown", exact=True)
-            ).to_be_visible()
-            await expect(blue.get_by_text("· ×2", exact=True)).to_be_visible()
+                blue.locator(".item-copy > .copy-quantity").first
+            ).to_have_text("Quantity not recorded")
+            await expect(blue.get_by_text("2 pieces", exact=True)).to_be_visible()
             grey = page.locator('[data-variant-id="example-grey"]')
             await expect(grey.locator(".owned-count, .item-copies")).to_have_count(0)
             multipack = page.locator('[data-variant-id="example-pack-blue"]')
-            await expect(multipack.locator(".owned-count")).to_have_text("3 owned")
+            await expect(multipack.locator(".owned-count")).to_have_text(
+                "3 pieces · 1 purchase"
+            )
             await expect(multipack.locator(".item-copy")).to_have_count(1)
             await expect(
                 page.locator('.item-card[data-catalog-id="example-copy-3"]')

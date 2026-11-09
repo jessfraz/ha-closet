@@ -53,6 +53,14 @@ Shared variant IDs require matching brand, category, color and material.
 Purchase-specific names, photos, sizes, sources, prices and use restrictions
 can still differ.
 
+`GET /v1/variants/{variant_id}/items` returns all active acquisitions of one
+variant as full item records, with `identity`, total `quantity` and
+`catalog_revision`. The response and its catalog-revision ETag come from one
+SQLite snapshot. Items use stable brand/name/ID ordering; list filters and page
+boundaries do not truncate the group. Quantity is unknown if any historical
+acquisition has an unknown quantity. Missing or fully archived variants return
+404. Owner and integration readers have the same access as ordinary item detail.
+
 Use one brand entry for every spelling of that brand. Aliases support imports
 and search; author references with canonical IDs. Unicode-normalized name and
 alias collisions are errors, not last-one-wins replacements. Display names stay

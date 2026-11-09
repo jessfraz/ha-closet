@@ -601,6 +601,15 @@ pub struct VariantGroup {
     pub quantity: Option<u64>,
     pub copies: Vec<InventoryCopy>,
 }
+/// Complete active acquisitions of one stable variant, from one catalog snapshot.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct VariantItems {
+    pub identity: CatalogIdentity,
+    /// Sum of physical copies, unknown if any historical quantity is unknown.
+    pub quantity: Option<u64>,
+    pub items: Vec<Item>,
+    pub catalog_revision: i64,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct InventoryCopy {
     pub id: String,

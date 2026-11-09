@@ -21,11 +21,12 @@ use crate::models::{
     CatalogIdentity, CatalogItem, Facets, Freshness, Generation, GenerationStatus, InventoryCopy,
     Item, ItemFilters, ItemsPage, ListQuery, MAX_CATALOG_ITEMS, SafetyRequirement, Source,
     SourceFacet, SyncReport, SyncRequest, TodayRequest, TodayResponse, TodayResult, Usage,
-    ValidationError, VariantGroup, digest, validate_catalog,
+    ValidationError, VariantGroup, VariantItems, digest, validate_catalog,
 };
 
 const COUNTS_SQL: &str = "SELECT (SELECT COUNT(*) FROM items WHERE archived=0) AS active, (SELECT COUNT(*) FROM items WHERE archived=1) AS archived";
 const ITEM_SQL: &str = "SELECT body, revision, archived FROM items WHERE id = ?";
+const VARIANT_ITEMS_SQL: &str = "SELECT body, revision, archived FROM items WHERE archived=0 AND json_extract(body, '$.identity.variant_id')=? ORDER BY sort_brand, sort_name, id LIMIT ?";
 const CURSOR_POSITION_SQL: &str =
     "SELECT sort_brand AS brand, sort_name AS name, id FROM items WHERE id=? AND archived=0";
 const ACTIVE_ITEMS_SQL: &str = "SELECT body FROM items WHERE archived = 0 ORDER BY id";
@@ -641,6 +642,38 @@ impl Store {
             .await?
             .ok_or(StoreError::NotFound)?;
         decode_item(&row)
+    }
+
+    pub async fn variant_items(&self, id: &str) -> Result<VariantItems> {
+        let mut tx = self.pool.begin().await?;
+        let catalog_revision = state(&mut tx).await?.0;
+        let rows = sqlx::query(VARIANT_ITEMS_SQL)
+            .bind(id)
+            .bind((MAX_CATALOG_ITEMS + 1) as i64)
+            .fetch_all(&mut *tx)
+            .await?;
+        if rows.len() > MAX_CATALOG_ITEMS {
+            return Err(StoreError::Invalid("catalog_too_large"));
+        }
+        let items = rows.iter().map(decode_item).collect::<Result<Vec<_>>>()?;
+        let first = items.first().ok_or(StoreError::NotFound)?;
+        let identity = first
+            .catalog
+            .identity
+            .clone()
+            .ok_or_else(|| sqlx::Error::Decode("stored variant identity is missing".into()))?;
+        let quantity = items.iter().try_fold(0_u64, |total, item| {
+            item.catalog
+                .quantity
+                .map(|quantity| total + u64::from(quantity))
+        });
+        tx.commit().await?;
+        Ok(VariantItems {
+            identity,
+            quantity,
+            items,
+            catalog_revision,
+        })
     }
 
     pub async fn active_items(&self) -> Result<Vec<CatalogItem>> {
@@ -3108,6 +3141,31 @@ mod tests {
         println!(
             "variant copies: {} returned / 1000 active / 4250 archived, {:?}",
             matched.len(),
+            started.elapsed()
+        );
+        let variant_id = "example-variant-2150";
+        let mut explain = QueryBuilder::<sqlx::Sqlite>::new("EXPLAIN QUERY PLAN ");
+        explain.push(crate::store::VARIANT_ITEMS_SQL);
+        let plans = sqlx::query(explain.into_sql())
+            .bind(variant_id)
+            .bind((crate::models::MAX_CATALOG_ITEMS + 1) as i64)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        let plans: Vec<String> = plans.iter().map(|row| row.get("detail")).collect();
+        println!("complete variant detail: {}", plans.join("; "));
+        assert!(
+            plans
+                .iter()
+                .any(|plan| plan.contains("items_active_variant"))
+        );
+        assert!(!plans.iter().any(|plan| plan.contains("TEMP B-TREE")));
+        let started = std::time::Instant::now();
+        let detail = store.variant_items(variant_id).await.unwrap();
+        assert_eq!(detail.items.len(), 2);
+        println!(
+            "variant detail: {} returned / 1000 active / 4250 archived, {:?}",
+            detail.items.len(),
             started.elapsed()
         );
         let signatures = BTreeMap::from([

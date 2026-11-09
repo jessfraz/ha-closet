@@ -4241,6 +4241,37 @@
         ],
         "type": "object"
       },
+      "VariantItems": {
+        "description": "Complete active acquisitions of one stable variant, from one catalog snapshot.",
+        "properties": {
+          "catalog_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "identity": {
+            "$ref": "#/components/schemas/CatalogIdentity"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "type": "array"
+          },
+          "quantity": {
+            "description": "Sum of physical copies, unknown if any historical quantity is unknown.",
+            "format": "uint64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "catalog_revision",
+          "identity",
+          "items"
+        ],
+        "type": "object"
+      },
       "WearDay": {
         "additionalProperties": false,
         "properties": {
@@ -4319,7 +4350,7 @@
   "info": {
     "description": "Inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.4.1"
+    "version": "0.4.2"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -5730,6 +5761,59 @@
         },
         "tags": [
           "tracking"
+        ]
+      }
+    },
+    "/v1/variants/{variant_id}/items": {
+      "get": {
+        "operationId": "variant_items_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "variant_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VariantItems"
+                }
+              }
+            },
+            "description": "successful operation",
+            "headers": {
+              "cache-control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              },
+              "etag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "style": "simple"
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Complete active acquisitions of a variant, independent of list filters and pages.",
+        "tags": [
+          "inventory"
         ]
       }
     }

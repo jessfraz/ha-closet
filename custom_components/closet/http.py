@@ -19,6 +19,7 @@ _ROUTES = (
     (re.compile(r"system|today"), frozenset({"GET"})),
     (re.compile(r"items"), frozenset({"GET"})),
     (re.compile(rf"items/{_ITEM_ID}"), frozenset({"GET"})),
+    (re.compile(rf"variants/{_ITEM_ID}/items"), frozenset({"GET"})),
     (
         re.compile(
             r"inventory/sync|inventory/validate|inventory/fence/prepare|inventory/fence/resolve|inventory/fence/uploads"
