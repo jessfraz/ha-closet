@@ -1,5 +1,7 @@
 """Reader-backed position defaults through real service and browser state."""
 
+import re
+
 import pytest
 from playwright.async_api import async_playwright, expect
 
@@ -7,6 +9,66 @@ from tests_ha.conftest import RustBackend, catalog_item
 from tests_ha.tracking_fixture import ReaderEvidence, command, configure, snapshot
 from tests_web.test_app import login
 from tests_web.test_tracking import action
+
+
+async def test_count_review_identifies_each_acquisition_and_opens_its_record(
+    rust_backend: RustBackend,
+) -> None:
+    records = []
+    for ident, size in (
+        ("example-tee-xs", "XS"),
+        ("example-tee-fitting", "XS"),
+        ("example-tee-s", "S"),
+        ("example-tee-second-xs", "XS"),
+    ):
+        item = catalog_item(ident)
+        item["size"] = size
+        item["quantity"] = 2
+        records.append(item)
+    records[1]["purchase_source"] = None
+    records[1]["shop"] = {
+        "id": "example-spring",
+        "label": "Spring 2026",
+        "season": "Spring",
+        "years": [2026],
+    }
+    await rust_backend.sync(records)
+    for item in records:
+        item["quantity"] = 1
+    await rust_backend.sync(records, key="reduce-fictional-counts")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page(viewport={"width": 320, "height": 844})
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            cards = page.locator("#tracking-settings-content > .tracking-review")
+            await expect(cards).to_have_count(4)
+            await expect(cards.filter(has_text="Size XS")).to_have_count(3)
+            for index, item in enumerate(records):
+                ident = str(item["id"])
+                card = cards.filter(has=page.get_by_text(ident, exact=True))
+                await expect(card).to_have_count(1)
+                await expect(card).to_contain_text("Example label Example cotton tee")
+                await expect(card).to_contain_text(f"Size {item['size']}")
+                await expect(card).to_contain_text(
+                    "Spring 2026" if index == 1 else "Self-bought"
+                )
+                await card.get_by_role(
+                    "button", name="Review physical pieces", exact=True
+                ).click()
+                await expect(page).to_have_url(
+                    re.compile(rf"[?&]closet_item={re.escape(ident)}(?:&|$)")
+                )
+                await expect(page.get_by_role("dialog")).to_be_visible()
+                await page.get_by_role("button", name="Close item details").click()
+            assert not await page.evaluate(
+                "document.documentElement.scrollWidth > innerWidth"
+            )
+        finally:
+            await browser.close()
 
 
 async def test_new_positions_use_lowest_unused_reported_ports(

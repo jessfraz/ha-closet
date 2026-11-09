@@ -866,7 +866,11 @@ export class TrackingController {
       const block = this.node("div", "notice tracking-review");
       const summary = (label) => `Physical count needs review: ${label}. Source quantity: ${record.catalog_quantity ?? "not recorded"}; active tracked pieces: ${record.active_units}.`;
       const description = this.node("p", "", summary(record.catalog_id)); block.append(description);
-      void this.item(record.catalog_id).then((item) => { if (root.contains(block)) description.textContent = summary(`${item.brand} ${item.name}`); }).catch(() => {});
+      void this.item(record.catalog_id).then((item) => {
+        if (root.contains(block)) description.textContent = summary([`${item.brand} ${item.name}`, item.size ? `Size ${item.size}` : null, item.color, this.sourceLabel(item)].filter(Boolean).join(" · "));
+      }).catch(() => {});
+      const reference = this.node("p", "muted", "Record ");
+      reference.append(this.node("code", "", record.catalog_id)); block.append(reference);
       const actions = this.node("div", "tracking-notice-actions");
       if (record.capacity_limited) {
         block.append(this.node("p", "muted", `New allocations are limited to 20,000 active tracking units. ${record.unallocated_units} physical pieces have not been allocated. The authoritative catalog and its quantities are unchanged. Review obsolete tracking units before trying another allocation.`));
