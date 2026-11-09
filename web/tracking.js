@@ -124,7 +124,8 @@ export class TrackingController {
       this.snapshot = data; this.online = true;
       if (!this.sessionId) this.sessionId = data.sessions.find((session) => session.state === "active")?.id || null;
       const session = this.session();
-      if (session?.purpose !== "lookup" && session?.queue[session.cursor]) this.selectedId = session.queue[session.cursor];
+      // Ended queues stay resumable, but only a live session owns the selection.
+      if (session?.state === "active" && session.purpose !== "lookup" && session.queue[session.cursor]) this.selectedId = session.queue[session.cursor];
       this.changed(); this.renderHealth(); this.renderDetail();
       if (this.view === "tags") await this.renderWorkspace();
       if (this.view === "tracking-settings") this.renderSettings();

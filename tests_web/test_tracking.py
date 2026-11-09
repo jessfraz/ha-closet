@@ -784,6 +784,108 @@ async def test_unsupported_borrowed_position_requires_dedicated_enrollment(
             await browser.close()
 
 
+async def test_replacement_after_ended_queue_keeps_clicked_piece_in_same_tab(
+    rust_backend: RustBackend,
+) -> None:
+    records = [
+        catalog_item("example-a-cardigan", name="Example wool cardigan"),
+        catalog_item(
+            "example-b-boot", name="Example work boot", category="footwear.boot"
+        ),
+        catalog_item(
+            "example-c-flats", name="Example leather flats", category="footwear.flats"
+        ),
+    ]
+    await rust_backend.sync(records)
+    await configure(rust_backend)
+    reader = ReaderEvidence(rust_backend)
+    await reader.observe()
+    cardigan = next(
+        unit
+        for unit in units(await snapshot(rust_backend))
+        if unit["catalog_id"] == "example-a-cardigan"
+    )
+    cardigan_id = cardigan["id"]
+    assert isinstance(cardigan_id, str)
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role("button", name="Tags", exact=True).click()
+            await page.get_by_label(
+                "Choose a physical piece", exact=True
+            ).select_option(cardigan_id)
+            await action(page, "Start enrollment session")
+            sessions = (await snapshot(rust_backend))["sessions"]
+            assert isinstance(sessions, list) and isinstance(sessions[0], dict)
+            ended_id = sessions[0]["id"]
+            assert isinstance(ended_id, str)
+            for epc, name in (
+                ("00000021", "Example wool cardigan"),
+                ("00000022", "Example work boot"),
+            ):
+                await expect(page.locator(".enroll-copy h2")).to_have_text(name)
+                await reader.observe((epc,), ended_id)
+                await page.get_by_role("button", name="Refresh", exact=True).click()
+                await action(page, "Confirm pairing & next")
+            await expect(page.locator(".enroll-copy h2")).to_have_text(
+                "Example leather flats"
+            )
+            await action(page, "End session")
+            await page.get_by_role("button", name="Inventory", exact=True).click()
+            await page.get_by_role(
+                "button", name="View Example wool cardigan", exact=True
+            ).click()
+            await page.get_by_role("button", name="Replace tag", exact=True).click()
+            await expect(page.locator(".enroll-copy h2")).to_have_text(
+                "Example wool cardigan"
+            )
+            await expect(
+                page.get_by_label("Choose a physical piece", exact=True)
+            ).to_have_value(cardigan_id)
+            await expect(
+                page.get_by_role("button", name="Scan replacement tag", exact=True)
+            ).to_be_enabled()
+            await action(page, "Scan replacement tag")
+            sessions = (await snapshot(rust_backend))["sessions"]
+            assert isinstance(sessions, list)
+            active = next(
+                session
+                for session in sessions
+                if isinstance(session, dict) and session["state"] == "active"
+            )
+            assert isinstance(active, dict)
+            replacement_id = active["id"]
+            assert isinstance(replacement_id, str) and replacement_id != ended_id
+            assert active["purpose"] == "replace" and active["queue"] == [cardigan_id]
+            assert active["candidates"] == []
+            confirm = page.get_by_role("button", name="Confirm replacement", exact=True)
+            await expect(confirm).to_be_disabled()
+            await reader.observe(("00000023", "00000024"), replacement_id)
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await expect(confirm).to_be_disabled()
+            await action(page, "Scan again")
+            await reader.observe(("00000023",), replacement_id)
+            await page.get_by_role("button", name="Refresh", exact=True).click()
+            await action(page, "Confirm replacement")
+            final = units(await snapshot(rust_backend))
+            assert {unit["catalog_id"] for unit in final if unit["has_binding"]} == {
+                "example-a-cardigan",
+                "example-b-boot",
+            }
+            assert (
+                next(
+                    unit["id"]
+                    for unit in final
+                    if unit["catalog_id"] == "example-a-cardigan"
+                )
+                == cardigan_id
+            )
+        finally:
+            await browser.close()
+
+
 async def test_replace_unbind_and_undo_keep_physical_piece_identity(
     rust_backend: RustBackend,
 ) -> None:
