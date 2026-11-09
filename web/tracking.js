@@ -1009,9 +1009,10 @@ export class TrackingController {
     details.append(this.node("h4", "", "Recent reads"), recent.childElementCount ? recent : this.node("p", "muted", "No recent reads."));
     for (const decision of this.snapshot.diagnostics.decisions.slice(-20).reverse()) details.append(this.node("p", "muted", `${this.time(decision.at)} · ${decision.reason.replaceAll("_", " ")}${decision.area_id ? ` · ${this.area(decision.area_id)?.label || decision.area_id}` : ""}`));
     for (const fault of this.snapshot.diagnostics.faults.slice(-20).reverse()) {
-      const port = this.snapshot.config.ports.find((entry) => entry.id === fault.port_id);
-      const reader = this.snapshot.config.readers.find((entry) => entry.id === (fault.reader_id || port?.reader_id));
-      const source = [reader?.label || fault.reader_id, port ? `antenna ${port.antenna}` : fault.port_id].filter(Boolean).join(" · ");
+      const reader = this.snapshot.config.readers.find((entry) => entry.id === fault.reader_id);
+      // A position may have been remapped since this fault. Its stable recorded
+      // ID identifies the event without attributing it to today's antenna.
+      const source = [reader?.label || fault.reader_id, fault.port_id ? `position ${fault.port_id}` : null].filter(Boolean).join(" · ");
       details.append(this.node("p", "notice", `${this.time(fault.at)} · ${source ? `${source} · ` : ""}${fault.code.replaceAll("_", " ")}`));
     }
     root.replaceChildren(details);

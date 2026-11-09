@@ -1059,7 +1059,7 @@ const tracking = new TrackingController({
       card.querySelector(":scope > .tracking-pill")?.remove();
       const item = items.get(card.dataset.catalogId) || inventoryCopies.get(card.dataset.catalogId);
       const badge = item && tracking.badge(item);
-      if (badge) card.insertBefore(badge, card.querySelector(".item-badges"));
+      if (badge) card.insertBefore(badge, card.querySelector(":scope > .item-badges, :scope > .copy-actions"));
     }
   },
 });

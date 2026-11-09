@@ -2,8 +2,11 @@
 
 import json
 import re
+from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
+from aiohttp import ClientSession
 from homeassistant.util.json import JsonObjectType
 from playwright.async_api import Request, async_playwright, expect
 
@@ -24,6 +27,85 @@ async def configure_two_pairing_positions(backend: RustBackend) -> None:
     ports.append(second)
     await command(backend, {"type": "configure", "config": config})
     await ReaderEvidence(backend).observe()
+
+
+async def test_historical_reader_fault_keeps_its_recorded_position_after_remapping(
+    rust_backend: RustBackend,
+) -> None:
+    await rust_backend.sync([catalog_item()])
+    await configure(rust_backend)
+    config = (await snapshot(rust_backend))["config"]
+    assert isinstance(config, dict)
+    ports = config["ports"]
+    assert isinstance(ports, list) and isinstance(ports[0], dict)
+    ports[0].update(role="monitor", area_id="example-closet")
+    await command(rust_backend, {"type": "configure", "config": config})
+    now = datetime.now(UTC).isoformat()
+    async with ClientSession() as client:
+        async with client.post(
+            f"{rust_backend.origin}/v1/tracking/observations",
+            headers={"Authorization": f"Bearer {rust_backend.owner_token}"},
+            json={
+                "reader_id": "example-reader",
+                "purpose": "inventory",
+                "data_source": "live",
+                "capture_session": None,
+                "session": str(uuid4()),
+                "sequence": 1,
+                "observed_at": now,
+                "connected": True,
+                "coverage": [
+                    {
+                        "port_id": "example-enroll",
+                        "started_at": now,
+                        "ended_at": now,
+                        "proof": {"type": "fault", "code": "antenna_fault"},
+                    }
+                ],
+                "observations": [],
+                "readback": None,
+            },
+        ) as response:
+            assert response.status == 200, await response.text()
+    recorded = await snapshot(rust_backend)
+    diagnostics = recorded["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    faults = diagnostics["faults"]
+    assert isinstance(faults, list)
+    original = next(
+        fault
+        for fault in faults
+        if isinstance(fault, dict) and fault["code"] == "antenna_fault"
+    )
+    config = recorded["config"]
+    assert isinstance(config, dict)
+    ports = config["ports"]
+    assert isinstance(ports, list) and isinstance(ports[0], dict)
+    ports[0]["antenna"] = 2
+    await command(rust_backend, {"type": "configure", "config": config})
+    after = await snapshot(rust_backend)
+    diagnostics = after["diagnostics"]
+    assert isinstance(diagnostics, dict) and isinstance(diagnostics["faults"], list)
+    assert original in diagnostics["faults"]
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await login(page, rust_backend)
+            await page.get_by_role(
+                "button", name="Tracking settings", exact=True
+            ).click()
+            await page.get_by_text(
+                "Reader health and evidence diagnostics", exact=True
+            ).click()
+            fault = page.locator(".tracking-diagnostics p.notice").filter(
+                has_text="antenna fault"
+            )
+            await expect(fault).to_contain_text(
+                "Example reader · position example-enroll · antenna fault"
+            )
+        finally:
+            await browser.close()
 
 
 async def test_selected_reading_position_survives_piece_search_and_mode_changes(
