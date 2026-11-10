@@ -8,6 +8,7 @@ rust:
     cargo test --locked --all-features
 
 ha:
+    uv run --frozen python scripts/build-integration
     cargo build --locked --bins
     uv sync --frozen
     uv run --frozen ruff check custom_components tests_ha tests_web scripts
@@ -35,3 +36,6 @@ security:
 container:
     docker build --tag ha-closet:smoke .
     scripts/container-smoke.sh ha-closet:smoke
+
+integration-zip:
+    uv run --frozen python scripts/build-integration --output work

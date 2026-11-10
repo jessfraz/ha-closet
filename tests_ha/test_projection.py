@@ -70,11 +70,9 @@ async def test_projection_retries_once_and_never_publishes_partial_units(
             {"type": "baseline", "unit_id": unit_id, "area_id": "example-closet"},
         )
     client = RacingClient(async_get_clientsession(hass), rust_backend, first_id)
-    version = (await client.request("GET", "/v1/system")).json()["version"]
-    assert isinstance(version, str)
     entry = MockConfigEntry(domain=DOMAIN)
     entry.add_to_hass(hass)
-    coordinator = ClosetCoordinator(hass, entry, client, version)
+    coordinator = ClosetCoordinator(hass, entry, client)
     try:
         await coordinator.async_refresh()
         tracking = coordinator.data.tracking

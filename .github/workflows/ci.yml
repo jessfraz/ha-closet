@@ -49,6 +49,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --locked --bins
       - run: uv sync --frozen
+      - name: Install the built Marketplace integration
+        run: |
+          uv run --frozen python scripts/build-integration --output "$RUNNER_TEMP/marketplace"
+          mv custom_components/closet "$RUNNER_TEMP/closet-source"
+          uv run --frozen python -m zipfile -e "$RUNNER_TEMP/marketplace/closet.zip" custom_components/closet
       - run: uv run --frozen ruff check custom_components tests_ha tests_web scripts
       - run: uv run --frozen ruff format --check custom_components tests_ha tests_web scripts
       - run: uv run --frozen ty check --error-on-warning custom_components tests_ha tests_web

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.8
+
+- Repair app and companion version mismatches from Home Assistant Repairs.
+
 ## 0.4.6
 
 - Recover private files and pairing credentials after native restores, without

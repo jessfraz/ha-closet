@@ -20,6 +20,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import llm
 from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 from homeassistant.setup import async_setup_component
@@ -77,6 +78,11 @@ async def test_flow_counts_diagnostics_and_unload(
         "today_configured",
         "tracking",
     }
+    assert diagnostics["integration_version"] == diagnostics["backend_version"]
+    assert (
+        ir.async_get(hass).async_get_issue(DOMAIN, f"{entry.entry_id}_version_mismatch")
+        is None
+    )
     rendered = json.dumps(diagnostics)
     assert "example-tee" not in rendered
     assert "Example cotton tee" not in rendered

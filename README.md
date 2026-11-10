@@ -133,6 +133,9 @@ nix develop
 just check
 ```
 
+Build `closet.zip` with `just integration-zip`. Attach the ZIP from
+`work/` before publishing the release.
+
 Rust owns the API, SQLite, and CLI. Python connects it to Home Assistant.
 `just security` checks dependencies; `just container` exercises restart and
 backup/restore with Docker. [Contributing](CONTRIBUTING.md).

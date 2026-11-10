@@ -7,12 +7,13 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import async_get_integration
 
+from ._app_kit.repairs import VersionRepairs
 from .client import ClosetClient
 from .const import CONF_BACKEND_URL, CONF_TOKEN, DOMAIN
 from .coordinator import ClosetCoordinator
 from .http import ClosetView
+from .repairs import VERSION_REPAIR
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -33,10 +34,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ClosetConfigEntry) -> bo
         entry.data[CONF_BACKEND_URL],
         entry.data[CONF_TOKEN],
     )
-    integration = await async_get_integration(hass, "closet")
-    coordinator = ClosetCoordinator(hass, entry, client, str(integration.version))
+    coordinator = ClosetCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+    coordinator.version_repairs = VersionRepairs(hass, entry, VERSION_REPAIR)
+    coordinator.version_repairs.async_start()
     registry = er.async_get(hass)
     obsolete_id = registry.async_get_entity_id(
         "sensor", DOMAIN, f"{entry.entry_id}_confirmed_count"

@@ -327,12 +327,9 @@ async def test_maximum_active_projection_fits_real_ha_client_and_coordinator(
     # The enrollment document is intentionally not the HA polling contract.
     with pytest.raises(ResponseTooLarge):
         await client.request("GET", "/v1/tracking")
-    system = (await client.request("GET", "/v1/system")).json()
-    version = system["version"]
-    assert isinstance(version, str)
     entry = MockConfigEntry(domain=DOMAIN)
     entry.add_to_hass(hass)
-    coordinator = ClosetCoordinator(hass, entry, client, version)
+    coordinator = ClosetCoordinator(hass, entry, client)
     try:
         await coordinator.async_refresh()
         assert coordinator.last_update_success

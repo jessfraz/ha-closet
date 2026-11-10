@@ -12,3 +12,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ty_cache/
+
+/custom_components/closet/_app_kit/
