@@ -71,6 +71,79 @@ def request(
         )
 
 
+NATIVE_RESTORE = b"""
+import io
+from pathlib import Path
+import shutil
+import tarfile
+import tempfile
+from securetar import SecureTarArchive, SecureTarFile, atomic_contents_add
+
+password = "container-native-restore-only"
+encrypted = io.BytesIO()
+with SecureTarArchive(
+    fileobj=encrypted, mode="w", password=password, create_version=3
+) as archive:
+    with archive.create_tar("./app.tar.gz") as private:
+        atomic_contents_add(
+            private, Path("/source"), file_filter=lambda _: False, arcname="data"
+        )
+encrypted.seek(0)
+with (
+    tempfile.TemporaryDirectory() as extracted,
+    tarfile.open(fileobj=encrypted, mode="r:") as outer,
+):
+    member = next(item for item in outer if item.name.endswith("app.tar.gz"))
+    with SecureTarFile(
+        fileobj=outer.extractfile(member), password=password, gzip=True
+    ) as private:
+        private.extractall(path=extracted, filter="tar")
+    shutil.copytree(
+        Path(extracted, "data"), "/restored", symlinks=True, dirs_exist_ok=True
+    )
+for name in ("credentials.json", "closet.sqlite3", "owned-nested/marker"):
+    metadata = Path("/restored", name).stat()
+    assert metadata.st_uid == 0 and metadata.st_mode & 0o777 == 0o644
+"""
+
+
+def restore_native(arch: str, source: str, target: str) -> None:
+    images = {
+        "amd64": (
+            "ghcr.io/home-assistant/amd64-hassio-supervisor@sha256:"
+            "f5f3728cf7a9a637485576c7588d209a1527fe9d6bb46f7326ef9aa629c55713"
+        ),
+        "arm64": (
+            "ghcr.io/home-assistant/aarch64-hassio-supervisor@sha256:"
+            "0f606324063cd5e7e591fb71efb5214ff56a05514898e33e461757950abc2914"
+        ),
+    }
+    docker(
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "FOWNER",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,noexec",
+        "--mount",
+        f"type=volume,source={source},target=/source,readonly",
+        "--mount",
+        f"type=volume,source={target},target=/restored",
+        "--entrypoint",
+        "python3",
+        "--interactive",
+        images[arch],
+        "-",
+        payload=NATIVE_RESTORE,
+    )
+    print(
+        "Native encrypted restore recreated root-owned0644 private files.", flush=True
+    )
+
+
 def main() -> int:
     image = sys.argv[1] if len(sys.argv) > 1 else "ha-closet:smoke"
     arch = (
@@ -82,9 +155,9 @@ def main() -> int:
         raise RuntimeError("Container architecture does not match the build target")
     suffix = uuid.uuid4().hex[:12]
     app, restored = "closet-smoke-" + suffix, "closet-restored-" + suffix
-    data, backup, target = app + "-data", app + "-backup", app + "-restore"
+    data, target = app + "-data", app + "-restore"
     containers = [app, restored]
-    volumes = [data, backup, target]
+    volumes = [data, target]
     catalog_bytes = (
         Path(__file__).resolve().parents[1] / "config/catalog.example.json"
     ).read_bytes()
@@ -110,6 +183,8 @@ def main() -> int:
             "--detach",
             "--name",
             app,
+            "--cap-drop",
+            "FOWNER",
             "--volume",
             data + ":/data",
             "--publish",
@@ -181,34 +256,26 @@ def main() -> int:
         docker(
             "run",
             "--rm",
+            "--network",
+            "none",
             "--volume",
-            data + ":/from:ro",
-            "--volume",
-            backup + ":/backup",
+            data + ":/data",
             "--entrypoint",
             "sh",
             image,
-            "-c",
-            "cd /from && tar cf /backup/closet.tar .",
+            "-ec",
+            "umask 077; mkdir /data/owned-nested; "
+            'printf "fictional-private-state" > /data/owned-nested/marker; '
+            "chown -R 10001:10001 /data/owned-nested",
         )
-        docker(
-            "run",
-            "--rm",
-            "--volume",
-            target + ":/data",
-            "--volume",
-            backup + ":/backup:ro",
-            "--entrypoint",
-            "sh",
-            image,
-            "-c",
-            "cd /data && tar xf /backup/closet.tar",
-        )
+        restore_native(arch, data, target)
         docker(
             "run",
             "--detach",
             "--name",
             restored,
+            "--cap-drop",
+            "FOWNER",
             "--volume",
             target + ":/data",
             "--publish",
@@ -233,6 +300,33 @@ def main() -> int:
             key="smoke-sync-1",
         )
         assert restored_replay == applied
+        assert (
+            docker(
+                "exec",
+                "--user",
+                "10001:10001",
+                restored,
+                "cat",
+                "/data/owned-nested/marker",
+            )
+            == b"fictional-private-state"
+        )
+        for path in (
+            "/data/credentials.json",
+            "/data/closet.sqlite3",
+            "/data/owned-nested/marker",
+        ):
+            assert (
+                docker("exec", restored, "stat", "-c", "%a:%u:%g", path).strip()
+                == b"600:10001:10001"
+            )
+        assert (
+            docker("exec", restored, "stat", "-c", "%a:%u:%g", "/data").strip()
+            == b"700:10001:10001"
+        )
+        subprocess.run(
+            [str(Path(__file__).with_name("private-data-smoke.sh")), image], check=True
+        )
         print(
             "Container passed: architecture, offline CLI, sync, restart, pairing "
             "and cold backup/restore"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.6
+
+- Recover private files and pairing credentials after native restores, without
+  following external links or changing nested mounts.
+
 ## 0.4.5
 
 - Share the app shell, controls, and themes with HA App Kit.

@@ -21,8 +21,8 @@ repository:
     scripts/check-release-version
     actionlint
     sh -n docker-entrypoint.sh
-    bash -n scripts/container-smoke.sh
-    shellcheck docker-entrypoint.sh scripts/container-smoke.sh
+    bash -n scripts/container-smoke.sh scripts/private-data-smoke.sh
+    shellcheck docker-entrypoint.sh scripts/container-smoke.sh scripts/private-data-smoke.sh
 
 openapi:
     cargo run --locked --bin closet -- --openapi openapi/api.json
