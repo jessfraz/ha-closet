@@ -1,6 +1,6 @@
 [package]
 name = "closet"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 license = "MIT"
 description = "A wardrobe inventory for Home Assistant"
@@ -16,6 +16,7 @@ name = "ha-closet"
 path = "src/bin/ha-closet.rs"
 
 [dependencies]
+ha-app-ui = { git = "https://github.com/jessfraz/ha-app-kit", rev = "72f2a25034baf0d4de862afd9fd72be40be71c5f" }
 anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }

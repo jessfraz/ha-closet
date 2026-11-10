@@ -34,13 +34,19 @@
         src = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
-            ./Cargo.toml ./Cargo.lock ./src ./migrations ./web
-            ./config ./tests
+            ./Cargo.toml
+            ./Cargo.lock
+            ./src
+            ./migrations
+            ./web
+            ./config
+            ./tests
           ];
         };
         cargoLock = {
           lockFile = ./Cargo.lock;
           outputHashes = {
+            "ha-app-ui-0.1.0" = "sha256-tgBPoIds8v3V1wzKon8uvMrWh01enQWDuBz7FwsYx20=";
             "sqlx-0.9.0" = "sha256-kLvUfUy6vmL9LYU7nzHv+iB6cIJm2CjDf9Yo6wpWrWg=";
           };
         };

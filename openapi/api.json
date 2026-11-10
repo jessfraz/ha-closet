@@ -4355,7 +4355,7 @@
   "info": {
     "description": "Inventory validation and atomic sync, read-only catalog browsing, and optional on-demand outfit suggestions. Native owner or trusted HA administrator mutations require explicit idempotency/precondition headers. GET never generates model work.",
     "title": "Closet API",
-    "version": "0.4.4"
+    "version": "0.4.5"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -4380,6 +4380,42 @@
     "/analytics.js": {
       "get": {
         "operationId": "analytics_script",
+        "responses": {
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/app-kit.css": {
+      "get": {
+        "operationId": "app_kit_style",
+        "responses": {
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/app-kit.js": {
+      "get": {
+        "operationId": "app_kit_script",
         "responses": {
           "default": {
             "content": {
@@ -4520,6 +4556,24 @@
         },
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/shell.js": {
+      "get": {
+        "operationId": "shell_script",
+        "responses": {
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "web"
         ]
       }
     },

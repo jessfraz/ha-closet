@@ -7,12 +7,13 @@
     <base href="__CLOSET_BASE__">
     <title>Closet</title>
     <link rel="icon" href="brand.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="app-kit.css">
     <link rel="stylesheet" href="style.css">
     <script src="app.js" type="module"></script>
   </head>
   <body>
     <header class="app-header">
-      <a class="wordmark" href="./" aria-label="Closet home"><img class="brand-light" src="brand.svg" width="30" height="30" alt=""><img class="brand-dark" src="brand-dark.svg" width="30" height="30" alt="">Closet</a>
+      <span id="app-brand" hidden><img class="brand-light" src="brand.svg" width="30" height="30" alt=""><img class="brand-dark" src="brand-dark.svg" width="30" height="30" alt=""></span>
       <button id="refresh" type="button" hidden>Refresh</button>
     </header>
     <main>
@@ -96,7 +97,7 @@
         </section>
       </div>
     </main>
-    <footer class="app-footer" id="app-footer" hidden><p>Closet <span class="app-version" id="app-version"></span></p><p id="service-status"></p><a href="https://github.com/jessfraz/ha-closet" target="_blank" rel="noopener noreferrer">Source code ↗</a></footer>
+    <footer class="app-footer" id="app-footer" hidden></footer>
     <dialog id="detail" aria-labelledby="detail-title"><div class="dialog-heading"><div><p id="detail-brand" class="eyebrow"></p><h2 id="detail-title"></h2></div><button id="close-detail" class="quiet" type="button" aria-label="Close item details">Close</button></div><div id="detail-content"></div></dialog>
   </body>
 </html>

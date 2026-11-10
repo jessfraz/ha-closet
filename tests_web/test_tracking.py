@@ -371,7 +371,7 @@ async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
                 "data-tone", "warning"
             )
             await expect(page.locator("#tag-notice")).to_have_css(
-                "color", "rgb(135, 85, 6)"
+                "color", "rgb(162, 64, 31)"
             )
             await page.get_by_role("button", name="Look up a tag", exact=True).click()
             await expect(page.locator("#tag-notice")).to_have_attribute(
@@ -415,10 +415,10 @@ async def test_uncertain_pairing_retries_same_action_and_disconnect_blocks(
             )
             await page.emulate_media(color_scheme="dark")
             await expect(page.locator("#tag-notice")).to_have_css(
-                "color", "rgb(159, 211, 174)"
+                "color", "rgb(145, 210, 168)"
             )
             await expect(page.locator("#tag-notice")).to_have_css(
-                "background-color", "rgb(31, 51, 39)"
+                "background-color", "rgb(32, 59, 44)"
             )
             assert len(requests) == 2 and requests[0] == requests[1]
             await page.unroute_all(behavior="wait")

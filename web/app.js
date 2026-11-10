@@ -1,5 +1,8 @@
 "use strict";
 
+import { shell } from "./shell.js";
+import { setNotice } from "./app-kit.js";
+
 import { TrackingController } from "./tracking.js";
 import { AnalyticsController } from "./analytics.js";
 
@@ -54,7 +57,7 @@ class APIError extends Error {
 }
 
 function notice(message = "") {
-  byId("notice").textContent = message;
+  setNotice(byId("notice"), message);
 }
 
 function element(tag, className, text) {
@@ -194,10 +197,10 @@ async function request(path, options = {}) {
     });
     text = await response.text();
   } catch (error) {
-    if (error.name !== "AbortError" && system) byId("service-status").textContent = "App connection lost";
+    if (error.name !== "AbortError" && system) shell.setStatus("App connection lost", "error");
     throw error;
   }
-  if (system) byId("service-status").textContent = response.status === 401 ? "App authorization expired" : "App connected";
+  if (system) shell.setStatus(response.status === 401 ? "App authorization expired" : "App connected", response.status === 401 ? "error" : "ok");
   if (text.length > 8 * 1024 * 1024) throw new APIError(response.status, "response_too_large");
   let data = null;
   if (text) {
@@ -1017,8 +1020,8 @@ async function connect() {
   byId("refresh").hidden = false;
   byId("app-footer").hidden = false;
   byId("analytics-tab").hidden = data.role !== "owner";
-  byId("app-version").textContent = data.version;
-  byId("service-status").textContent = "App connected";
+  shell.setVersion(data.version);
+  shell.setStatus("App connected", "ok");
   applyLocation(navigationURL(), { refresh: true });
   void tracking.refresh();
 }
@@ -1076,6 +1079,11 @@ byId("login").addEventListener("submit", async (event) => {
   event.preventDefault(); token = byId("token").value;
   try { await connect(); notice(); }
   catch (error) { token = null; notice(errorMessage(error)); }
+});
+document.querySelector(".wordmark").addEventListener("click", (event) => {
+  if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !system) return;
+  event.preventDefault();
+  selectView("inventory");
 });
 byId("refresh").addEventListener("click", async () => {
   items.clear();

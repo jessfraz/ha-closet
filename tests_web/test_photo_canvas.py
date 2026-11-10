@@ -93,12 +93,17 @@ async def test_white_photo_canvas_preserves_pixels_in_every_view(
                 has=page.get_by_text("No photo", exact=True)
             )
             await expect(placeholder).to_have_css(
-                "background-color", "rgb(255, 255, 255)"
+                "background-color",
+                "rgb(240, 240, 238)" if theme == "light" else "rgb(44, 47, 49)",
             )
             ink = await placeholder.locator(".photo-placeholder").evaluate(
                 "element => getComputedStyle(element).color"
             )
-            assert 1.05 / (luminance(ink) + 0.05) >= 4.5
+            background = await placeholder.evaluate(
+                "element => getComputedStyle(element).backgroundColor"
+            )
+            light, dark = sorted([luminance(ink), luminance(background)], reverse=True)
+            assert (light + 0.05) / (dark + 0.05) >= 4.5
             await page.get_by_role(
                 "button", name="View Example canvas coat", exact=True
             ).click()

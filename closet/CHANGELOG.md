@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.5
+
+- Share the app shell, controls, and themes with HA App Kit.
+- Keep home navigation in the current tab and improve empty photo contrast.
+
 ## 0.3.3
 
 - Renew the sync lease while verifying old photos, so large cleanup batches

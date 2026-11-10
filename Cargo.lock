@@ -339,7 +339,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "closet"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -349,6 +349,7 @@ dependencies = [
  "dropshot",
  "futures-util",
  "getrandom 0.4.3",
+ "ha-app-ui",
  "http",
  "icu_casemap",
  "icu_normalizer",
@@ -934,6 +935,11 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "ha-app-ui"
+version = "0.1.0"
+source = "git+https://github.com/jessfraz/ha-app-kit?rev=72f2a25034baf0d4de862afd9fd72be40be71c5f#72f2a25034baf0d4de862afd9fd72be40be71c5f"
 
 [[package]]
 name = "hashbrown"
