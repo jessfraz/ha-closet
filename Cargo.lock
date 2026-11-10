@@ -342,7 +342,7 @@ name = "closet"
 version = "0.4.9"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "chrono-tz",
  "clap",
