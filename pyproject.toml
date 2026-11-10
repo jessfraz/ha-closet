@@ -13,8 +13,8 @@ dev = [
   "home-assistant-intents==2026.10.27",
   "playwright==1.64.1",
   "pytest-homeassistant-custom-component==0.13.375",
-  "ruff==0.17.3",
-  "ty==0.0.97",
+  "ruff==0.17.4",
+  "ty==0.0.99",
 ]
 
 [tool.pytest.ini_options]
