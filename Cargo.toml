@@ -30,7 +30,7 @@ icu_normalizer = "2.4"
 icu_properties = "2.4"
 http = "1"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
-moxcms = "=0.8.1"
+moxcms = "=0.9.2"
 percent-encoding = "2"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 webpki-roots = "1"
