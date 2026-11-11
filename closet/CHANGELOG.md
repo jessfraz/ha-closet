@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.9
+
+- Match the Home Assistant App and Marketplace icons to the sidebar.
+
 ## 0.4.8
 
 - Repair app and companion version mismatches from Home Assistant Repairs.

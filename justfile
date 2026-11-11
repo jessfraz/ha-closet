@@ -38,4 +38,4 @@ container:
     scripts/container-smoke.sh ha-closet:smoke
 
 integration-zip:
-    uv run --frozen python scripts/build-integration --output work
+    uv run --frozen python scripts/build-integration --check-brand closet --output work

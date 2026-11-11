@@ -51,7 +51,7 @@ jobs:
       - run: uv sync --frozen
       - name: Install the built Marketplace integration
         run: |
-          uv run --frozen python scripts/build-integration --output "$RUNNER_TEMP/marketplace"
+          uv run --frozen python scripts/build-integration --check-brand closet --output "$RUNNER_TEMP/marketplace"
           mv custom_components/closet "$RUNNER_TEMP/closet-source"
           uv run --frozen python -m zipfile -e "$RUNNER_TEMP/marketplace/closet.zip" custom_components/closet
       - run: uv run --frozen ruff check custom_components tests_ha tests_web scripts
