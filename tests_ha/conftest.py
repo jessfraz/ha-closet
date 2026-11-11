@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm, selector
 from homeassistant.util.json import JsonObjectType
 from pytest_aiohttp.plugin import AiohttpServer
-from pytest_homeassistant_custom_component.common import MockUser
+from pytest_homeassistant.common import MockUser
 
 from .reader_fixture import FictionalReader
 from .reader_fixture import fictional_reader as fictional_reader

@@ -3,7 +3,7 @@
 from aiohttp import ClientSession
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.closet.client import Actor, BackendResponse, ClosetClient
 from custom_components.closet.const import DOMAIN

@@ -3,7 +3,7 @@
 import asyncio
 
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from tests_ha.conftest import RustBackend, catalog_item
 from tests_ha.test_integration import PREFIX, connect

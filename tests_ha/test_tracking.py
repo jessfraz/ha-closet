@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from custom_components.closet.const import DOMAIN
 from custom_components.closet.diagnostics import async_get_config_entry_diagnostics
@@ -306,7 +306,7 @@ async def test_maximum_active_projection_fits_real_ha_client_and_coordinator(
     """A full supported population must not require raising HA's byte limit."""
     import pytest
     from homeassistant.helpers.aiohttp_client import async_get_clientsession
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from pytest_homeassistant.common import MockConfigEntry
 
     from custom_components.closet.client import ClosetClient, ResponseTooLarge
     from custom_components.closet.const import MAX_RESPONSE_BYTES

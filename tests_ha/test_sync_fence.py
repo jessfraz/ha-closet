@@ -1,7 +1,7 @@
 """Real authenticated HA transport for the durable sync/prune boundary."""
 
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from .conftest import RustBackend, catalog_item
 from .test_integration import PREFIX, connect

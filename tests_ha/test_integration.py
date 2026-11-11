@@ -24,8 +24,8 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import llm
 from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+from pytest_homeassistant.common import MockConfigEntry, MockUser
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from custom_components.closet import ClosetConfigEntry
 from custom_components.closet.const import CONF_BACKEND_URL, CONF_TOKEN, DOMAIN

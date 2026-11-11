@@ -1,6 +1,6 @@
 [project]
 name = "closet-home-assistant"
-version = "0.4.10"
+version = "0.4.11"
 description = "Home Assistant adapter for the Closet inventory"
 requires-python = ">=3.14.2"
 license = "MIT"
@@ -8,11 +8,12 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+  "aiohasupervisor==0.8.1",
   "gazetteer-matcher==1.2.0",
   "hassil==3.12.1",
   "home-assistant-intents==2026.10.27",
   "playwright==1.64.1",
-  "pytest-homeassistant-custom-component==0.13.375",
+  "pytest-homeassistant==2026.11.0",
   "ruff==0.17.4",
   "ty==0.0.99",
 ]
@@ -21,7 +22,7 @@ dev = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests_ha", "tests_web"]
-addopts = "--strict-markers"
+addopts = "--strict-markers -p no:respx"
 
 [tool.ruff]
 target-version = "py314"

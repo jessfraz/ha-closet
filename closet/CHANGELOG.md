@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.11
+
+Keep version Repairs actionable when the first data refresh fails, using a fresh
+entry-scoped version check without requiring a loaded coordinator.
+Requires Home Assistant 2026.11.
+
 ## 0.4.10
 
 - Show specific version repair failures and allow retrying the version check.
