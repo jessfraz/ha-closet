@@ -43,14 +43,20 @@ async def test_today_wrapped_source_labels_are_compact_and_follow_their_item(
             await page.get_by_role("button", name="Today", exact=True).click()
             await page.get_by_label("Occasion", exact=True).select_option("everyday")
             await page.get_by_label("Weather", exact=True).select_option("ignored")
-            await page.get_by_role("button", name="Suggest outfits", exact=True).click()
+            suggest = page.get_by_role("button", name="Suggest outfits", exact=True)
+            control_radius = await suggest.evaluate(
+                "element => getComputedStyle(element).borderRadius"
+            )
+            await suggest.click()
             await expect(page.locator(".pieces .source-badge")).to_have_count(3)
             for label in labels:
                 badge = page.locator(".pieces").get_by_role(
                     "button", name=f"Show all items from {label}", exact=True
                 )
                 await expect(badge).to_have_text(label)
-                await expect(badge).to_have_css("border-radius", "12px")
+                await expect(badge).to_have_css("border-radius", control_radius)
+                bounds = await badge.bounding_box()
+                assert bounds and bounds["width"] >= 44 and bounds["height"] >= 44
                 assert await badge.evaluate(
                     "element => element.scrollWidth <= element.clientWidth"
                 )

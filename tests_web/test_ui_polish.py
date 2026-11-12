@@ -43,6 +43,18 @@ async def test_filter_values_remain_readable_and_controls_align(
             assert abs(search["height"] - box["height"]) <= 1
             if width == 1100:
                 assert abs(search["y"] - box["y"]) <= 1
+                action = await page.get_by_role(
+                    "button", name="Search", exact=True
+                ).bounding_box()
+                fields = [
+                    await control.bounding_box()
+                    for control in await page.locator(
+                        "#filters input:visible, #filters select:visible"
+                    ).all()
+                ]
+                assert action and any(
+                    field and abs(field["y"] - action["y"]) <= 1 for field in fields
+                ), "Search action must align with the controls in its wrapped row"
             else:
                 await assert_mobile_search_action(page.locator("#filters"))
             await select.select_option(brand)

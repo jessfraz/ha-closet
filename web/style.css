@@ -13,8 +13,8 @@ details p { margin-top: 10px; max-width: 650px; }
 pre { overflow-x: auto; padding: 14px 16px; background: var(--soft); border-radius: 6px; font: 12px/1.7 var(--mono); }
 .filters { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; margin: 24px 0; }
 .filters > .field { flex: 1 1 180px; }
-.filters > button, .today-controls .footwear-option { margin-top: 24px; }
-.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.filters > button, .today-controls .footwear-option { margin-top: calc(13px * 1.6 + var(--space-2)); }
+.field { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .search-field { flex: 1 1 220px; }
 .select-value { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .item-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px 18px; margin: 27px 0; }
