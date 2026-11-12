@@ -380,7 +380,8 @@ async def test_source_badges_are_compact_stable_and_readable(
                 )
                 assert (light + 0.05) / (dark + 0.05) >= 4.5
                 box = await badge.bounding_box()
-                assert box is not None and 24 <= box["height"] <= 32
+                assert box is not None
+                assert box["height"] >= 44 and box["width"] >= 44
             assert len(set(colors.values())) >= 3
             await page.get_by_role(
                 "button", name="Show all items from Example source 00", exact=True

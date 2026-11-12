@@ -157,11 +157,7 @@ async def test_shell_and_item_controls_fit_mobile_and_dark_mode(
                 assert box is not None
                 classes = (await control.get_attribute("class") or "").split()
                 minimum = 44
-                if "source-badge" in classes:
-                    minimum = 24
-                elif "item-badge" in classes:
-                    minimum = 26
-                elif "item-open" in classes:
+                if "item-open" in classes:
                     # The compact title's stretched target includes the photo.
                     minimum = 24
                     photo_box = (
@@ -180,11 +176,24 @@ async def test_shell_and_item_controls_fit_mobile_and_dark_mode(
                 refresh = await page.get_by_role(
                     "button", name="Refresh", exact=True
                 ).bounding_box()
-                assert header is not None and header["height"] == 79
+                assert header is not None
                 assert wordmark is not None and wordmark["x"] == 20
                 assert (
                     refresh is not None
                     and refresh["x"] + refresh["width"] == width - 20
+                )
+                assert wordmark is not None and refresh is not None
+                assert (
+                    header["height"] >= max(wordmark["height"], refresh["height"]) + 32
+                )
+                assert (
+                    abs(
+                        wordmark["y"]
+                        + wordmark["height"] / 2
+                        - refresh["y"]
+                        - refresh["height"] / 2
+                    )
+                    <= 1
                 )
                 footer_rows = []
                 for row in await page.locator(".app-footer > p, .app-footer > a").all():
