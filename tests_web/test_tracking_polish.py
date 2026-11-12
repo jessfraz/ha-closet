@@ -205,7 +205,6 @@ async def test_changed_reading_position_requires_a_fresh_selection(
             await action(page, "Start enrollment session")
             await expect(station).to_have_value("example-enroll")
             await expect(station).to_be_disabled()
-            await action(page, "End session")
         finally:
             await browser.close()
 
