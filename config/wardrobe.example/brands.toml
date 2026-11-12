@@ -8,3 +8,15 @@ aliases = ["NorthStudio"]
 brand = "north_studio"
 system = "native"
 kind = "clothing"
+
+[size_profiles.ring_us]
+brand = "north_studio"
+system = "native"
+kind = "accessory"
+min = "3"
+max = "16"
+
+[size_profiles.watch_os]
+brand = "north_studio"
+system = "native"
+kind = "accessory"

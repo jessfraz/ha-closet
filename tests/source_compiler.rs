@@ -361,6 +361,93 @@ fn footwear_thirds_roundtrip_as_exact_labels_and_compare_in_sixths() {
     }
 }
 
+#[test]
+fn jewelry_and_watches_infer_accessory_sizing_without_declared_kind() {
+    let (directory, path) = fixture();
+    edit(
+        &path,
+        "category = \"clothing.top.tshirt\"",
+        "category = \"jewelry.ring\"",
+    );
+    fs::write(
+        directory.path().join("categories.toml"),
+        "schema=1\n[categories.'jewelry.ring']\nlabel='Rings'\n",
+    )
+    .unwrap();
+    let brands = directory.path().join("brands.toml");
+    fs::write(
+        &brands,
+        fs::read_to_string(&brands).unwrap()
+            + "\n[size_profiles.ring_us]\nsystem='native'\nkind='accessory'\nmin='3'\nmax='16'\n",
+    )
+    .unwrap();
+    let mut authored = document(&path);
+    for entry in &mut authored.inventory {
+        entry.size = ReportedSize {
+            primary: SizedLabel {
+                profile: "ring_us".to_owned().try_into().unwrap(),
+                value: SizeValue::Numeric {
+                    label: "6.5".to_owned().try_into().unwrap(),
+                },
+            },
+            also_reported: vec![],
+        };
+    }
+    produce(&path, &authored);
+    let source = CompiledCatalog::load(&path).unwrap();
+    assert_eq!(source.items()[0].size, "6.5");
+    authored.styles[0].category = "watches.watch".to_owned().try_into().unwrap();
+    fs::write(
+        directory.path().join("categories.toml"),
+        "schema=1\n[categories.'watches.watch']\nlabel='Watches'\n",
+    )
+    .unwrap();
+    for entry in &mut authored.inventory {
+        entry.size.primary.value = SizeValue::OneSize;
+    }
+    produce(&path, &authored);
+    let source = CompiledCatalog::load(&path).unwrap();
+    assert_eq!(source.items()[0].size, "OS");
+}
+
+#[test]
+fn jewelry_declared_kind_must_match_inference() {
+    let (directory, path) = fixture();
+    edit(
+        &path,
+        "category = \"clothing.top.tshirt\"",
+        "category = \"jewelry.ring\"",
+    );
+    fs::write(
+        directory.path().join("categories.toml"),
+        "schema=1\n[categories.'jewelry.ring']\nlabel='Rings'\nsizing_kind='clothing'\n",
+    )
+    .unwrap();
+    let brands = directory.path().join("brands.toml");
+    fs::write(
+        &brands,
+        fs::read_to_string(&brands).unwrap()
+            + "\n[size_profiles.clothing_native]\nsystem='native'\nkind='clothing'\n",
+    )
+    .unwrap();
+    let mut authored = document(&path);
+    for entry in &mut authored.inventory {
+        entry.size = ReportedSize {
+            primary: SizedLabel {
+                profile: "clothing_native".to_owned().try_into().unwrap(),
+                value: SizeValue::Numeric {
+                    label: "7".to_owned().try_into().unwrap(),
+                },
+            },
+            also_reported: vec![],
+        };
+    }
+    produce(&path, &authored);
+    let error = CompiledCatalog::load(&path).unwrap_err();
+    assert_eq!(error.errors.len(), 1);
+    code(&error, "category_sizing_kind_mismatch");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn numeric_pair_roundtrips_through_source_json_and_the_real_cli() {
     let directory = tempfile::tempdir().unwrap();
@@ -403,12 +490,18 @@ async fn numeric_pair_roundtrips_through_source_json_and_the_real_cli() {
     );
     let source = CompiledCatalog::load(&path).unwrap();
     let projected = source.materialize(&BTreeMap::new()).unwrap();
-    assert!(
-        projected
-            .items()
-            .iter()
-            .all(|item| item.size.as_deref() == Some("7/8"))
-    );
+    for id in ["example-purchase-a", "example-purchase-b"] {
+        assert_eq!(
+            projected
+                .items()
+                .iter()
+                .find(|item| item.id == id)
+                .unwrap()
+                .size
+                .as_deref(),
+            Some("7/8")
+        );
+    }
     let wire = serde_json::to_vec(projected.items()).unwrap();
     assert_eq!(
         closet::models::parse_catalog(&wire).unwrap().items(),
