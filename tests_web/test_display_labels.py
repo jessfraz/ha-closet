@@ -86,10 +86,14 @@ async def test_purchase_sources_follow_status_in_cards_and_group_details(
                 source = purchase.locator(".source-badge")
                 await expect(status).to_have_text("Clean / ready")
                 await expect(source).to_have_text("Self-bought")
-                status_box = await status.bounding_box()
-                source_box = await source.bounding_box()
-                assert status_box and source_box
-                assert source_box["y"] >= status_box["y"] + status_box["height"]
+                gap: float | None = await purchase.evaluate("""purchase => {
+                    const status = purchase.querySelector('.tracking-pill');
+                    const source = purchase.querySelector('.source-badge');
+                    if (!status || !source) return null;
+                    return source.getBoundingClientRect().top
+                        - status.getBoundingClientRect().bottom;
+                }""")
+                assert gap is not None and gap >= 0
             assert not await page.evaluate(
                 "document.documentElement.scrollWidth > innerWidth"
             )
