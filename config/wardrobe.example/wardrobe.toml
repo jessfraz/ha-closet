@@ -36,3 +36,59 @@ size = { primary = { profile = "north_native", value = { kind = "numeric", label
 source = { kind = "self_bought" }
 quantity = 1
 price = { amount = 50.0, currency = "USD", basis = "receipt_line_price", quantity_basis = "unit" }
+
+[[styles]]
+id = "example_ring"
+brand = "north_studio"
+name = "Band ring"
+category = "jewelry.ring"
+
+[[variants]]
+id = "example_silver_band"
+style = "example_ring"
+color = { families = ["silver"], maker_shade = "Polished silver", api_v1_display = "families" }
+
+[[variants.materials]]
+part = "main"
+composition = { kind = "listed", parts = [{ kind = "metal", metal = "silver" }] }
+
+[[variants.images]]
+kind = "remote"
+url = "https://images.example.invalid/band-ring.png"
+reference = { kind = "official_product_reference", confidence = "high" }
+
+[[inventory]]
+id = "example-ring-a"
+variant = "example_silver_band"
+size = { primary = { profile = "ring_us", value = { kind = "numeric", label = "6.5" } } }
+source = { kind = "self_bought" }
+quantity = 1
+price = { amount = 120.0, currency = "USD", basis = "receipt_line_price", quantity_basis = "unit" }
+
+[[styles]]
+id = "example_watch"
+brand = "north_studio"
+name = "Field watch"
+category = "watches.watch"
+
+[[variants]]
+id = "example_steel_watch"
+style = "example_watch"
+color = { families = ["silver"], maker_shade = "Brushed steel", api_v1_display = "families" }
+
+[[variants.materials]]
+part = "main"
+composition = { kind = "listed", parts = [{ kind = "metal", metal = "steel" }] }
+
+[[variants.images]]
+kind = "remote"
+url = "https://images.example.invalid/field-watch.png"
+reference = { kind = "official_product_reference", confidence = "high" }
+
+[[inventory]]
+id = "example-watch-a"
+variant = "example_steel_watch"
+size = { primary = { profile = "watch_os", value = { kind = "one_size" } } }
+source = { kind = "self_bought" }
+quantity = 1
+price = { amount = 180.0, currency = "USD", basis = "receipt_line_price", quantity_basis = "unit" }

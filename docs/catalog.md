@@ -10,7 +10,7 @@ Keep these files together in private storage:
 | `fittings.toml` | Fitting labels, seasons and years |
 | `wardrobe-images/` | Local photos, named `<sha256>.png` |
 
-The [fictional example](../config/wardrobe.example/wardrobe.toml) has two
+The [fictional example](../config/wardrobe.example/wardrobe.toml) opens with two
 purchases of the same tee. Their IDs and sizes stay separate. A shared variant
 does not merge purchases or add their quantities together.
 
@@ -78,6 +78,11 @@ compiler does not calculate conversions or guess who wears an item. Footwear
 labels also support exact thirds, such as `"41 1/3"` and `"41 2/3"`; these
 remain fractions, and profile bounds compare them without rounding. A missing
 size fails validation; do not invent a size to satisfy the check.
+
+Recognized category roots infer their sizing kind automatically, now including
+`jewelry` and `watches`; for any other root, such as a scarf line, declare
+`sizing_kind` explicitly in `categories.toml`, for example
+`sizing_kind = "accessory"`.
 
 Use a numeric pair for a reported footwear label such as `7/8`:
 

@@ -323,7 +323,15 @@ pub(crate) fn inferred_kind(category: &CategoryId) -> Option<SizeKind> {
         Some(SizeKind::Belt)
     } else if c == "sunglasses" || c.starts_with("sunglasses.") {
         Some(SizeKind::Eyewear)
-    } else if c == "bags" || c.starts_with("bags.") || c == "hats" || c.starts_with("hats.") {
+    } else if c == "bags"
+        || c.starts_with("bags.")
+        || c == "hats"
+        || c.starts_with("hats.")
+        || c == "jewelry"
+        || c.starts_with("jewelry.")
+        || c == "watches"
+        || c.starts_with("watches.")
+    {
         Some(SizeKind::Accessory)
     } else {
         None

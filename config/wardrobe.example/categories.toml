@@ -3,3 +3,9 @@ schema = 1
 [categories."clothing.top.tshirt"]
 label = "T-shirts"
 sizing_kind = "clothing"
+
+[categories."jewelry.ring"]
+label = "Rings"
+
+[categories."watches.watch"]
+label = "Watches"
